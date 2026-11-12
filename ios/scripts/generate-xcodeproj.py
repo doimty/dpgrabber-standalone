@@ -26,8 +26,8 @@ OUT_DIR = os.path.join(ROOT, "DPGrabber.xcodeproj")
 OUT_PATH = os.path.join(OUT_DIR, "project.pbxproj")
 
 CORE_FILES = [
-    "AES.swift", "ApiClient.swift", "Config.swift", "Crypto.swift",
-    "GrabTiming.swift", "ListenEngine.swift", "Models.swift", "OrderFilter.swift",
+    "AES.swift", "ApiClient.swift", "Config.swift", "ConfirmStateMachine.swift",
+    "Crypto.swift", "ListenEngine.swift", "Models.swift", "OrderFilter.swift",
 ]
 APP_FILES = [
     "AppViewModel.swift", "AudioKeepAlive.swift", "ContentView.swift",

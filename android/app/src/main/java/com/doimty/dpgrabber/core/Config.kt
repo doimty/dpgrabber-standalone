@@ -22,7 +22,13 @@ data class AppConfig(
     val shopId: Int = 92,
     val minAmount: Double = 10.0,
     val maxAmount: Double = 0.0,
-    val userDelaySec: Int = 0,
+    /** Hall-order confirm window (seconds) from the task start; used when
+     * the order has a createTime, otherwise the fallback window applies
+     * (DPGConfirmationTask, DPGEngine.m). */
+    val randomConfirmWindowSec: Double = 20.0,
+    val randomConfirmFallbackSec: Double = 20.0,
+    /** Delay between confirm retries inside the window (seconds). */
+    val confirmRetryDelaySec: Double = 0.5,
     val pollIntervalSec: Double = 0.5,
     val memoMode: Int = 0,
     val memoKeywords: List<String> = emptyList(),
@@ -46,7 +52,15 @@ data class AppConfig(
                 shopId = json.optInt("shop_id", base.shopId),
                 minAmount = json.optDouble("min_amount", base.minAmount),
                 maxAmount = json.optDouble("max_amount", base.maxAmount),
-                userDelaySec = json.optInt("user_delay", base.userDelaySec),
+                randomConfirmWindowSec = json.optDouble(
+                    "random_confirm_window_sec", base.randomConfirmWindowSec
+                ),
+                randomConfirmFallbackSec = json.optDouble(
+                    "random_confirm_fallback_sec", base.randomConfirmFallbackSec
+                ),
+                confirmRetryDelaySec = json.optDouble(
+                    "confirm_retry_delay_sec", base.confirmRetryDelaySec
+                ),
                 pollIntervalSec = json.optDouble("poll_interval_sec", base.pollIntervalSec),
                 memoMode = json.optInt("memo_mode", base.memoMode),
                 memoKeywords = json.optJSONArray("memo_keywords")?.toStringList() ?: base.memoKeywords,
@@ -69,7 +83,9 @@ data class AppConfig(
         json.put("shop_id", shopId)
         json.put("min_amount", minAmount)
         json.put("max_amount", maxAmount)
-        json.put("user_delay", userDelaySec)
+        json.put("random_confirm_window_sec", randomConfirmWindowSec)
+        json.put("random_confirm_fallback_sec", randomConfirmFallbackSec)
+        json.put("confirm_retry_delay_sec", confirmRetryDelaySec)
         json.put("poll_interval_sec", pollIntervalSec)
         json.put("memo_mode", memoMode)
         json.put("memo_keywords", JSONArray(memoKeywords))
@@ -96,7 +112,15 @@ data class AppConfig(
         require(maxAmount == 0.0 || maxAmount >= minAmount) {
             "max_amount must be 0 (unlimited) or >= min_amount"
         }
-        require(userDelaySec >= 0) { "user_delay must not be negative" }
+        require(randomConfirmWindowSec in 0.1..86400.0) {
+            "random_confirm_window_sec must be between 0.1 and 86400"
+        }
+        require(randomConfirmFallbackSec in 0.1..86400.0) {
+            "random_confirm_fallback_sec must be between 0.1 and 86400"
+        }
+        require(confirmRetryDelaySec in 0.0..60.0) {
+            "confirm_retry_delay_sec must be between 0 and 60"
+        }
         require(pollIntervalSec > 0) { "poll_interval_sec must be positive" }
         require(memoMode == 0 || memoMode == 1) {
             "memo_mode must be 0 (ignore memos) or 1 (drop memo orders)"

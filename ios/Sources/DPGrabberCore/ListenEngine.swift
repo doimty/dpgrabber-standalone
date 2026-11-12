@@ -1,8 +1,7 @@
 // DPGrabber iOS - Listening engine.
 //
-// One worker task: poll -> filter -> precise grab time -> submit
-// (PROTOCOL.md §6-§8, following the PC reference tool's flow, with
-// the DPGrabber additions noted below).
+// One worker task: poll -> filter -> confirm task (PROTOCOL.md §6-§8,
+// DPGrabber's own DPGConfirmationTask state machine, DPGEngine.m).
 //
 // Flow per round:
 // 1. GET /s/c/order/randomList (page 1, 20 orders).
@@ -13,18 +12,22 @@
 // 4. Filters, in order (§7.1): missing amount/id, blacklist WeChat id,
 //    min amount, max amount (0 = unlimited), memo mode, memo keywords
 //    (case-insensitive substring).
-// 5. Passed -> precise grab time (§8.1): POST /s/c/order/get,
-//    `grab_time = reTime + confirmCountDown`; wait in 0.1 s steps
-//    (stoppable); then the user delay in 1 s steps (stoppable); then
-//    POST /s/c/order/confirm once. Success stops the whole listen loop.
+// 5. Passed -> confirm task (§8.2): POST /s/c/order/confirm immediately
+//    (no order/get detail fetch, no reTime / confirmCountDown, no
+//    precise wait), retried every `confirmRetryDelaySec` until the
+//    window deadline (budget = `randomConfirmWindowSec` when the order
+//    has a createTime, else `randomConfirmFallbackSec`); a network
+//    failure is verified with one GET /s/c/order/get (reconcile); at
+//    the deadline one final verification runs. Success stops the whole
+//    listen loop.
 // 6. On 401/403 the session is re-established with the saved account
 //    (manual-mode refresh, §3.2 step 5); on IP control the loop pauses
 //    60 s; other errors wait `pollIntervalSec` and continue.
 //
 // All progress is reported through a `log(level, message)` callback and an
 // optional `speak(text)` callback; the engine never touches the UI
-// directly. `now` and `sleeper` are injected so the precise-wait math is
-// unit-testable.
+// directly. `now` (wall clock), `monotonic` (deadline clock) and
+// `sleeper` are injected so the confirm math is unit-testable.
 
 import Foundation
 
@@ -37,6 +40,8 @@ public final class ListenEngine: @unchecked Sendable {
     private let log: LogCallback
     private let speak: SpeakCallback
     private let now: () -> TimeInterval
+    /// Monotonic clock for the confirm deadline (systemUptime by default).
+    private let monotonic: () -> TimeInterval
     /// Injected interruptible sleep (tests). Returns false when asked to stop.
     private let customSleeper: ((TimeInterval) async -> Bool)?
 
@@ -61,6 +66,7 @@ public final class ListenEngine: @unchecked Sendable {
         log: @escaping LogCallback,
         speak: SpeakCallback? = nil,
         now: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
+        monotonic: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         sleeper: ((TimeInterval) async -> Bool)? = nil
     ) {
         self.client = client
@@ -68,6 +74,7 @@ public final class ListenEngine: @unchecked Sendable {
         self.log = log
         self.speak = speak ?? { _ in }
         self.now = now
+        self.monotonic = monotonic
         self.customSleeper = sleeper
     }
 
@@ -243,76 +250,143 @@ public final class ListenEngine: @unchecked Sendable {
                 speak(reason)
                 continue // re-poll immediately, as the reference tool does
             }
-            await handleOrder(order, orderID: orderID)
+            await handleOrder(order, orderID: orderID, phone: phone, password: password)
         }
     }
 
-    private func handleOrder(_ order: [String: Any], orderID: String) async {
-        // 1. Precise grab time (§8.1).
-        var wait: TimeInterval = 0
-        var grabMs: Int?
+    // MARK: - Confirm task
+
+    /// The order number for logs: `no` when present, else the order id.
+    private func orderNumber(_ order: [String: Any], orderID: String) -> String {
+        if let s = order["no"] as? String, !s.isEmpty { return s }
+        if let n = order["no"] as? NSNumber { return n.stringValue }
+        return orderID
+    }
+
+    /// Drop an order from the seen set so a later poll round can pick it
+    /// up again (DPGConfirmationTask releaseForRetry).
+    private func releaseSeen(_ orderID: String) {
+        guard !orderID.isEmpty else { return }
+        stateLock.withLock { _seen.removeValue(forKey: orderID) }
+    }
+
+    private func ownClerkID() -> Int { clerk?.id ?? 0 }
+
+    /// One order/get verification (reconcileWithSession). Any API failure
+    /// means the result is unknown.
+    private func readback(orderID: String) async -> ReconcileResult {
         do {
-            let detail = try await client.orderGet(orderID: orderID, timeout: 10)
-            guard parseCode(detail) == 0 else {
-                log(.warning, "订单详情读取失败：\((detail["msg"] as? String) ?? "")")
-                return
-            }
-            let inner = (detail["order"] as? [String: Any]) ?? detail
-            let computed = computeGrabWait(order: inner, nowEpochSec: now())
-            wait = computed.waitSeconds
-            grabMs = computed.grabEpochMs
-            let createMs = normalizeMs(inner["createTime"])
-            if createMs > 0 {
-                let date = Date(timeIntervalSince1970: TimeInterval(createMs) / 1000.0)
-                log(.debug, "订单创建时间：\(Self.dateString(date))")
-            }
-            if computed.reason == .ok, let grabMs {
-                let date = Date(timeIntervalSince1970: TimeInterval(grabMs) / 1000.0)
-                log(.info, "准确抢单时间：\(Self.dateString(date))，等待 \(String(format: "%.1f", wait)) 秒")
-            }
+            let response = try await client.orderGet(orderID: orderID, timeout: 15)
+            return reconcileOrder(response, ownClerkID: ownClerkID())
         } catch let error as ApiError {
-            if error.kind == .auth {
-                log(.warning, "登录态失效，订单详情未读取")
-                return
-            }
-            log(.warning, "订单详情读取失败：\(error.message)")
-            return
+            log(.warning, "订单状态查询失败 id=\(orderID)：\(error.message)")
+            return ReconcileResult(verdict: .unknown, reason: "")
         } catch {
-            log(.warning, "订单详情读取失败：\(error.localizedDescription)")
-            return
-        }
-        if wait > 0 {
-            guard await sleep(wait) else { return }
-        }
-        // 2. User delay (reference tool: 1 s steps, stoppable).
-        if config.userDelay > 0 {
-            log(.info, "等待用户延时 \(config.userDelay) 秒")
-            guard await sleep(TimeInterval(config.userDelay)) else { return }
-        }
-        // 3. Submit once (no retry in the reference flow).
-        do {
-            let result = try await client.orderConfirm(orderID: orderID, timeout: 10)
-            if parseCode(result) == 0 {
-                log(.success, "抢单成功，请去查看订单，金额 \(String(format: "%.2f", amountYuan(fromCents: order["totalAmount"]))) 元")
-                speak("抢单成功")
-                onGrabSuccess?(order)
-                stop()
-            } else {
-                let msg = (result["msg"] as? String) ?? (result["message"] as? String) ?? ""
-                log(.warning, "抢单未成功：\(msg)")
-                speak("抢单未成功")
-            }
-        } catch let error as ApiError {
-            log(.error, "抢单请求失败：\(error.message)")
-        } catch {
-            log(.error, "抢单请求失败：\(error.localizedDescription)")
+            log(.warning, "订单状态查询失败 id=\(orderID)：\(error.localizedDescription)")
+            return ReconcileResult(verdict: .unknown, reason: "")
         }
     }
 
-    private static func dateString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        formatter.locale = Locale(identifier: "zh_CN")
-        return formatter.string(from: date)
+    /// Success end of a confirm task: log, announce, auto-stop.
+    private func grabSuccess(order: [String: Any], orderID: String, confirmCalls: Int) {
+        let number = orderNumber(order, orderID: orderID)
+        log(.success, "✓ 确认成功: \(number) (id=\(orderID)) confirm_calls=\(confirmCalls)")
+        log(.success, "抢单成功，请去查看订单，金额 \(String(format: "%.2f", amountYuan(fromCents: order["totalAmount"]))) 元")
+        speak("抢单成功")
+        onGrabSuccess?(order)
+        stop()
+    }
+
+    /// Wait one confirm retry delay (capped at the deadline).
+    /// Returns false when asked to stop.
+    private func sleepRetry(deadlineMono: TimeInterval) async -> Bool {
+        let delay = config.confirmRetryDelaySec
+        let remaining = deadlineMono - monotonic()
+        return await sleep(min(delay, max(0, remaining)))
+    }
+
+    /// One confirm task (DPGConfirmationTask Init -> Loop -> Final /
+    /// Readback -> Done). Starts immediately; loops confirm until the
+    /// window deadline.
+    private func handleOrder(_ order: [String: Any], orderID: String, phone: String, password: String) async {
+        let budget = confirmBudgetSeconds(
+            order: order,
+            windowSec: config.randomConfirmWindowSec,
+            fallbackSec: config.randomConfirmFallbackSec
+        )
+        let deadlineMono = monotonic() + budget
+        let amount = amountYuan(fromCents: order["totalAmount"])
+        let number = orderNumber(order, orderID: orderID)
+        log(.info, "尝试接单 \(number) ￥\(String(format: "%.2f", amount))")
+        var confirmCalls = 0
+        while !stopped {
+            let remaining = deadlineMono - monotonic()
+            if remaining <= 0 { break }
+            let timeout = min(config.requestTimeoutSec, max(0.1, remaining))
+            do {
+                confirmCalls += 1
+                let result = try await client.orderConfirm(orderID: orderID, timeout: timeout)
+                let classification = classifyConfirm(result)
+                switch classification.outcome {
+                case .ok:
+                    grabSuccess(order: order, orderID: orderID, confirmCalls: confirmCalls)
+                    return
+                case .fail:
+                    log(.warning, "✗ 确认终态失败 \(number): \(classification.reason)")
+                    return
+                case .retry:
+                    log(.info, "[confirm] retry \(number) confirm_calls=\(confirmCalls) reason=\(classification.reason)")
+                    guard await sleepRetry(deadlineMono: deadlineMono) else { return }
+                }
+            } catch let error as ApiError {
+                switch error.kind {
+                case .auth:
+                    releaseSeen(orderID)
+                    log(.warning, "确认认证失败，等待账号单飞刷新: \(number)")
+                    _ = await refreshSession(phone: phone, password: password)
+                    return
+                case .ip:
+                    releaseSeen(orderID)
+                    log(.warning, "确认触发IP风控，账号共享暂停60s，不重登录")
+                    _ = await sleep(60)
+                    return
+                case .cancelled:
+                    return
+                default:
+                    // No response (network / undecodable): verify
+                    // instead of blind retry.
+                    let checked = await readback(orderID: orderID)
+                    switch checked.verdict {
+                    case .ok:
+                        grabSuccess(order: order, orderID: orderID, confirmCalls: confirmCalls)
+                        return
+                    case .fail:
+                        log(.warning, "✗ 状态查询确认终态失败: \(checked.reason)")
+                        return
+                    case .pending:
+                        guard await sleepRetry(deadlineMono: deadlineMono) else { return }
+                    case .unknown:
+                        log(.warning, "⚠ 确认结果未知，停止盲重试: \(number)")
+                        return
+                    }
+                }
+            } catch {
+                log(.error, "抢单请求失败：\(error.localizedDescription)")
+                return
+            }
+        }
+        // Deadline reached: one final verification (stepFinal).
+        let final = await readback(orderID: orderID)
+        switch final.verdict {
+        case .ok:
+            grabSuccess(order: order, orderID: orderID, confirmCalls: confirmCalls)
+        case .fail:
+            log(.warning, "✗ 窗口结束，订单已不可确认: \(number) confirm_calls=\(confirmCalls)")
+        case .pending:
+            releaseSeen(orderID)
+            log(.info, "↻ 本轮确认预算耗尽，订单仍待确认: \(number) confirm_calls=\(confirmCalls)")
+        case .unknown:
+            log(.warning, "⚠ 窗口结束，确认结果未知: \(number) confirm_calls=\(confirmCalls)")
+        }
     }
 }

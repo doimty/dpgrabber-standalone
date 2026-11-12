@@ -1,30 +1,36 @@
 """DPGrabber PC - listening engine.
 
-One worker thread: poll -> filter -> precise grab time -> submit
-(PROTOCOL.md sections 6-8, following the PC reference tool's flow, with
-the DPGrabber additions noted below).
+One worker thread: poll -> filter -> confirm task -> submit
+(PROTOCOL.md sections 6-8, following DPGrabber's own
+DPGConfirmationTask state machine, DPGEngine.m).
 
 Flow per round:
 1. GET /s/c/order/randomList (page 1, 20 orders).
 2. No orders -> wait ``poll_interval_sec`` and poll again.
-3. Take only the first order (reference tool behaviour), de-dup by id
-   (seen set, TTL from config; DPGrabber addition, the reference tool has
-   no de-dup).
+3. Take only the first order, de-dup by id (seen set, TTL from config).
 4. Filters, in order (section 7.1): missing amount/id, blacklist
    WeChat id, min amount, max amount (0 = unlimited), memo mode,
    memo keywords (case-insensitive substring).
-5. Passed -> precise grab time (section 8.1): POST /s/c/order/get,
-   ``grab_time = reTime + confirmCountDown``; wait in 0.1 s steps
-   (stoppable); then the user delay in 1 s steps (stoppable); then
-   POST /s/c/order/confirm once. Success stops the whole listen loop.
+5. Passed -> confirm task (section 8.2): the task starts immediately
+   (no precise wait, no reTime / confirmCountDown, no user delay) and
+   loops POST /s/c/order/confirm until the window deadline
+   (``random_confirm_window_sec``, default 20 s from the task start, or
+   ``random_confirm_fallback_sec`` when the order has no createTime),
+   retrying every ``confirm_retry_delay_sec`` (default 0.5 s). Each
+   response is classified: code 0 or a confirmed message -> success
+   (stops the whole listen loop); a terminal message -> fail; 401/403
+   -> re-login; IP control -> pause 60 s; no response -> verify with
+   GET /s/c/order/get (readback) instead of blind retry. At the
+   deadline the order is verified once more; still pending -> released
+   back to polling so a later round can pick it up again.
 6. On 401/403 the session is re-established with the saved account
    (manual-mode refresh, section 3.2 step 5); on IP control the loop
    pauses 60 s; other errors wait ``poll_interval_sec`` and continue.
 
 All progress is reported through a ``log(level, message)`` callback and an
 optional ``speak(text)`` callback; the engine never touches the UI
-directly. ``time`` is injected as a callable returning epoch seconds so
-the precise-wait math is unit-testable.
+directly. ``now`` (wall clock) and ``monotonic`` are injected so the
+deadline math is unit-testable.
 """
 
 from __future__ import annotations
@@ -35,27 +41,124 @@ import time
 from dpapi import ApiClient, ApiError, amount_yuan_from_cents, extract_clerk, normalize_ms
 
 
-def compute_grab_wait(order: dict, now_epoch_sec: float):
-    """Precise grab time (PROTOCOL.md section 8.1).
+# ---------------------------------------------------------------------------
+# Confirm task (DPGConfirmationTask, DPGEngine.m). Pure helpers, shared
+# semantics with the Android / iOS engines.
+# ---------------------------------------------------------------------------
 
-    ``grab_time = reTime + confirmCountDown``; wait = grab_time - now.
-    Returns ``(wait_seconds, grab_epoch_ms, reason)`` where reason is
-    ``"ok"`` (fields present), ``"missing_fields"`` (wait skipped, grab
-    immediately) or ``"already_open"`` (grab time already passed).
-    ``createTime`` is only informational and is not used in the math.
+#: A confirm reply whose message contains one of these means success.
+CONFIRMED_WORDS = ("已接单", "已确认", "接单成功", "确认成功")
+#: A confirm reply whose message contains one of these is terminally failed.
+TERMINAL_WORDS = ("取消", "已被", "不存在", "无权", "权限", "失效", "超时")
+
+
+def terminal_reason(message) -> str:
+    """Human-readable reason for a terminal confirm failure
+    (DPGTerminalReason, DPGEngine.m)."""
+    text = str(message or "")
+    for word in ("已被", "被其他", "他人抢", "别人抢", "抢走"):
+        if word in text:
+            return "被其他人抢走"
+    if "取消" in text:
+        return "已取消"
+    if "不存在" in text:
+        return "订单不存在"
+    if "无权" in text or "权限" in text:
+        return "无确认权限"
+    if "失效" in text:
+        return "订单已失效"
+    if "超时" in text:
+        return "确认超时"
+    return text if text else "平台拒绝确认"
+
+
+def classify_confirm(result: dict):
+    """Classify one confirm response: ("ok" | "fail" | "retry", reason).
+
+    code == 0 wins over the message text; a confirmed message wins over
+    a terminal message only when the code is not 0 (DPGEngine.m stepLoop
+    checks code 0 first, then confirmed words, then terminal words).
     """
+    if not isinstance(result, dict):
+        return "retry", ""
+    code = result.get("code")
     try:
-        re_ms = normalize_ms(order["reTime"])
-        countdown = float(order["confirmCountDown"])
-    except (KeyError, TypeError, ValueError):
-        return 0.0, None, "missing_fields"
-    if re_ms <= 0:
-        return 0.0, None, "missing_fields"
-    grab_ms = re_ms + int(countdown * 1000)
-    wait = grab_ms / 1000.0 - now_epoch_sec
-    if wait <= 0:
-        return 0.0, grab_ms, "already_open"
-    return wait, grab_ms, "ok"
+        code = int(code)
+    except (TypeError, ValueError):
+        code = None
+    message = str(result.get("msg") or result.get("message") or "")
+    if code == 0:
+        return "ok", ""
+    if any(word in message for word in CONFIRMED_WORDS):
+        return "ok", ""
+    if any(word in message for word in TERMINAL_WORDS):
+        return "fail", terminal_reason(message)
+    return "retry", message
+
+
+def confirm_budget_seconds(order: dict, window_sec: float, fallback_sec: float) -> float:
+    """Confirm window budget in seconds (deadlineForOrderAtWall, random
+    kind): the window when the order has a createTime, the fallback
+    window when it does not; 20 s when the configured value is invalid."""
+    create_ms = normalize_ms(order.get("createTime")) if isinstance(order, dict) else 0
+    budget = window_sec if create_ms > 0 else fallback_sec
+    try:
+        budget = float(budget)
+    except (TypeError, ValueError):
+        budget = 0.0
+    if budget <= 0:
+        budget = 20.0
+    return budget
+
+
+def reconcile_order(response: dict, own_clerk_id: int):
+    """Verify a confirm result with one order/get response
+    (reconcileWithSession, DPGEngine.m). Returns
+    ("ok" | "fail" | "pending" | "unknown", reason).
+
+    The payload is the first dict among response["order"],
+    response["data"]["order"], response["data"] and the response itself
+    that carries a "status" or "msg" field.
+    """
+    payload = None
+    if isinstance(response, dict):
+        candidates = []
+        order = response.get("order")
+        candidates.append(order if isinstance(order, dict) else None)
+        data = response.get("data")
+        if isinstance(data, dict):
+            candidates.append(data.get("order") if isinstance(data.get("order"), dict) else None)
+            candidates.append(data)
+        candidates.append(response)
+        for cand in candidates:
+            if isinstance(cand, dict) and ("status" in cand or "msg" in cand):
+                payload = cand
+                break
+        if payload is None:
+            payload = response
+    else:
+        payload = {}
+    message = str(payload.get("msg") or payload.get("message") or "")
+    if not message and isinstance(response, dict):
+        message = str(response.get("msg") or "")
+    try:
+        status = int(payload.get("status"))
+    except (TypeError, ValueError):
+        status = 0
+    confirmed = any(word in message for word in CONFIRMED_WORDS) or status in (2, 3)
+    if confirmed:
+        try:
+            clerk_id = int(payload.get("clerkId"))
+        except (TypeError, ValueError):
+            clerk_id = 0
+        if own_clerk_id > 0 and clerk_id > 0 and clerk_id != own_clerk_id:
+            return "fail", "被其他人抢走"
+        return "ok", ""
+    if any(word in message for word in TERMINAL_WORDS) or status == -1:
+        return "fail", terminal_reason(message)
+    if status == 0:
+        return "pending", ""
+    return "unknown", message
 
 
 def order_id_of(order) -> str:
@@ -107,12 +210,13 @@ class Engine:
     """Poll loop running on a worker thread."""
 
     def __init__(self, client: ApiClient, cfg: dict, log, speak=None,
-                 now=time.time):
+                 now=time.time, monotonic=time.monotonic):
         self.client = client
         self.cfg = cfg
         self.log = log  # log(level, message); level in info/warning/error/success/debug
         self.speak = speak or (lambda text: None)
-        self.now = now
+        self.now = now  # wall clock, epoch seconds
+        self._monotonic = monotonic  # monotonic clock for the confirm deadline
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.running = False
@@ -162,6 +266,28 @@ class Engine:
             return False
         seen_at = self._seen.get(order_id)
         return seen_at is not None and self.now() - seen_at < self._seen_ttl
+
+    def _release_seen(self, order_id: str):
+        """Drop an order from the seen set so a later poll round can pick
+        it up again (DPGConfirmationTask releaseForRetry)."""
+        if order_id:
+            self._seen.pop(order_id, None)
+
+    def _own_clerk_id(self) -> int:
+        try:
+            return int((self.clerk or {}).get("id"))
+        except (TypeError, ValueError):
+            return 0
+
+    def _readback(self, order_id: str):
+        """One order/get verification (reconcileWithSession). Any API
+        failure means the result is unknown."""
+        try:
+            response = self.client.order_get(order_id, timeout=15)
+        except ApiError as exc:
+            self.log("warning", "订单状态查询失败 id=%s：%s" % (order_id, exc.message))
+            return "unknown", ""
+        return reconcile_order(response, self._own_clerk_id())
 
     # -- main loop --------------------------------------------------------
 
@@ -255,58 +381,117 @@ class Engine:
                 self.log("info", "订单不符合要求：%s" % reason)
                 self.speak(reason)
                 continue  # re-poll immediately, as the reference tool does
-            self._handle_order(order, order_id)
+            self._handle_order(order, order_id, phone, password)
 
-    def _handle_order(self, order: dict, order_id: str):
-        # 1. Precise grab time (section 8.1).
-        wait, grab_ms, reason = 0.0, None, "missing_fields"
-        try:
-            detail = self.client.order_get(order_id, timeout=10)
-            if detail.get("code") != 0:
-                self.log("warning", "订单详情读取失败：%s" % (detail.get("msg") or ""))
-                return
-            inner = detail.get("order") if isinstance(detail.get("order"), dict) else detail
-            wait, grab_ms, reason = compute_grab_wait(inner, self.now())
-            create_ms = normalize_ms(inner.get("createTime"))
-            if create_ms:
-                self.log(
-                    "debug",
-                    "订单创建时间：%s"
-                    % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(create_ms / 1000.0)),
-                )
-            if reason == "ok":
-                self.log(
-                    "info",
-                    "准确抢单时间：%s，等待 %.1f 秒"
-                    % (
-                        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(grab_ms / 1000.0)),
-                        wait,
-                    ),
-                )
-        except ApiError as exc:
-            if exc.kind == "auth":
-                self.log("warning", "登录态失效，订单详情未读取")
-                return
-            self.log("warning", "订单详情读取失败：%s" % exc.message)
-            return
-        if wait > 0 and not self._sleep(wait):
-            return
-        # 2. User delay (reference tool: 1 s steps, stoppable).
-        user_delay = int(self.cfg.get("user_delay", 0))
-        if user_delay > 0:
-            self.log("info", "等待用户延时 %d 秒" % user_delay)
-            if not self._sleep(user_delay):
-                return
-        # 3. Submit once (no retry in the reference flow).
-        try:
-            result = self.client.order_confirm(order_id, timeout=10)
-        except ApiError as exc:
-            self.log("error", "抢单请求失败：%s" % exc.message)
-            return
-        if result.get("code") == 0:
-            self.log("success", "抢单成功，请去查看订单，金额 %.2f 元" % amount_yuan_from_cents(order.get("totalAmount")))
-            self.speak("抢单成功")
-            self.stop()
-        else:
-            self.log("warning", "抢单未成功：%s" % (result.get("msg") or result.get("message") or ""))
-            self.speak("抢单未成功")
+    def _grab_success(self, order: dict, order_id: str, confirm_calls: int) -> str:
+        """Success end of a confirm task: log, announce, auto-stop."""
+        number = str(order.get("no") or order_id)
+        self.log(
+            "success",
+            "✓ 确认成功: %s (id=%s) confirm_calls=%d"
+            % (number, order_id, confirm_calls),
+        )
+        self.log(
+            "success",
+            "抢单成功，请去查看订单，金额 %.2f 元"
+            % amount_yuan_from_cents(order.get("totalAmount")),
+        )
+        self.speak("抢单成功")
+        self.stop()
+        return "ok"
+
+    def _sleep_retry(self, deadline_mono: float) -> bool:
+        """Wait one confirm retry delay (capped at the deadline).
+        Returns False when asked to stop."""
+        delay = float(self.cfg.get("confirm_retry_delay_sec", 0.5))
+        remaining = deadline_mono - self._monotonic()
+        return self._sleep(min(delay, max(0.0, remaining)))
+
+    def _handle_order(self, order: dict, order_id: str, phone: str, password: str) -> str:
+        """One confirm task (DPGConfirmationTask Init -> Loop -> Final /
+        Readback -> Done). Starts immediately; loops confirm until the
+        window deadline; returns the outcome
+        ("ok" | "fail" | "pending" | "unknown" | "auth" | "ip" |
+        "cancelled")."""
+        window = float(self.cfg.get("random_confirm_window_sec", 20))
+        fallback = float(self.cfg.get("random_confirm_fallback_sec", 20))
+        budget = confirm_budget_seconds(order, window, fallback)
+        started_mono = self._monotonic()
+        deadline_mono = started_mono + budget
+        amount = amount_yuan_from_cents(order.get("totalAmount"))
+        number = str(order.get("no") or order_id)
+        self.log("info", "尝试接单 %s ￥%.2f" % (number, amount))
+        confirm_calls = 0
+        while not self.stop_event.is_set():
+            remaining = deadline_mono - self._monotonic()
+            if remaining <= 0:
+                break
+            timeout = min(float(self.cfg.get("request_timeout_sec", 15)), max(0.1, remaining))
+            try:
+                confirm_calls += 1
+                result = self.client.order_confirm(order_id, timeout=timeout)
+            except ApiError as exc:
+                if exc.kind == "auth":
+                    self._release_seen(order_id)
+                    self.log("warning", "确认认证失败，等待账号单飞刷新: %s" % number)
+                    self._refresh_session(phone, password)
+                    return "auth"
+                if exc.kind == "ip":
+                    self._release_seen(order_id)
+                    self.log("warning", "确认触发IP风控，账号共享暂停60s，不重登录")
+                    self._sleep(60)
+                    return "ip"
+                if exc.kind == "cancelled":
+                    return "cancelled"
+                # No response (network / undecodable): verify instead of
+                # blind retry.
+                verdict, reason = self._readback(order_id)
+                if verdict == "ok":
+                    return self._grab_success(order, order_id, confirm_calls)
+                if verdict == "fail":
+                    self.log("warning", "✗ 状态查询确认终态失败: %s" % reason)
+                    return "fail"
+                if verdict == "pending":
+                    if not self._sleep_retry(deadline_mono):
+                        return "cancelled"
+                    continue
+                self.log("warning", "⚠ 确认结果未知，停止盲重试: %s" % number)
+                return "unknown"
+            outcome, reason = classify_confirm(result)
+            if outcome == "ok":
+                return self._grab_success(order, order_id, confirm_calls)
+            if outcome == "fail":
+                self.log("warning", "✗ 确认终态失败 %s: %s" % (number, reason))
+                return "fail"
+            self.log(
+                "info",
+                "[confirm] retry %s confirm_calls=%d reason=%s"
+                % (number, confirm_calls, reason),
+            )
+            if not self._sleep_retry(deadline_mono):
+                return "cancelled"
+        # Deadline reached: one final verification (stepFinal).
+        verdict, reason = self._readback(order_id)
+        if verdict == "ok":
+            return self._grab_success(order, order_id, confirm_calls)
+        if verdict == "fail":
+            self.log(
+                "warning",
+                "✗ 窗口结束，订单已不可确认: %s confirm_calls=%d"
+                % (number, confirm_calls),
+            )
+            return "fail"
+        if verdict == "pending":
+            self._release_seen(order_id)
+            self.log(
+                "info",
+                "↻ 本轮确认预算耗尽，订单仍待确认: %s confirm_calls=%d"
+                % (number, confirm_calls),
+            )
+            return "pending"
+        self.log(
+            "warning",
+            "⚠ 窗口结束，确认结果未知: %s confirm_calls=%d"
+            % (number, confirm_calls),
+        )
+        return "unknown"

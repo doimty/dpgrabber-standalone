@@ -9,8 +9,8 @@
 		4A5BDF08B8071FF5910A7288 /* AES.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CE2E5A47C28571BF2D1A969 /* AES.swift */; };
 		04886FB6A520D7A3E752F383 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58FC63D01097D93B3D590205 /* ApiClient.swift */; };
 		60BCE9675BDACC9E1317C7AB /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62062686E740EC821B8199BA /* Config.swift */; };
+		2D11A55BA39E221C152DF67B /* ConfirmStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001DFFD5858993491F454575 /* ConfirmStateMachine.swift */; };
 		273834FAF778F16448B8A6E0 /* Crypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23C4B8724B04BA867947B189 /* Crypto.swift */; };
-		955F79E38C4E2D80B020D133 /* GrabTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9678C48054450ADEBE208BAF /* GrabTiming.swift */; };
 		9FD305BA631180AF4D575AA9 /* ListenEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C57770AED7791ED846B113 /* ListenEngine.swift */; };
 		7C5EE9AA3BC9F86D1C7231A7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D09913232CC355942ECEA3 /* Models.swift */; };
 		7AEAA3E88AE1CCD81C5A5902 /* OrderFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCACDF313C9CA9A8B9B5CF9 /* OrderFilter.swift */; };
@@ -32,8 +32,8 @@
 		4CE2E5A47C28571BF2D1A969 /* AES.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AES.swift; sourceTree = "<group>"; };
 		58FC63D01097D93B3D590205 /* ApiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApiClient.swift; sourceTree = "<group>"; };
 		62062686E740EC821B8199BA /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+		001DFFD5858993491F454575 /* ConfirmStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmStateMachine.swift; sourceTree = "<group>"; };
 		23C4B8724B04BA867947B189 /* Crypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Crypto.swift; sourceTree = "<group>"; };
-		9678C48054450ADEBE208BAF /* GrabTiming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrabTiming.swift; sourceTree = "<group>"; };
 		B8C57770AED7791ED846B113 /* ListenEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenEngine.swift; sourceTree = "<group>"; };
 		30D09913232CC355942ECEA3 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		1DCACDF313C9CA9A8B9B5CF9 /* OrderFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderFilter.swift; sourceTree = "<group>"; };
@@ -89,8 +89,8 @@
 				4CE2E5A47C28571BF2D1A969 /* AES.swift */,
 				58FC63D01097D93B3D590205 /* ApiClient.swift */,
 				62062686E740EC821B8199BA /* Config.swift */,
+				001DFFD5858993491F454575 /* ConfirmStateMachine.swift */,
 				23C4B8724B04BA867947B189 /* Crypto.swift */,
-				9678C48054450ADEBE208BAF /* GrabTiming.swift */,
 				B8C57770AED7791ED846B113 /* ListenEngine.swift */,
 				30D09913232CC355942ECEA3 /* Models.swift */,
 				1DCACDF313C9CA9A8B9B5CF9 /* OrderFilter.swift */,
@@ -193,8 +193,8 @@
 				4A5BDF08B8071FF5910A7288 /* AES.swift */,
 				04886FB6A520D7A3E752F383 /* ApiClient.swift */,
 				60BCE9675BDACC9E1317C7AB /* Config.swift */,
+				2D11A55BA39E221C152DF67B /* ConfirmStateMachine.swift */,
 				273834FAF778F16448B8A6E0 /* Crypto.swift */,
-				955F79E38C4E2D80B020D133 /* GrabTiming.swift */,
 				9FD305BA631180AF4D575AA9 /* ListenEngine.swift */,
 				7C5EE9AA3BC9F86D1C7231A7 /* Models.swift */,
 				7AEAA3E88AE1CCD81C5A5902 /* OrderFilter.swift */,

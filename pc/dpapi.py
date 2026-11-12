@@ -423,12 +423,12 @@ class ApiClient:
             return []
         return orders if isinstance(orders, list) else []
 
-    def order_get(self, order_id: str, timeout: float = 10) -> dict:
-        """POST /s/c/order/get?id=... (PC tool form, used for the precise
-        grab time). Returns the decoded dict; the order object is in
-        ``order``."""
+    def order_get(self, order_id: str, timeout: float = 15) -> dict:
+        """GET /s/c/order/get?id=... (DPGrabber reconcile form, used to
+        verify a confirm result whose response never arrived). Returns
+        the decoded dict; the order object is in ``order``."""
         path = "/s/c/order/get?id=%s" % quote(str(order_id), safe=_FORM_SAFE)
-        return self.request("POST", path, timeout=timeout)
+        return self.request("GET", path, timeout=timeout)
 
     def order_confirm(self, order_id: str, timeout: float = 10) -> dict:
         """POST /s/c/order/confirm?id=... . Returns the decoded dict."""

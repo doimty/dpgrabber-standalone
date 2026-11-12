@@ -1,7 +1,7 @@
 # DPGrabber Android — 独立版多陪抢单程序（安卓版）
 
 独立 Android 应用，直接调用多陪接口抢单，不注入、不依赖宿主 App。
-登录用手机号 + 密码（PROTOCOL.md §3.2），监听、过滤、精确抢单时机与
+登录用手机号 + 密码（PROTOCOL.md §3.2），监听、过滤、确认状态机与
 抢单提交按 `../PROTOCOL.md` 实现，与 PC 版同款协议、同款功能。
 
 ## 功能
@@ -14,9 +14,9 @@
   界面会显示警告。
 - **监听引擎**：`randomList` 轮询（pageSize 20），只处理列表第一条；
   去重（60 秒 TTL）、黑名单微信号、金额上下限（0 不限制）、备注模式
-  与关键词（大小写不敏感子串）过滤；通过的订单取 `reTime` +
-  `confirmCountDown` 算出准确抢单时间，等到该时刻再 `confirm` 提交
-  一次；成功自动停止监听。
+  与关键词（大小写不敏感子串）过滤；通过的订单立即开始确认任务
+  （DPGrabber 的确认状态机：窗口内循环 `confirm`、每 0.5 秒重试至
+  截止、网络错误用 `order/get` 回读核验，成功自动停止监听）。
 - **保活**：监听跑在前台 Service 里（带常驻通知），切后台/锁屏后仍
   继续轮询。想更稳：系统设置里给本应用关掉电池优化。
 - **设置**：监听规则在主界面保存；店铺 ID、超时、AES 密钥在高级设置
@@ -39,8 +39,8 @@ GitHub 后自动编出 debug APK 并上传为 artifact）。
 
 | 位置 | 说明 |
 |---|---|
-| `app/src/main/java/com/doimty/dpgrabber/core/` | 纯 Kotlin 核心：API 客户端、加解密、过滤、精确时机、配置（不依赖 Android 框架，可 JVM 单测） |
-| `app/src/main/java/com/doimty/dpgrabber/engine/` | 监听引擎（轮询、去重、精确等待、提交） |
+| `app/src/main/java/com/doimty/dpgrabber/core/` | 纯 Kotlin 核心：API 客户端、加解密、过滤、确认状态机、配置（不依赖 Android 框架，可 JVM 单测） |
+| `app/src/main/java/com/doimty/dpgrabber/engine/` | 监听引擎（轮询、去重、确认状态机、提交） |
 | `app/src/main/java/com/doimty/dpgrabber/data/` | OkHttp 传输、凭证存储（加密 SharedPreferences） |
 | `app/src/main/java/com/doimty/dpgrabber/service/` | 前台 Service（保活）与运行日志总线 |
 | `app/src/main/java/com/doimty/dpgrabber/ui/` | 界面：主界面（登录 / 设置 / 监听 / 日志）、高级设置 |
@@ -54,18 +54,20 @@ GitHub 后自动编出 debug APK 并上传为 artifact）。
 
 单测覆盖：AES 加解密（两套密钥、错误输入）、响应信封解密与回退、
 登录流程（优先店铺、换店重试）、请求头与表单编码、过滤规则全分支、
-精确抢单时机、配置校验、引擎整轮（抢单成功停止、过滤跳过、401 重登、
-确认失败不停止、去重）。
+确认状态机（分类/预算/回读）、配置校验、引擎整轮（抢单成功停止、
+过滤跳过、401 重登、确认失败不停止、去重、重试/回读/截止释放）。
 
 ### 本机验证状态（2026-11-12）
 
-- **单测 59 个全部通过**：kotlinc 2.0.20 直接编译核心 + 引擎 + 单测，
-  JUnit 4.13.2 运行，`OK (59 tests)`，无真实请求。
-- **全部主源码编译通过**：kotlinc 直接编译 `core / engine / data /
-  service / ui` 全部 15 个 Kotlin 文件，对 android.jar（API 34）+
-  appcompat / material / security-crypto 等 AndroidX 依赖做类型检查，
-  0 错误（ViewBinding 与 R 类用与布局同字段的存根代替，AGP 构建时
-  由真实生成类替换）。
+- **单测 80 个全部通过**：kotlinc 2.0.20 直接编译核心 + 引擎 + 数据层
+  + 单测，JUnit 4.13.2 运行，`OK (80 tests)`，无真实请求。
+- **核心/引擎/数据层/Service 编译通过**：kotlinc 直接编译
+  `core / engine / data / service` 全部源码，对 android.jar（API 34）
+  + appcompat / security-crypto 等 AndroidX 依赖做类型检查，0 错误。
+  `ui/*`（MainActivity、SettingsActivity）因本机 classpath 缺少部分
+  AndroidX 传递依赖（fragment 等）未在本机完整类型检查，留待 CI 的
+  Gradle 构建验证；本次改动只删了 MainActivity 里已无用的延时输入
+  绑定，未改其他 UI 逻辑。
 - **资源校验**：res/ 中 85 处 `@string/@array/@color/@drawable/@style`
   引用全部存在；启动图标含 API 24–25 回退 PNG（五档密度，方形+圆形）。
 - **本机未编译出 APK**：本沙箱拦截跨进程回环 TCP，Gradle daemon

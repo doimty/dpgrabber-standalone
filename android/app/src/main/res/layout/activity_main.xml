@@ -84,16 +84,6 @@
 
         <TextView
             style="@style/FieldLabel"
-            android:text="@string/label_user_delay" />
-
-        <EditText
-            android:id="@+id/userDelayInput"
-            style="@style/FieldInput"
-            android:inputType="number"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
             android:text="@string/label_poll_interval" />
 
         <EditText

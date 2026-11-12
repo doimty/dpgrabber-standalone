@@ -385,11 +385,12 @@ public final class ApiClient: @unchecked Sendable {
         return []
     }
 
-    /// POST /s/c/order/get?id=... (PC tool form, used for the precise
-    /// grab time). Returns the decoded dict; the order object is in `order`.
-    public func orderGet(orderID: String, timeout: TimeInterval = 10) async throws -> [String: Any] {
+    /// GET /s/c/order/get?id=... (DPGrabber reconcile form, used to verify
+    /// a confirm result whose response never arrived). Returns the decoded
+    /// dict; the order object is in `order`.
+    public func orderGet(orderID: String, timeout: TimeInterval = 15) async throws -> [String: Any] {
         let encoded = orderID.addingPercentEncoding(withAllowedCharacters: formSafe) ?? orderID
-        return try await request(method: "POST", path: "/s/c/order/get?id=\(encoded)", timeout: timeout)
+        return try await request(method: "GET", path: "/s/c/order/get?id=\(encoded)", timeout: timeout)
     }
 
     /// POST /s/c/order/confirm?id=... . Returns the decoded dict.

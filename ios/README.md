@@ -5,7 +5,7 @@
 同款协议、同款功能，协议见 [`../PROTOCOL.md`](../PROTOCOL.md)。
 
 > **本机未编译出 IPA、待 CI 验证。** 本机是 Linux、没有 Xcode：纯逻辑模块已用
-> Swift 官方 Linux 工具链跑通全部 56 个单元测试；完整 App（含 SwiftUI 界面）
+> Swift 官方 Linux 工具链跑通全部 67 个单元测试；完整 App（含 SwiftUI 界面）
 > 只能在 macOS 上编译，GitHub Actions 工作流（`../.github/workflows/ios.yml`）
 > 会跑单测并打出**未签名 IPA**，供签名工具重签后安装。IPA 产物未经本机验证，
 > 首次使用请先在 CI 日志里确认构建成功。
@@ -18,8 +18,10 @@
   绝不写进配置文件。
 - **监听**：轮询 `randomList`（pageSize 20），过滤（黑名单微信号、最低/最高金额，
   0 = 不限制、备注模式与关键词大小写不敏感子串），订单去重 60 秒 TTL。
-- **精确抢单**：详情取 `reTime + confirmCountDown`，0.1 秒步进等到该时刻再
-  confirm 一次，成功自动停止。
+- **确认抢单**：通过的订单立即开始确认任务（DPGrabber 的确认状态机：
+  窗口内循环 confirm、每 0.5 秒重试至截止、网络错误用 `order/get` 回读
+  核验），成功自动停止。不读 `reTime` / `confirmCountDown`，不做精确
+  等待、不做用户延时。
 - **后台**：前台轮询为主；Info.plist 声明 `UIBackgroundModes=audio` 并播放
   静音音频保活（我们自己的 App 自己声明，合法；做法与 DPGrabber Keeper 的
   静音音频同理）。抢单成功发本地通知。
@@ -62,9 +64,9 @@ ios/
     Models.swift                 ApiError、DPGSession、DPGClerk、LogLevel
     ApiClient.swift              URLSession 客户端、登录/店铺/订单接口
     OrderFilter.swift            §7.1 过滤链
-    GrabTiming.swift             reTime + confirmCountDown 精确时机
+    ConfirmStateMachine.swift    确认状态机：分类/预算/回读核验（§8.2）
     Config.swift                 配置模型、校验、JSON 存取
-    ListenEngine.swift           监听引擎：轮询、去重、精确等待、confirm、重登
+    ListenEngine.swift           监听引擎：轮询、去重、确认状态机、重登
   Tests/DPGrabberCoreTests/      XCTest 单测（打桩 transport，不发真实请求）
   App/                           App 层（只在 Xcode 工程里编译）
     DPGrabberApp.swift           @main 入口
@@ -105,14 +107,14 @@ ios/
 
 ## 测试结果（本机，2026-11-12）
 
-Swift 6.1.2 Linux 工具链，`swift test`：**56 个测试，0 失败**。
+Swift 6.1.2 Linux 工具链，`swift test`：**67 个测试，0 失败**。
 
 | 套件 | 数量 | 覆盖 |
 | --- | --- | --- |
 | ApiClientTests | 20 | 信封解码（明文/加密/主备密钥回退）、401/403/IP 分类、请求头与 session、登录流程（sid 50、店铺优先/回退、拒绝）、randomList 形态 |
 | CryptoTests | 14 | NIST AES 向量（ECB/CBC，128/256）、主备密钥 CBC、Python 加密的交叉 fixture 解密、hex/key 校验、金额/时间换算 |
-| EngineTests | 5 | 端到端抢单成功并自动停止、过滤订单不 confirm、401 后重登、重复订单去重、重复启动拒绝 |
-| FilterTimingConfigTests | 17 | 过滤全分支、精确时机（已开抢/缺字段/createTime 被忽略）、配置默认/校验/JSON 往返 |
+| EngineTests | 13 | 端到端抢单成功并自动停止、过滤订单不 confirm、401 后重登、重复订单去重、重复启动拒绝、重试后成功、confirm 内 401 重登、网络错误回读成功、回读待定重试、回读未知停重试、回读店员不符、截止待定释放重抢、截止终核成功 |
+| FilterTimingConfigTests | 20 | 过滤全分支、确认分类/预算/回读核验、配置默认/校验/JSON 往返（含新确认键与旧 user_delay 键忽略） |
 
 AES 与 Python Crypto 的交叉验证：CryptoTests 里用的 Python 加密 fixture
 （主密钥 AES-256 与备用密钥 AES-128 各一）由 Python PyCryptodome 生成，
@@ -130,22 +132,21 @@ App 层（SwiftUI 界面、钥匙串、静音音频、语音、通知）**本机
    本实现取中间：明文优先，失败再解密。
 2. **业务 code 的处理**：`decodeResponse` 只对缺 code、401/403、code 1 +
    msg 含 "IP" 抛错；其他非零 code（如 confirm 返回 code 2“已被抢”）原样
-   返回，由调用方判断。这与 PC 版行为一致（confirm 失败是“没抢到”，不是
-   “请求异常”），引擎据此记“抢单未成功”而不是“抢单请求失败”。
+   返回，由确认状态机分类（终态失败 / 重试），而不是“请求异常”。
 3. **配置加载的数值兼容**：`validated(from:)` 不用 `JSONSerialization` 做
    标量转换——Linux 的 swift-corelibs-foundation 会对标量调
    `data(withJSONObject:)` 直接 fatalError；改用直接类型转换 + NSNumber
    显式取数，行为等价。
-4. **登录态刷新**：引擎在 randomList 返回 401/403 时重登一次；详情/confirm
-   返回 401 时只记日志、不重登（与 PC 版一致：confirm 只发一次）。
+4. **登录态刷新**：引擎在 randomList 返回 401/403 时重登一次；confirm
+   返回 401/403 时释放订单、重登一次，任务结束（下一轮轮询可重新接该单）；
+   IP 风控时暂停 60 秒、不重登，任务结束。
 
 ## 未证实项（需真号验证，同 PC/安卓版）
 
 - **哪套 AES 是服务端当前用的**：两套密钥都已内置并自动切换，真号登录后
   看哪套解密成功即见分晓。
-- **reTime / confirmCountDown 的服务端语义**：按 PC 工具与 DPGrabber 插件
-  的既有实现取 `reTime + confirmCountDown` 为抢单时刻；若服务端语义不同，
-  精确等待会错过时机。
+- **reTime / confirmCountDown 的服务端语义**：本 App 不读这两个字段
+  （确认状态机不依赖它们），其语义不影响抢单。
 - **randomList 是否正式接口**：PC 工具与插件都在用，但未确认是否为官方
   接口；若服务端下线或改版，监听会整体失败。
 - **限流规则**：服务端对轮询频率、IP 的限制未知；0.5 秒默认间隔来自 PC 版，

@@ -20,7 +20,6 @@
     <string name="section_settings">2. 监听设置</string>
     <string name="label_min_amount">最低金额（元）</string>
     <string name="label_max_amount">最高金额（元，0 表示不限制）</string>
-    <string name="label_user_delay">抢单前延时（秒）</string>
     <string name="label_poll_interval">轮询间隔（秒）</string>
     <string name="label_memo_mode">备注检测</string>
     <string name="memo_mode_ignore">不检测备注</string>

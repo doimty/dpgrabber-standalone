@@ -19,12 +19,20 @@ import config as cfgmod
 from dpapi import (
     ApiClient,
     ApiError,
+    Session,
     aes_decrypt_b64,
     aes_encrypt_b64,
     extract_clerk,
     normalize_ms,
 )
-from engine import OrderFilter, compute_grab_wait
+from engine import (
+    Engine,
+    OrderFilter,
+    classify_confirm,
+    confirm_budget_seconds,
+    reconcile_order,
+    terminal_reason,
+)
 
 
 class FakeResponse:
@@ -207,36 +215,350 @@ class LoginFlowTests(unittest.TestCase):
         self.assertIsNone(extract_clerk({"clerk": {"id": 0}}))
 
 
-class TimingTests(unittest.TestCase):
-    def test_grab_time_math(self):
-        order = {"createTime": 1760000000000, "reTime": 1760000010000, "confirmCountDown": 5}
-        # reTime 1760000010 s + 5 s = 1760000015 s; now 1760000000 -> wait 15 s.
-        wait, grab_ms, reason = compute_grab_wait(order, 1760000000.0)
-        self.assertEqual(reason, "ok")
-        self.assertEqual(grab_ms, 1760000015000)
-        self.assertAlmostEqual(wait, 15.0)
+class ConfirmLogicTests(unittest.TestCase):
+    """Confirm state machine pure helpers (DPGConfirmationTask)."""
 
-    def test_grab_time_already_open(self):
-        order = {"reTime": 1760000010000, "confirmCountDown": 5}
-        wait, _, reason = compute_grab_wait(order, 1760000020.0)
-        self.assertEqual((wait, reason), (0.0, "already_open"))
+    def test_budget_uses_window_with_create_time(self):
+        order = {"createTime": 1760000000000}
+        self.assertEqual(confirm_budget_seconds(order, 20, 20), 20.0)
+        self.assertEqual(confirm_budget_seconds(order, 30, 20), 30.0)
 
-    def test_grab_time_missing_fields(self):
-        wait, grab_ms, reason = compute_grab_wait({"id": "x"}, 1760000000.0)
-        self.assertEqual((wait, grab_ms, reason), (0.0, None, "missing_fields"))
-        wait, _, reason = compute_grab_wait({"reTime": 1760000010000}, 1760000000.0)
-        self.assertEqual(reason, "missing_fields")
+    def test_budget_uses_fallback_without_create_time(self):
+        self.assertEqual(confirm_budget_seconds({}, 30, 20), 20.0)
+        self.assertEqual(confirm_budget_seconds({"createTime": 0}, 30, 20), 20.0)
 
-    def test_create_time_not_used(self):
-        # Same reTime/countdown, different createTime -> same grab time.
-        a = compute_grab_wait(
-            {"createTime": 1000, "reTime": 1760000010000, "confirmCountDown": 5}, 1760000000.0
+    def test_budget_seconds_timestamps_normalized(self):
+        # createTime in seconds still counts as present.
+        self.assertEqual(
+            confirm_budget_seconds({"createTime": 1760000000}, 30, 20), 30.0
         )
-        b = compute_grab_wait(
-            {"createTime": 9999999999999, "reTime": 1760000010000, "confirmCountDown": 5},
-            1760000000.0,
+
+    def test_budget_invalid_value_falls_back_to_20(self):
+        self.assertEqual(confirm_budget_seconds({"createTime": 1}, 0, 0), 20.0)
+        self.assertEqual(confirm_budget_seconds({"createTime": 1}, -5, 20), 20.0)
+
+    def test_classify_code_zero_wins(self):
+        self.assertEqual(classify_confirm({"code": 0, "msg": "已被抢"}), ("ok", ""))
+
+    def test_classify_confirmed_words(self):
+        for msg in ("已接单", "已确认", "接单成功", "确认成功"):
+            self.assertEqual(classify_confirm({"code": 2, "msg": msg})[0], "ok")
+
+    def test_classify_terminal_words_and_reasons(self):
+        cases = [
+            ("已被其他人抢走", "被其他人抢走"),
+            ("订单已取消", "已取消"),
+            ("订单不存在", "订单不存在"),
+            ("无确认权限", "无确认权限"),
+            ("订单已失效", "订单已失效"),
+            ("确认超时", "确认超时"),
+            ("取消", "已取消"),
+        ]
+        for msg, reason in cases:
+            outcome, got = classify_confirm({"code": 2, "msg": msg})
+            self.assertEqual(outcome, "fail")
+            self.assertEqual(got, reason)
+
+    def test_classify_other_code_retries(self):
+        self.assertEqual(classify_confirm({"code": 2, "msg": "请稍后再试"})[0], "retry")
+        self.assertEqual(classify_confirm({"code": 5, "msg": ""})[0], "retry")
+
+    def test_terminal_reason_empty_message(self):
+        self.assertEqual(terminal_reason(""), "平台拒绝确认")
+        self.assertEqual(terminal_reason(None), "平台拒绝确认")
+
+    def test_reconcile_status_2_is_ok(self):
+        self.assertEqual(reconcile_order({"status": 2}, 5)[0], "ok")
+        self.assertEqual(reconcile_order({"status": 3}, 5)[0], "ok")
+
+    def test_reconcile_confirmed_message_is_ok(self):
+        self.assertEqual(
+            reconcile_order({"status": 0, "msg": "已接单"}, 5)[0], "ok"
         )
-        self.assertEqual(a, b)
+
+    def test_reconcile_clerk_mismatch_is_fail(self):
+        verdict, reason = reconcile_order(
+            {"status": 2, "clerkId": 99}, 5
+        )
+        self.assertEqual((verdict, reason), ("fail", "被其他人抢走"))
+
+    def test_reconcile_same_clerk_is_ok(self):
+        self.assertEqual(
+            reconcile_order({"status": 2, "clerkId": 5}, 5)[0], "ok"
+        )
+
+    def test_reconcile_no_clerk_check_when_unknown(self):
+        # Own clerk id unknown (0): a confirmed status is still ok.
+        self.assertEqual(
+            reconcile_order({"status": 2, "clerkId": 99}, 0)[0], "ok"
+        )
+
+    def test_reconcile_terminal_and_status(self):
+        self.assertEqual(
+            reconcile_order({"status": -1}, 5)[0], "fail"
+        )
+        self.assertEqual(
+            reconcile_order({"status": 0, "msg": "订单已取消"}, 5)[0], "fail"
+        )
+
+    def test_reconcile_status_0_is_pending(self):
+        self.assertEqual(reconcile_order({"status": 0}, 5)[0], "pending")
+        self.assertEqual(reconcile_order({}, 5)[0], "pending")
+
+    def test_reconcile_other_status_is_unknown(self):
+        self.assertEqual(reconcile_order({"status": 9}, 5)[0], "unknown")
+
+    def test_reconcile_picks_payload_with_status_or_msg(self):
+        # The order object wins over the top level.
+        resp = {"status": 0, "order": {"status": 2, "clerkId": 5}}
+        self.assertEqual(reconcile_order(resp, 5)[0], "ok")
+        resp = {"status": 0, "data": {"order": {"status": -1}}}
+        self.assertEqual(reconcile_order(resp, 5)[0], "fail")
+        resp = {"status": 0, "data": {"status": 3}}
+        self.assertEqual(reconcile_order(resp, 5)[0], "ok")
+
+
+class StubApiClient:
+    """Scripted stand-in for ApiClient for Engine tests.
+
+    Each method consumes one scripted entry; running out raises
+    AssertionError so unexpected calls fail the test loudly.
+    """
+
+    def __init__(self, polls, confirms, gets=None, clerk_id=5):
+        self.polls = list(polls)
+        self.confirms = list(confirms)
+        self.gets = list(gets or [])
+        self.clerk_id = clerk_id
+        self.login_calls = 0
+        self.confirm_calls = 0
+        self.get_calls = 0
+        self.session = Session(token="tok-92", sid="92")
+
+    def session_for_account(self, phone, password, shop_id=92):
+        self.login_calls += 1
+        return self.session
+
+    def clerk_get(self, session):
+        return {"clerk": {"id": self.clerk_id, "shopId": 92, "name": "店员"}}
+
+    def random_list(self, page_size=20, timeout=15):
+        if self.polls:
+            return self.polls.pop(0)
+        return []
+
+    def order_get(self, order_id, timeout=15):
+        self.get_calls += 1
+        if not self.gets:
+            raise AssertionError("unexpected order_get for %s" % order_id)
+        entry = self.gets.pop(0)
+        if isinstance(entry, Exception):
+            raise entry
+        return entry
+
+    def order_confirm(self, order_id, timeout=10):
+        self.confirm_calls += 1
+        if not self.confirms:
+            raise AssertionError("unexpected order_confirm for %s" % order_id)
+        entry = self.confirms.pop(0)
+        if isinstance(entry, Exception):
+            raise entry
+        return entry
+
+
+def _test_engine_cfg(**over):
+    cfg = cfgmod.validate(dict(cfgmod.DEFAULT_CONFIG))
+    cfg.update({
+        "poll_interval_sec": 0.05,
+        "random_confirm_window_sec": 1.0,
+        "random_confirm_fallback_sec": 1.0,
+        "confirm_retry_delay_sec": 0.05,
+        "seen_ttl_sec": 60,
+    })
+    cfg.update(over)
+    return cfg
+
+
+def _wait_stopped(engine, timeout=10.0):
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while engine.running and _time.monotonic() < deadline:
+        _time.sleep(0.02)
+    return not engine.running
+
+
+class EngineConfirmTests(unittest.TestCase):
+    def setUp(self):
+        import time as _time
+
+        self._time = _time
+
+    def _run_engine(self, stub, cfg, wait=5.0):
+        logs = []
+
+        def log(level, message):
+            logs.append((level, message))
+
+        engine = Engine(stub, cfg, log)
+        self.assertTrue(engine.start("13800138000", "secret"))
+        return engine, logs
+
+    def _order(self, **over):
+        order = {"id": "ord-1", "totalAmount": 2500, "userWechatId": "wx1",
+                 "userMemo": "", "createTime": 1760000000000}
+        order.update(over)
+        return order
+
+    def _log_text(self, logs):
+        return "\n".join(message for _, message in logs)
+
+    def test_success_first_try_stops_engine(self):
+        stub = StubApiClient(
+            polls=[[self._order()]], confirms=[{"code": 0}]
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self.assertTrue(_wait_stopped(engine), "engine did not stop after grab")
+        self.assertEqual(stub.confirm_calls, 1)
+        self.assertEqual(stub.get_calls, 0, "no detail/readback fetch on fast success")
+        self.assertIn("抢单成功", self._log_text(logs))
+
+    def test_retry_then_success(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[{"code": 2, "msg": "请稍后再试"}, {"code": 0}],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self.assertTrue(_wait_stopped(engine))
+        self.assertEqual(stub.confirm_calls, 2)
+        self.assertIn("抢单成功", self._log_text(logs))
+
+    def test_terminal_fail_keeps_listening(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[{"code": 2, "msg": "已被其他人抢走"}],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self._time.sleep(0.4)
+        self.assertTrue(engine.running, "engine should keep polling after terminal fail")
+        self.assertEqual(stub.confirm_calls, 1)
+        self.assertEqual(stub.get_calls, 0)
+        self.assertIn("被其他人抢走", self._log_text(logs))
+        engine.stop()
+        if engine.thread is not None:
+            engine.thread.join(timeout=5)
+
+    def test_auth_failure_relogs_and_ends_task(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[ApiError("auth", "login state invalid (code 401)")],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self._time.sleep(0.4)
+        self.assertTrue(engine.running)
+        self.assertEqual(stub.login_calls, 2, "expected initial login + refresh login")
+        self.assertIn("确认认证失败", self._log_text(logs))
+        engine.stop()
+        if engine.thread is not None:
+            engine.thread.join(timeout=5)
+
+    def test_ip_failure_pauses_and_ends_task(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[ApiError("ip", "IP control")],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self._time.sleep(0.4)
+        self.assertIn("确认触发IP风控", self._log_text(logs))
+        engine.stop()
+        self.assertTrue(_wait_stopped(engine))
+
+    def test_network_error_readback_ok(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[ApiError("network", "request failed: boom")],
+            gets=[{"status": 2, "clerkId": 5}],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self.assertTrue(_wait_stopped(engine))
+        self.assertEqual(stub.confirm_calls, 1)
+        self.assertEqual(stub.get_calls, 1)
+        self.assertIn("抢单成功", self._log_text(logs))
+
+    def test_readback_pending_then_retry_success(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[ApiError("network", "boom"), {"code": 0}],
+            gets=[{"status": 0}],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self.assertTrue(_wait_stopped(engine))
+        self.assertEqual(stub.confirm_calls, 2)
+        self.assertEqual(stub.get_calls, 1)
+        self.assertIn("抢单成功", self._log_text(logs))
+
+    def test_readback_unknown_stops_blind_retry(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[ApiError("network", "boom"), {"code": 0}],
+            gets=[{"status": 9, "msg": "奇怪"}],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self._time.sleep(0.4)
+        self.assertTrue(engine.running, "engine should keep polling after unknown")
+        self.assertEqual(stub.confirm_calls, 1, "no second confirm after unknown")
+        self.assertIn("停止盲重试", self._log_text(logs))
+        engine.stop()
+        if engine.thread is not None:
+            engine.thread.join(timeout=5)
+
+    def test_readback_clerk_mismatch_fails(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[ApiError("network", "boom")],
+            gets=[{"status": 2, "clerkId": 99}],
+        )
+        engine, logs = self._run_engine(stub, _test_engine_cfg())
+        self._time.sleep(0.4)
+        self.assertTrue(engine.running)
+        self.assertEqual(stub.confirm_calls, 1)
+        self.assertIn("被其他人抢走", self._log_text(logs))
+        engine.stop()
+        if engine.thread is not None:
+            engine.thread.join(timeout=5)
+
+    def test_deadline_pending_releases_order(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[{"code": 2, "msg": "稍后再试"}] * 200,
+            gets=[{"status": 0}],
+        )
+        cfg = _test_engine_cfg(
+            random_confirm_window_sec=0.3, confirm_retry_delay_sec=0.05
+        )
+        engine, logs = self._run_engine(stub, cfg)
+        deadline = self._time.monotonic() + 5
+        while "本轮确认预算耗尽" not in self._log_text(logs) and self._time.monotonic() < deadline:
+            self._time.sleep(0.02)
+        self.assertIn("本轮确认预算耗尽", self._log_text(logs))
+        self.assertNotIn("ord-1", engine._seen, "order must be released for re-poll")
+        self.assertGreater(stub.confirm_calls, 1, "expected retries inside the window")
+        engine.stop()
+        if engine.thread is not None:
+            engine.thread.join(timeout=5)
+
+    def test_deadline_final_readback_ok(self):
+        stub = StubApiClient(
+            polls=[[self._order()]],
+            confirms=[{"code": 2, "msg": "稍后再试"}] * 200,
+            gets=[{"status": 2, "clerkId": 5}],
+        )
+        cfg = _test_engine_cfg(
+            random_confirm_window_sec=0.3, confirm_retry_delay_sec=0.05
+        )
+        engine, logs = self._run_engine(stub, cfg)
+        self.assertTrue(_wait_stopped(engine))
+        self.assertIn("抢单成功", self._log_text(logs))
 
 
 class FilterTests(unittest.TestCase):
@@ -315,6 +637,38 @@ class ConfigTests(unittest.TestCase):
         bad["max_amount"] = 10.0
         with self.assertRaises(cfgmod.ConfigError):
             cfgmod.validate(bad)
+
+    def test_confirm_window_defaults(self):
+        cfg = cfgmod.validate(dict(cfgmod.DEFAULT_CONFIG))
+        self.assertEqual(cfg["random_confirm_window_sec"], 20)
+        self.assertEqual(cfg["random_confirm_fallback_sec"], 20)
+        self.assertEqual(cfg["confirm_retry_delay_sec"], 0.5)
+        self.assertNotIn("user_delay", cfg)
+
+    def test_confirm_window_ranges_rejected(self):
+        for key in ("random_confirm_window_sec", "random_confirm_fallback_sec"):
+            bad = dict(cfgmod.DEFAULT_CONFIG)
+            bad[key] = 0.05
+            with self.assertRaises(cfgmod.ConfigError):
+                cfgmod.validate(bad)
+            bad = dict(cfgmod.DEFAULT_CONFIG)
+            bad[key] = 90000
+            with self.assertRaises(cfgmod.ConfigError):
+                cfgmod.validate(bad)
+        bad = dict(cfgmod.DEFAULT_CONFIG)
+        bad["confirm_retry_delay_sec"] = -1
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.validate(bad)
+        bad = dict(cfgmod.DEFAULT_CONFIG)
+        bad["confirm_retry_delay_sec"] = 61
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.validate(bad)
+
+    def test_legacy_user_delay_dropped(self):
+        old = dict(cfgmod.DEFAULT_CONFIG)
+        old["user_delay"] = 3
+        cfg = cfgmod.validate(old)
+        self.assertNotIn("user_delay", cfg)
 
 
 if __name__ == "__main__":

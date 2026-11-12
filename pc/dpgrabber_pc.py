@@ -7,8 +7,10 @@ Smoke: python3 dpgrabber_pc.py --smoke-test   (opens the window briefly
 Tests: python3 -m unittest discover -s tests -v
 
 The program logs in with phone + password (PROTOCOL.md section 3.2),
-polls the order hall, filters orders and submits a grab at the precise
-time (reTime + confirmCountDown, section 8.1). No real account, token or
+polls the order hall, filters orders and confirms a passing order with
+DPGrabber's confirm state machine (section 8): submit immediately inside
+a 20 s window, retry every 0.5 s until the deadline, reconcile with
+order/get when the result is uncertain. No real account, token or
 password is shipped in code; the config file is created empty on first
 run and filled in by the user.
 """

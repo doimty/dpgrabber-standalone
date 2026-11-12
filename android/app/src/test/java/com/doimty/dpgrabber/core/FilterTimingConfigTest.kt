@@ -100,48 +100,171 @@ class OrderFilterTest {
     }
 }
 
-class GrabTimingTest {
-    private fun order(reTime: Any?, countdown: Any?): JSONObject {
+class ConfirmLogicTest {
+    private fun order(createTime: Any?): JSONObject {
         val o = JSONObject()
-        if (reTime != null) o.put("reTime", reTime)
-        if (countdown != null) o.put("confirmCountDown", countdown)
+        if (createTime != null) o.put("createTime", createTime)
         return o
     }
 
     @Test
-    fun `grab time is reTime plus countdown`() {
-        // reTime = 1_700_000_000_000 ms, countdown 5 s, now = reTime/1000 - 3 s
-        val grab = computeGrabWait(order(1_700_000_000_000L, 5), 1_700_000_000.0 - 3.0)
-        assertEquals(8.0, grab.waitSeconds, 0.001)
-        assertEquals(1_700_000_005_000L, grab.grabEpochMs)
-        assertEquals(GrabWait.Reason.OK, grab.reason)
+    fun `budget uses window with createTime`() {
+        assertEquals(30.0, confirmBudgetSeconds(order(1_700_000_000_000L), 30.0, 20.0), 0.001)
+        // createTime in seconds still counts as present.
+        assertEquals(30.0, confirmBudgetSeconds(order(1_700_000_000), 30.0, 20.0), 0.001)
     }
 
     @Test
-    fun `already open when grab time passed`() {
-        val grab = computeGrabWait(order(1_700_000_000_000L, 5), 1_700_000_010.0)
-        assertEquals(0.0, grab.waitSeconds, 0.001)
-        assertEquals(GrabWait.Reason.ALREADY_OPEN, grab.reason)
+    fun `budget uses fallback without createTime`() {
+        assertEquals(20.0, confirmBudgetSeconds(JSONObject(), 30.0, 20.0), 0.001)
+        assertEquals(20.0, confirmBudgetSeconds(order(0), 30.0, 20.0), 0.001)
     }
 
     @Test
-    fun `missing reTime grabs immediately`() {
-        val grab = computeGrabWait(order(null, 5), 1_700_000_000.0)
-        assertEquals(0.0, grab.waitSeconds, 0.001)
-        assertEquals(GrabWait.Reason.MISSING_FIELDS, grab.reason)
+    fun `budget invalid value falls back to 20`() {
+        assertEquals(20.0, confirmBudgetSeconds(order(1), 0.0, 0.0), 0.001)
+        assertEquals(20.0, confirmBudgetSeconds(order(1), -5.0, 20.0), 0.001)
     }
 
     @Test
-    fun `missing countdown grabs immediately`() {
-        val grab = computeGrabWait(order(1_700_000_000_000L, null), 1_700_000_000.0)
-        assertEquals(GrabWait.Reason.MISSING_FIELDS, grab.reason)
+    fun `classify code zero wins`() {
+        assertEquals(
+            ConfirmOutcome.OK,
+            classifyConfirm(TestKit.plain("code" to 0, "msg" to "已被抢")).outcome
+        )
     }
 
     @Test
-    fun `seconds timestamps are normalized to ms`() {
-        // reTime given in seconds (1.7e9) -> normalized to ms.
-        val grab = computeGrabWait(order(1_700_000_000, 5), 1_700_000_000.0 - 3.0)
-        assertEquals(8.0, grab.waitSeconds, 0.001)
+    fun `classify confirmed words`() {
+        for (msg in listOf("已接单", "已确认", "接单成功", "确认成功")) {
+            assertEquals(
+                ConfirmOutcome.OK,
+                classifyConfirm(TestKit.plain("code" to 2, "msg" to msg)).outcome
+            )
+        }
+    }
+
+    @Test
+    fun `classify terminal words and reasons`() {
+        val cases = mapOf(
+            "已被其他人抢走" to "被其他人抢走",
+            "订单已取消" to "已取消",
+            "订单不存在" to "订单不存在",
+            "无确认权限" to "无确认权限",
+            "订单已失效" to "订单已失效",
+            "确认超时" to "确认超时"
+        )
+        for ((msg, reason) in cases) {
+            val result = classifyConfirm(TestKit.plain("code" to 2, "msg" to msg))
+            assertEquals(ConfirmOutcome.FAIL, result.outcome)
+            assertEquals(reason, result.reason)
+        }
+    }
+
+    @Test
+    fun `classify other code retries`() {
+        assertEquals(
+            ConfirmOutcome.RETRY,
+            classifyConfirm(TestKit.plain("code" to 2, "msg" to "请稍后再试")).outcome
+        )
+        assertEquals(
+            ConfirmOutcome.RETRY,
+            classifyConfirm(TestKit.plain("code" to 5, "msg" to "")).outcome
+        )
+    }
+
+    @Test
+    fun `terminal reason empty message`() {
+        assertEquals("平台拒绝确认", terminalReason(""))
+        assertEquals("平台拒绝确认", terminalReason(null))
+    }
+
+    @Test
+    fun `reconcile status 2 and 3 are ok`() {
+        assertEquals(
+            ReconcileVerdict.OK,
+            reconcileOrder(TestKit.plain("status" to 2), 5).verdict
+        )
+        assertEquals(
+            ReconcileVerdict.OK,
+            reconcileOrder(TestKit.plain("status" to 3), 5).verdict
+        )
+    }
+
+    @Test
+    fun `reconcile clerk mismatch fails`() {
+        val result = reconcileOrder(TestKit.plain("status" to 2, "clerkId" to 99), 5)
+        assertEquals(ReconcileVerdict.FAIL, result.verdict)
+        assertEquals("被其他人抢走", result.reason)
+    }
+
+    @Test
+    fun `reconcile same clerk is ok`() {
+        assertEquals(
+            ReconcileVerdict.OK,
+            reconcileOrder(TestKit.plain("status" to 2, "clerkId" to 5), 5).verdict
+        )
+    }
+
+    @Test
+    fun `reconcile no clerk check when own id unknown`() {
+        assertEquals(
+            ReconcileVerdict.OK,
+            reconcileOrder(TestKit.plain("status" to 2, "clerkId" to 99), 0).verdict
+        )
+    }
+
+    @Test
+    fun `reconcile terminal and status`() {
+        assertEquals(
+            ReconcileVerdict.FAIL,
+            reconcileOrder(TestKit.plain("status" to -1), 5).verdict
+        )
+        assertEquals(
+            ReconcileVerdict.FAIL,
+            reconcileOrder(TestKit.plain("status" to 0, "msg" to "订单已取消"), 5).verdict
+        )
+    }
+
+    @Test
+    fun `reconcile status 0 is pending`() {
+        assertEquals(
+            ReconcileVerdict.PENDING,
+            reconcileOrder(TestKit.plain("status" to 0), 5).verdict
+        )
+        assertEquals(
+            ReconcileVerdict.PENDING,
+            reconcileOrder(JSONObject(), 5).verdict
+        )
+    }
+
+    @Test
+    fun `reconcile other status is unknown`() {
+        assertEquals(
+            ReconcileVerdict.UNKNOWN,
+            reconcileOrder(TestKit.plain("status" to 9), 5).verdict
+        )
+    }
+
+    @Test
+    fun `reconcile picks payload with status or msg`() {
+        val fromOrder = TestKit.plain(
+            "status" to 0,
+            "order" to JSONObject().apply { put("status", 2); put("clerkId", 5) }
+        )
+        assertEquals(ReconcileVerdict.OK, reconcileOrder(fromOrder, 5).verdict)
+        val fromDataOrder = TestKit.plain(
+            "status" to 0,
+            "data" to JSONObject().apply {
+                put("order", JSONObject().apply { put("status", -1) })
+            }
+        )
+        assertEquals(ReconcileVerdict.FAIL, reconcileOrder(fromDataOrder, 5).verdict)
+        val fromData = TestKit.plain(
+            "status" to 0,
+            "data" to JSONObject().apply { put("status", 3) }
+        )
+        assertEquals(ReconcileVerdict.OK, reconcileOrder(fromData, 5).verdict)
     }
 }
 
@@ -152,7 +275,9 @@ class ConfigTest {
         assertEquals(92, cfg.shopId)
         assertEquals(10.0, cfg.minAmount, 0.001)
         assertEquals(0.0, cfg.maxAmount, 0.001)
-        assertEquals(0, cfg.userDelaySec)
+        assertEquals(20.0, cfg.randomConfirmWindowSec, 0.001)
+        assertEquals(20.0, cfg.randomConfirmFallbackSec, 0.001)
+        assertEquals(0.5, cfg.confirmRetryDelaySec, 0.001)
         assertEquals(0.5, cfg.pollIntervalSec, 0.001)
         assertEquals(0, cfg.memoMode)
         assertEquals(15.0, cfg.requestTimeoutSec, 0.001)
@@ -189,6 +314,36 @@ class ConfigTest {
             assertTrue("expected failure", false)
         } catch (e: IllegalArgumentException) {
             assertNotNull(e)
+        }
+    }
+
+    @Test
+    fun `validate rejects out of range confirm windows`() {
+        for (bad in listOf(0.05, 90000.0)) {
+            try {
+                AppConfig(randomConfirmWindowSec = bad).validate()
+                assertTrue("expected failure", false)
+            } catch (e: IllegalArgumentException) {
+                assertNotNull(e)
+            }
+            try {
+                AppConfig(randomConfirmFallbackSec = bad).validate()
+                assertTrue("expected failure", false)
+            } catch (e: IllegalArgumentException) {
+                assertNotNull(e)
+            }
+        }
+    }
+
+    @Test
+    fun `validate rejects out of range retry delay`() {
+        for (bad in listOf(-1.0, 61.0)) {
+            try {
+                AppConfig(confirmRetryDelaySec = bad).validate()
+                assertTrue("expected failure", false)
+            } catch (e: IllegalArgumentException) {
+                assertNotNull(e)
+            }
         }
     }
 

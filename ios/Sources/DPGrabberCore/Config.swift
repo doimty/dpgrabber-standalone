@@ -45,8 +45,13 @@ public struct DPGConfig: Codable, Equatable {
     public var minAmount: Double = 10.0
     /// Yuan; 0 means no upper limit.
     public var maxAmount: Double = 0.0
-    /// Extra seconds to wait before submitting, after the precise wait.
-    public var userDelay: Int = 0
+    /// Confirm window (seconds) for a random order that has a createTime
+    /// (DPGConfirmationTask deadlineForOrderAtWall).
+    public var randomConfirmWindowSec: Double = 20
+    /// Confirm window (seconds) for a random order without a createTime.
+    public var randomConfirmFallbackSec: Double = 20
+    /// Delay (seconds) between confirm retries inside the window.
+    public var confirmRetryDelaySec: Double = 0.5
     /// Delay between empty polls (reference tool ListenDelay default).
     public var pollIntervalSec: Double = 0.5
     /// 0 = ignore memos, 1 = drop orders that have any memo.
@@ -76,7 +81,9 @@ public struct DPGConfig: Codable, Equatable {
         case shopID = "shop_id"
         case minAmount = "min_amount"
         case maxAmount = "max_amount"
-        case userDelay = "user_delay"
+        case randomConfirmWindowSec = "random_confirm_window_sec"
+        case randomConfirmFallbackSec = "random_confirm_fallback_sec"
+        case confirmRetryDelaySec = "confirm_retry_delay_sec"
         case pollIntervalSec = "poll_interval_sec"
         case memoMode = "memo_mode"
         case memoKeywords = "memo_keywords"
@@ -123,7 +130,9 @@ public struct DPGConfig: Codable, Equatable {
         cfg.shopID = decode(Int.self, "shop_id", 92)
         cfg.minAmount = decode(Double.self, "min_amount", 10.0)
         cfg.maxAmount = decode(Double.self, "max_amount", 0.0)
-        cfg.userDelay = decode(Int.self, "user_delay", 0)
+        cfg.randomConfirmWindowSec = decode(Double.self, "random_confirm_window_sec", 20)
+        cfg.randomConfirmFallbackSec = decode(Double.self, "random_confirm_fallback_sec", 20)
+        cfg.confirmRetryDelaySec = decode(Double.self, "confirm_retry_delay_sec", 0.5)
         cfg.pollIntervalSec = decode(Double.self, "poll_interval_sec", 0.5)
         cfg.memoMode = decode(Int.self, "memo_mode", 0)
         cfg.memoKeywords = decode([String].self, "memo_keywords", [])
@@ -161,7 +170,15 @@ public struct DPGConfig: Codable, Equatable {
         guard cfg.maxAmount == 0 || cfg.maxAmount >= cfg.minAmount else {
             throw ConfigError("max_amount must be 0 (unlimited) or >= min_amount")
         }
-        guard cfg.userDelay >= 0 else { throw ConfigError("user_delay must not be negative") }
+        guard cfg.randomConfirmWindowSec >= 0.1, cfg.randomConfirmWindowSec <= 86400 else {
+            throw ConfigError("random_confirm_window_sec must be between 0.1 and 86400")
+        }
+        guard cfg.randomConfirmFallbackSec >= 0.1, cfg.randomConfirmFallbackSec <= 86400 else {
+            throw ConfigError("random_confirm_fallback_sec must be between 0.1 and 86400")
+        }
+        guard cfg.confirmRetryDelaySec >= 0, cfg.confirmRetryDelaySec <= 60 else {
+            throw ConfigError("confirm_retry_delay_sec must be between 0 and 60")
+        }
         guard cfg.pollIntervalSec > 0 else { throw ConfigError("poll_interval_sec must be positive") }
         guard cfg.memoMode == 0 || cfg.memoMode == 1 else {
             throw ConfigError("memo_mode must be 0 (ignore memos) or 1 (drop memo orders)")

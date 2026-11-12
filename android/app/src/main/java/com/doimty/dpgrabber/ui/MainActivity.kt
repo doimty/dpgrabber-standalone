@@ -106,7 +106,6 @@ class MainActivity : AppCompatActivity() {
         binding.passwordInput.setText(store.loadPassword())
         binding.minAmountInput.setText(trimNumber(config.minAmount))
         binding.maxAmountInput.setText(trimNumber(config.maxAmount))
-        binding.userDelayInput.setText(config.userDelaySec.toString())
         binding.pollIntervalInput.setText(trimNumber(config.pollIntervalSec))
         binding.memoModeSpinner.setSelection(config.memoMode.coerceIn(0, 1))
         binding.memoKeywordsInput.setText(config.memoKeywords.joinToString("\n"))
@@ -125,8 +124,6 @@ class MainActivity : AppCompatActivity() {
                 ?: throw IllegalArgumentException("最低金额必须是数字"),
             maxAmount = binding.maxAmountInput.text.toString().toDoubleOrNull()
                 ?: throw IllegalArgumentException("最高金额必须是数字"),
-            userDelaySec = binding.userDelayInput.text.toString().toIntOrNull()
-                ?: throw IllegalArgumentException("延时必须是整数"),
             pollIntervalSec = binding.pollIntervalInput.text.toString().toDoubleOrNull()
                 ?: throw IllegalArgumentException("轮询间隔必须是数字"),
             memoMode = binding.memoModeSpinner.selectedItemPosition,

@@ -19,6 +19,10 @@
 | 轮询接口 | `GET /s/c/order/randomList?pageNo=1&pageSize=20` | `GET /s/c/order/randomList?pageNo=1&pageSize=10` |
 | 轮询间隔 | 均匀随机 2–3 s（默认） | 固定 `ListenDelay`，默认 0.5 s；命中订单后立即重 poll |
 | 抢单时机 | 窗口内立即发、0.5 s 重试至截止 | 等到 `reTime + confirmCountDown` 精确时刻，单次提交 |
+
+> **独立版三端（PC / Android / iOS）采用 DPGrabber 的抢单模型**（上表左列，
+> 详见 §8.2 的确认状态机），**不采用** PC 参考工具的精确时刻等待（§8.1，仅作
+> 资料记录）。独立版也不用 `user_delay`（已删除）。
 | AES | AES-256-CBC，key 32 字节 | AES-128-CBC，key 16 字节（key/IV 均可配） |
 | 过滤 | 仅最低金额 | 金额上下限、备注模式、备注关键词、黑名单微信号 |
 | 去重 | 有（seen 集合 + TTL） | 无 |
@@ -147,6 +151,8 @@
 - PC 工具：POST，`id` 在 URL 查询串中，无请求体，超时 10 s
   （`DP.py:885-887`）。响应解密后要求 `code == 0`，否则返回失败
   （`DP.py:895-898`）。
+- 独立版三端：只用 GET 形式，**仅作确认核验**（§8.2 的 Readback / Final
+  步骤，超时 15 s）；命中订单后不再调详情接口取时间、不做精确等待。
 - 详情对象取自解密后 `text['order']`（PC，`DP.py:901`）；DPGrabber 核验时按
   `response["order"]`、`data["order"]`、`data`、响应顶层的顺序取第一个含
   `status` 或 `msg` 的字典（`DPGEngine.m:1153-1157`）。
@@ -510,9 +516,13 @@ return decrypted.decode('utf-8')
 - 其余“过滤”由确认调度器承担：容量上限、每类并发上限、去重、终态记忆、
   会话范围校验（订单须属于当前 sid，见 §8.2）。
 
-## 8. 精确抢单时机与抢单提交
+## 8. 抢单时机与抢单提交
 
 ### 8.1 PC 工具：精确时刻等待（`DP.py:879-938`，`get_new_order_title`）
+
+> 本节只记录 PC 参考工具的做法。**独立版三端不采用本节逻辑**：不读
+> `reTime` / `confirmCountDown`，不算精确时刻，不做用户延时（`user_delay`
+> 已删除），命中后立即开始 §8.2 的确认任务。
 
 流程（在 `handle_order` 通过全部过滤后执行）：
 
@@ -550,7 +560,7 @@ DPGrabber **不读取 `reTime` 与 `confirmCountDown`**（全源码无命中）�
 - 开始时间（仅指定单）：`createTime/1000 + 2` 秒，未到则等待
   （`DPGEngine.m` `stepInit`）；大厅单无此等待，立即进入循环。
 - 循环内（`stepLoop`）：每次发送前取全局发送位（两次发送间隔至少
-  `confirm_retry_delay_sec`，默认 0.5 s，下限 0.5 s）；发送后按 §8.3 分类；
+  `confirm_retry_delay_sec`，默认 0.5 s，可配 0–60 s）；发送后按 §8.3 分类；
   非终态则 `readyAt = min(截止, 当前 + confirm_retry_delay_sec)` 后重试，
   直至截止。
 - 截止后（`stepFinal`）：用 `order/get` 核验一次（§8.3）；仍待确认时，
@@ -560,6 +570,15 @@ DPGrabber **不读取 `reTime` 与 `confirmCountDown`**（全源码无命中）�
 - 并发：每类订单并发上限默认大厅 2、指定 1（配置 `limits`，每类 1–4，
   总线程 ≤ 8）；待确认任务容量默认 8（配置 `confirm_capacity`，1–128）
   （`DPGEngine.m` 调度器初始化）。
+
+> **独立版实现（与 DPGrabber 原版的出入）**：只做大厅单（random），不做
+> 指定单；**单任务串行**（一次只处理一个订单，不移植 8 并发容量与每类
+> 并发上限）；无调度器发送位 pacing（串行 + 0.5 s 重试间隔已覆盖）；
+> 无店铺会话范围校验（单账号引擎；会话刷新只在任务之间或认证失败时
+> 发生，认证失败即结束任务）；无共享 IP 冷却/会话刷新状态机
+> （认证/IP 在调用点处理：401/403 → 释放订单 + 重登，任务结束；
+> IP → 暂停 60 s、不重登，任务结束）；`order/get` 用 GET 形式（与
+> DPGrabber 核验一致，PC 工具的 POST 形式不用）。
 
 ### 8.3 抢单提交与返回码
 
@@ -633,7 +652,7 @@ DPGrabber **不读取 `reTime` 与 `confirmCountDown`**（全源码无命中）�
 | `random_confirm_window_sec` | `20` | 大厅单确认窗口（秒） |
 | `random_confirm_fallback_sec` | `20` | 无 createTime 时的大厅单确认窗口（秒） |
 | `assigned_confirm_window_sec` | `660` | 指定单确认窗口（秒） |
-| `confirm_retry_delay_sec` | `0.5` | 确认重试间隔（秒），下限 0.5 |
+| `confirm_retry_delay_sec` | `0.5` | 确认重试间隔（秒），0–60 |
 | `request_timeout_sec` | `15` | 轮询请求超时（秒），0.1–60 |
 | `api_version` | `"202501071"` | 随请求发送的 `api-version` 头 |
 | `confirm_capacity` | `8` | 待确认任务容量，1–128 |
@@ -641,6 +660,10 @@ DPGrabber **不读取 `reTime` 与 `confirmCountDown`**（全源码无命中）�
 
 - 配置文件位置：App 容器 `Application Support/DPGrabberNative/config.json`，
   目录 0700、文件 0600（`DPGConfigStore.m`）。
+- 独立版三端只用上表的大厅单三键（`random_confirm_window_sec` /
+  `random_confirm_fallback_sec` / `confirm_retry_delay_sec`）与通用键
+  （轮询间隔、超时等）；`assigned_*`、`confirm_capacity`、`limits` 不实现，
+  单任务串行；`user_delay` 已删除（旧配置文件里的该键会被忽略）。
 - 校验规则见 `DPGConfigStore.m` `validatedConfiguration`（含各键取值范围、
   `interval_max >= interval_min`、`limits` 总和 ≤ 8 且须含 `random` 等）。
 - 另可导入旧版配置（`importLegacyConfigurationAtPath`），含单账号的
@@ -682,6 +705,9 @@ DPGrabber **不读取 `reTime` 与 `confirmCountDown`**（全源码无命中）�
   会直接转化为抢单时刻偏差；源码中无任何时钟同步或偏差补偿。
 - DPGrabber 的窗口计算混用墙钟（截止时间）与单调时钟（内部调度），
   但不依赖服务端倒计时，故不受该偏差影响。
+- 独立版三端同样不依赖服务端倒计时：确认截止用单调时钟
+  （任务开始 + 预算），只用 `createTime` 是否存在选择窗口还是兜底窗口，
+  不读 `reTime` / `confirmCountDown`。
 
 ### 10.5 订单 `status` 语义
 

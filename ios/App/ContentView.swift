@@ -118,8 +118,6 @@ struct ContentView: View {
             .disableAutocorrection(true)
             Stepper("检查间隔：\(String(format: "%.1f", viewModel.config.pollIntervalSec)) 秒",
                     value: $viewModel.config.pollIntervalSec, in: 0.1...10, step: 0.1)
-            Stepper("抢单延时：\(viewModel.config.userDelay) 秒",
-                    value: $viewModel.config.userDelay, in: 0...30, step: 1)
             Toggle("语音播报", isOn: $viewModel.config.voiceEnabled)
         }
     }

@@ -3,12 +3,16 @@ package com.doimty.dpgrabber.engine
 import com.doimty.dpgrabber.core.ApiClient
 import com.doimty.dpgrabber.core.ApiError
 import com.doimty.dpgrabber.core.AppConfig
+import com.doimty.dpgrabber.core.ConfirmOutcome
 import com.doimty.dpgrabber.core.OrderFilter
+import com.doimty.dpgrabber.core.ReconcileResult
+import com.doimty.dpgrabber.core.ReconcileVerdict
 import com.doimty.dpgrabber.core.amountYuanFromCents
-import com.doimty.dpgrabber.core.computeGrabWait
-import com.doimty.dpgrabber.core.normalizeMs
+import com.doimty.dpgrabber.core.classifyConfirm
+import com.doimty.dpgrabber.core.confirmBudgetSeconds
 import com.doimty.dpgrabber.core.orderFilterFromConfig
 import com.doimty.dpgrabber.core.orderIdOf
+import com.doimty.dpgrabber.core.reconcileOrder
 import com.doimty.dpgrabber.core.toMap
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -21,7 +25,7 @@ enum class LogLevel { INFO, WARNING, ERROR, SUCCESS, DEBUG }
 /**
  * Listening engine (PROTOCOL.md sections 6-8, mirroring PC engine.py).
  *
- * One worker thread: poll -> filter -> precise grab time -> submit.
+ * One worker thread: poll -> filter -> confirm task -> submit.
  *
  * Flow per round:
  * 1. GET /s/c/order/randomList (page 1, 20 orders).
@@ -30,17 +34,25 @@ enum class LogLevel { INFO, WARNING, ERROR, SUCCESS, DEBUG }
  * 4. Filters, in order (section 7.1): missing amount/id, blacklist
  *    WeChat id, min amount, max amount (0 = unlimited), memo mode,
  *    memo keywords (case-insensitive substring).
- * 5. Passed -> precise grab time (section 8.1): POST /s/c/order/get,
- *    grab_time = reTime + confirmCountDown; wait in 0.1 s steps
- *    (stoppable); then the user delay in 1 s steps (stoppable); then
- *    POST /s/c/order/confirm once. Success stops the whole listen loop.
+ * 5. Passed -> confirm task (section 8.2, DPGConfirmationTask): the task
+ *    starts immediately (no precise wait, no reTime / confirmCountDown,
+ *    no user delay) and loops POST /s/c/order/confirm until the window
+ *    deadline (random_confirm_window_sec, default 20 s from the task
+ *    start, or random_confirm_fallback_sec when the order has no
+ *    createTime), retrying every confirm_retry_delay_sec (default
+ *    0.5 s). Each response is classified: code 0 or a confirmed message
+ *    -> success (stops the whole listen loop); a terminal message ->
+ *    fail; 401/403 -> re-login; IP control -> pause 60 s; no response ->
+ *    verify with GET /s/c/order/get (readback) instead of blind retry.
+ *    At the deadline the order is verified once more; still pending ->
+ *    released back to polling so a later round can pick it up again.
  * 6. On 401/403 the session is re-established with the saved account
  *    (manual-mode refresh, section 3.2 step 5); on IP control the loop
  *    pauses 60 s; other errors wait one poll interval and continue.
  *
  * Pure Kotlin: no Android framework use. Progress is reported through
- * [log] and [onStateChange]. `nowEpochMs` is injectable so the precise
- * wait math is unit-testable.
+ * [log] and [onStateChange]. `nowEpochMs` is injectable so the de-dup
+ * math is unit-testable.
  */
 class ListenEngine(
     private val client: ApiClient,
@@ -206,73 +218,174 @@ class ListenEngine(
                 log(LogLevel.INFO, "订单不符合要求：$reason")
                 continue // re-poll immediately, as the reference tool does
             }
-            if (handleOrder(order, orderId)) return
+            if (handleOrder(order, orderId, phone, password)) return
         }
     }
 
-    /**
-     * Precise grab for one passing order. Returns true when the grab
-     * succeeded (the caller stops the whole listen loop).
-     */
-    fun handleOrder(order: JSONObject, orderId: String): Boolean {
-        // 1. Precise grab time (section 8.1).
-        var wait = 0.0
-        var grabMs: Long? = null
-        var reason = com.doimty.dpgrabber.core.GrabWait.Reason.MISSING_FIELDS
-        try {
-            val detail = client.orderGet(orderId, timeoutSec = 10.0)
-            if (detail.optInt("code", -1) != 0) {
-                log(LogLevel.WARNING, "订单详情读取失败：${detail.optString("msg", "")}")
-                return false
-            }
-            val inner = detail.optJSONObject("order") ?: detail
-            val grab = computeGrabWait(inner, nowEpochMs() / 1000.0)
-            wait = grab.waitSeconds
-            grabMs = grab.grabEpochMs
-            reason = grab.reason
-            val createMs = normalizeMs(inner.opt("createTime"))
-            if (createMs > 0) {
-                log(LogLevel.DEBUG, "订单创建时间：${formatTime(createMs)}")
-            }
-            if (reason == com.doimty.dpgrabber.core.GrabWait.Reason.OK && grabMs != null) {
-                log(LogLevel.INFO, "准确抢单时间：${formatTime(grabMs)}，等待 %.1f 秒".format(wait))
-            }
-        } catch (e: ApiError) {
-            if (e.kind == ApiError.Kind.AUTH) {
-                log(LogLevel.WARNING, "登录态失效，订单详情未读取")
-                return false
-            }
-            log(LogLevel.WARNING, "订单详情读取失败：${e.messageText}")
-            return false
-        }
-        if (wait > 0 && !sleepInterruptible(wait)) return false
-        // 2. User delay (reference tool: 1 s steps, stoppable).
-        if (config.userDelaySec > 0) {
-            log(LogLevel.INFO, "等待用户延时 ${config.userDelaySec} 秒")
-            if (!sleepInterruptible(config.userDelaySec.toDouble())) return false
-        }
-        // 3. Submit once (no retry in the reference flow).
+    /** Drop an order from the seen set so a later poll round can pick it
+     * up again (DPGConfirmationTask releaseForRetry). */
+    private fun releaseSeen(orderId: String) {
+        if (orderId.isNotEmpty()) seen.remove(orderId)
+    }
+
+    private fun ownClerkId(): Int {
         return try {
-            val result = client.orderConfirm(orderId, timeoutSec = 10.0)
-            if (result.optInt("code", -1) == 0) {
-                log(
-                    LogLevel.SUCCESS,
-                    "抢单成功，请去查看订单，金额 %.2f 元".format(
-                        amountYuanFromCents(order.opt("totalAmount"))
+            clerk?.optInt("id", 0) ?: 0
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    /** One order/get verification (reconcileWithSession). Any API failure
+     * means the result is unknown. */
+    private fun readback(orderId: String): ReconcileResult {
+        return try {
+            val response = client.orderGet(orderId, timeoutSec = 15.0)
+            reconcileOrder(response, ownClerkId())
+        } catch (e: ApiError) {
+            log(LogLevel.WARNING, "订单状态查询失败 id=$orderId：${e.messageText}")
+            ReconcileResult(ReconcileVerdict.UNKNOWN, "")
+        }
+    }
+
+    private fun grabSuccess(order: JSONObject, orderId: String, confirmCalls: Int): Boolean {
+        val number = order.optString("no", "").ifEmpty { orderId }
+        log(
+            LogLevel.SUCCESS,
+            "✓ 确认成功: $number (id=$orderId) confirm_calls=$confirmCalls"
+        )
+        log(
+            LogLevel.SUCCESS,
+            "抢单成功，请去查看订单，金额 %.2f 元".format(
+                amountYuanFromCents(order.opt("totalAmount"))
+            )
+        )
+        stopFlag.set(true)
+        return true
+    }
+
+    private fun sleepRetry(deadlineMonoNs: Long): Boolean {
+        val delaySec = config.confirmRetryDelaySec
+        val remainingSec = (deadlineMonoNs - System.nanoTime()) / 1_000_000_000.0
+        return sleepInterruptible(minOf(delaySec, maxOf(0.0, remainingSec)))
+    }
+
+    /**
+     * One confirm task (DPGConfirmationTask Init -> Loop -> Final /
+     * Readback -> Done). Starts immediately; loops confirm until the
+     * window deadline. Returns true when the grab succeeded (the caller
+     * stops the whole listen loop).
+     */
+    fun handleOrder(order: JSONObject, orderId: String, phone: String, password: String): Boolean {
+        val budget = confirmBudgetSeconds(
+            order, config.randomConfirmWindowSec, config.randomConfirmFallbackSec
+        )
+        val startedMonoNs = System.nanoTime()
+        val deadlineMonoNs = startedMonoNs + (budget * 1_000_000_000L).toLong()
+        val amount = amountYuanFromCents(order.opt("totalAmount"))
+        val number = order.optString("no", "").ifEmpty { orderId }
+        log(LogLevel.INFO, "尝试接单 $number ￥%.2f".format(amount))
+        var confirmCalls = 0
+        while (!stopFlag.get()) {
+            val remainingNs = deadlineMonoNs - System.nanoTime()
+            if (remainingNs <= 0) break
+            val timeoutSec = minOf(
+                config.requestTimeoutSec,
+                maxOf(0.1, remainingNs / 1_000_000_000.0)
+            )
+            val result: JSONObject
+            try {
+                confirmCalls++
+                result = client.orderConfirm(orderId, timeoutSec = timeoutSec)
+            } catch (e: ApiError) {
+                when (e.kind) {
+                    ApiError.Kind.AUTH -> {
+                        releaseSeen(orderId)
+                        log(LogLevel.WARNING, "确认认证失败，等待账号单飞刷新: $number")
+                        refreshSession(phone, password)
+                        return false
+                    }
+                    ApiError.Kind.IP -> {
+                        releaseSeen(orderId)
+                        log(LogLevel.WARNING, "确认触发IP风控，账号共享暂停60s，不重登录")
+                        sleepInterruptible(60.0)
+                        return false
+                    }
+                    ApiError.Kind.CANCELLED -> return false
+                    else -> {
+                        // No response (network / undecodable): verify
+                        // instead of blind retry.
+                        val checked = readback(orderId)
+                        when (checked.verdict) {
+                            ReconcileVerdict.OK ->
+                                return grabSuccess(order, orderId, confirmCalls)
+                            ReconcileVerdict.FAIL -> {
+                                log(
+                                    LogLevel.WARNING,
+                                    "✗ 状态查询确认终态失败: ${checked.reason}"
+                                )
+                                return false
+                            }
+                            ReconcileVerdict.PENDING -> {
+                                if (!sleepRetry(deadlineMonoNs)) return false
+                                continue
+                            }
+                            ReconcileVerdict.UNKNOWN -> {
+                                log(LogLevel.WARNING, "⚠ 确认结果未知，停止盲重试: $number")
+                                return false
+                            }
+                        }
+                    }
+                }
+            }
+            val classification = classifyConfirm(result)
+            when (classification.outcome) {
+                ConfirmOutcome.OK ->
+                    return grabSuccess(order, orderId, confirmCalls)
+                ConfirmOutcome.FAIL -> {
+                    log(
+                        LogLevel.WARNING,
+                        "✗ 确认终态失败 $number: ${classification.reason}"
                     )
-                )
-                stopFlag.set(true)
-                true
-            } else {
+                    return false
+                }
+                ConfirmOutcome.RETRY -> {
+                    log(
+                        LogLevel.INFO,
+                        "[confirm] retry $number confirm_calls=$confirmCalls " +
+                            "reason=${classification.reason}"
+                    )
+                    if (!sleepRetry(deadlineMonoNs)) return false
+                }
+            }
+        }
+        // Deadline reached: one final verification (stepFinal).
+        val final = readback(orderId)
+        return when (final.verdict) {
+            ReconcileVerdict.OK ->
+                grabSuccess(order, orderId, confirmCalls)
+            ReconcileVerdict.FAIL -> {
                 log(
                     LogLevel.WARNING,
-                    "抢单未成功：${result.optString("msg", result.optString("message", ""))}"
+                    "✗ 窗口结束，订单已不可确认: $number confirm_calls=$confirmCalls"
                 )
                 false
             }
-        } catch (e: ApiError) {
-            log(LogLevel.ERROR, "抢单请求失败：${e.messageText}")
-            false
+            ReconcileVerdict.PENDING -> {
+                releaseSeen(orderId)
+                log(
+                    LogLevel.INFO,
+                    "↻ 本轮确认预算耗尽，订单仍待确认: $number confirm_calls=$confirmCalls"
+                )
+                false
+            }
+            ReconcileVerdict.UNKNOWN -> {
+                log(
+                    LogLevel.WARNING,
+                    "⚠ 窗口结束，确认结果未知: $number confirm_calls=$confirmCalls"
+                )
+                false
+            }
         }
     }
 

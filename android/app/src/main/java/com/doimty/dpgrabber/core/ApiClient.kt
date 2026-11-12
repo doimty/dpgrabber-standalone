@@ -390,13 +390,14 @@ class ApiClient(
     }
 
     /**
-     * POST /s/c/order/get?id=... (PC tool form, used for the precise grab
-     * time). Returns the decoded dict; the order object is in `order`.
+     * GET /s/c/order/get?id=... (DPGrabber reconcile form, used to verify
+     * a confirm result whose response never arrived). Returns the decoded
+     * dict; the order object is in `order`.
      */
     @Throws(ApiError::class)
-    fun orderGet(orderId: String, timeoutSec: Double = 10.0): JSONObject {
+    fun orderGet(orderId: String, timeoutSec: Double = 15.0): JSONObject {
         val path = "/s/c/order/get?id=${percentEncode(orderId)}"
-        return request("POST", path, timeoutSec = timeoutSec)
+        return request("GET", path, timeoutSec = timeoutSec)
     }
 
     /** POST /s/c/order/confirm?id=... . Returns the decoded dict. */

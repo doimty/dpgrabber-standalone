@@ -1,8 +1,20 @@
-"""DPGrabber PC - tkinter user interface.
+"""DPGrabber PC - CustomTkinter user interface (blue-white theme).
 
 Own wording and layout ("DPGrabber PC"). The reference tool's UI text and
 brand are not copied; only the functional flow is aligned with it
 (PROTOCOL.md): login, listen settings, start/stop listening, run log.
+
+Style: the blue-white look of the DPGrabber panel — light blue-white
+window background, white cards with blue titles, a solid blue hero band
+with a lighter accent strip (CustomTkinter has no gradient, so the band
+is two stacked solid blocks), blue primary buttons, white secondary
+buttons with a blue outline. Still plain Python + tkinter underneath
+(CustomTkinter); no new fonts, no image assets.
+
+Layout: four titled sections (login / order conditions / listen control /
+run log). Inside a section every field is one row: label right-aligned,
+input left-aligned with a uniform width, and a short muted-blue hint
+explaining what the field does, so no input is left unexplained.
 
 All network work runs on worker threads. Threads never touch widgets
 directly: they push ``(level, message)`` into a queue and the UI drains it
@@ -15,20 +27,103 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox
+
+import customtkinter as ctk
 
 import config as cfgmod
 from dpapi import ApiClient, ApiError, extract_clerk
 from engine import Engine
 from voice import Voice
 
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("blue")
+
 APP_TITLE = "DPGrabber PC"
-WINDOW_SIZE = "980x700"
+WINDOW_SIZE = "1000x960"
+
+# Blue-white palette.
+BLUE = "#1F6AA5"
+BLUE_DARK = "#185A8A"
+BLUE_ACCENT = "#63A4D6"
+WINDOW_BG = "#F2F7FC"
+CARD_BG = "#FFFFFF"
+CARD_BORDER = "#D5E3F2"
+ENTRY_BORDER = "#B9D2EC"
+TEXT_DARK = "#1F2A37"
+HINT = "#5B7A99"
+PLACEHOLDER = "#9AA8B8"
 
 
-class App(tk.Tk):
+def _primary_button(master, text, command):
+    return ctk.CTkButton(
+        master, text=text, command=command, width=100, height=32,
+        fg_color=BLUE, hover_color=BLUE_DARK, text_color="white",
+    )
+
+
+def _secondary_button(master, text, command):
+    return ctk.CTkButton(
+        master, text=text, command=command, width=100, height=32,
+        fg_color="white", hover_color="#EAF2FA", border_color=BLUE,
+        border_width=1, text_color=BLUE,
+    )
+
+
+class _PlaceholderText(ctk.CTkTextbox):
+    """CTkTextbox that shows grey example text while empty.
+
+    CustomTkinter textboxes have no native placeholder, so this keeps the
+    old behaviour: the example is never part of the value — ``get_lines()``
+    returns [] while it is showing, and focus clears it automatically.
+    """
+
+    def __init__(self, master, placeholder: str, **kwargs):
+        super().__init__(
+            master, text_color=TEXT_DARK, fg_color="white",
+            border_color=ENTRY_BORDER, **kwargs
+        )
+        self._placeholder = placeholder
+        self._showing = False
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self._show()
+
+    def _show(self):
+        self.delete("1.0", tk.END)
+        self.insert("1.0", self._placeholder)
+        self.configure(text_color=PLACEHOLDER)
+        self._showing = True
+
+    def _on_focus_in(self, _event):
+        if self._showing:
+            self.delete("1.0", tk.END)
+            self.configure(text_color=TEXT_DARK)
+            self._showing = False
+
+    def _on_focus_out(self, _event):
+        if not self.get("1.0", tk.END).strip():
+            self._show()
+
+    def set_lines(self, lines):
+        lines = [ln for ln in lines if ln.strip()]
+        if lines:
+            self.delete("1.0", tk.END)
+            self.configure(text_color=TEXT_DARK)
+            self.insert("1.0", "\n".join(lines))
+            self._showing = False
+        else:
+            self._show()
+
+    def get_lines(self):
+        if self._showing:
+            return []
+        return [ln.strip() for ln in self.get("1.0", tk.END).splitlines() if ln.strip()]
+
+
+class App(ctk.CTk):
     def __init__(self, cfg: dict):
-        super().__init__()
+        super().__init__(fg_color=WINDOW_BG)
         self.title(APP_TITLE)
         self.geometry(WINDOW_SIZE)
         self.cfg = cfg
@@ -55,117 +150,214 @@ class App(tk.Tk):
         )
 
     def _build_widgets(self):
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        main = ttk.Frame(self, padding=12)
+        main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(fill=tk.BOTH, expand=True)
 
-        # Status line.
-        top = ttk.Frame(main)
-        top.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(top, text=APP_TITLE, font=("TkDefaultFont", 14, "bold")).pack(side=tk.LEFT)
+        # Blue hero band: solid blue + a lighter accent strip underneath
+        # (CustomTkinter has no gradient, this is the closest match).
+        hero = ctk.CTkFrame(main, fg_color=BLUE, corner_radius=0, height=56)
+        hero.pack(fill=tk.X)
+        hero.pack_propagate(False)
+        ctk.CTkLabel(
+            hero, text=APP_TITLE, text_color="white",
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).pack(side=tk.LEFT, padx=20)
         self.status_var = tk.StringVar(value="未登录")
-        ttk.Label(top, textvariable=self.status_var).pack(side=tk.RIGHT)
+        ctk.CTkLabel(
+            hero, textvariable=self.status_var, text_color="#DCEEFF",
+            font=ctk.CTkFont(size=13),
+        ).pack(side=tk.RIGHT, padx=20)
+        ctk.CTkFrame(main, fg_color=BLUE_ACCENT, corner_radius=0, height=4).pack(fill=tk.X)
 
-        # 1. Login.
-        login = ttk.LabelFrame(main, text="账号登录（手机号 + 密码）", padding=10)
-        login.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(login, text="手机号").grid(row=0, column=0, sticky=tk.W, padx=(0, 6))
+        body = ctk.CTkFrame(main, fg_color="transparent")
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 10))
+
+        self._build_login_section(body)
+        self._build_conditions_section(body)
+        self._build_control_section(body)
+        self._build_log_section(body)
+
+    def _section(self, parent, title):
+        """Blue section title + white card; returns the card frame."""
+        ctk.CTkLabel(
+            parent, text=title, text_color=BLUE, anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor=tk.W, pady=(0, 2))
+        card = ctk.CTkFrame(
+            parent, fg_color=CARD_BG, border_color=CARD_BORDER,
+            border_width=1, corner_radius=12,
+        )
+        card.pack(fill=tk.X, pady=(0, 10))
+        return card
+
+    def _hint_label(self, parent, text):
+        return ctk.CTkLabel(
+            parent, text=text, text_color=HINT,
+            font=ctk.CTkFont(size=12), anchor="w",
+        )
+
+    def _form_row(self, parent, row, label, widget, hint):
+        """One field row: label right-aligned, input left, muted hint."""
+        ctk.CTkLabel(
+            parent, text=label, width=110, anchor="e",
+            text_color=TEXT_DARK,
+        ).grid(row=row, column=0, sticky=tk.E, padx=(0, 8), pady=4)
+        widget.grid(row=row, column=1, sticky=tk.W, pady=4)
+        self._hint_label(parent, hint).grid(
+            row=row, column=2, sticky=tk.W, padx=(12, 0), pady=4
+        )
+
+    def _entry(self, parent, var, width):
+        return ctk.CTkEntry(
+            parent, textvariable=var, width=width,
+            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+        )
+
+    def _build_login_section(self, main):
+        login = self._section(main, "账号登录")
+        inner = ctk.CTkFrame(login, fg_color="transparent")
+        inner.pack(fill=tk.X, padx=12, pady=8)
+        inner.columnconfigure(2, weight=1)
+
         self.phone_var = tk.StringVar()
-        ttk.Entry(login, textvariable=self.phone_var, width=24).grid(row=0, column=1, sticky=tk.W)
-        ttk.Label(login, text="密码").grid(row=0, column=2, sticky=tk.W, padx=(16, 6))
+        phone_entry = self._entry(inner, self.phone_var, 220)
+        self._form_row(inner, 0, "手机号", phone_entry, "登录用的手机号，11 位数字")
+
+        pw_frame = ctk.CTkFrame(inner, fg_color="transparent")
         self.password_var = tk.StringVar()
-        self.password_entry = ttk.Entry(login, textvariable=self.password_var, width=24, show="*")
-        self.password_entry.grid(row=0, column=3, sticky=tk.W)
+        self.password_entry = ctk.CTkEntry(
+            pw_frame, textvariable=self.password_var, width=220, show="*",
+            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+        )
+        self.password_entry.pack(side=tk.LEFT)
         self.show_pw_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            login, text="显示密码", variable=self.show_pw_var,
-            command=self._toggle_show_password,
-        ).grid(row=0, column=4, sticky=tk.W, padx=(8, 0))
-        ttk.Button(login, text="登录", command=self._on_login).grid(row=0, column=5, padx=(16, 4))
-        ttk.Button(login, text="注销", command=self._on_logout).grid(row=0, column=6)
+        ctk.CTkCheckBox(
+            pw_frame, text="显示密码", variable=self.show_pw_var,
+            command=self._toggle_show_password, text_color=TEXT_DARK,
+            fg_color=BLUE, hover_color=BLUE_DARK,
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        self._form_row(inner, 1, "密码", pw_frame, "登录密码；勾选“显示密码”后明文可见")
+
+        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_row.grid(row=2, column=1, sticky=tk.W, pady=(6, 0))
+        _primary_button(btn_row, "登录", self._on_login).pack(side=tk.LEFT)
+        _secondary_button(btn_row, "注销", self._on_logout).pack(side=tk.LEFT, padx=(8, 0))
+
         self.login_state_var = tk.StringVar(value="请输入手机号和密码后登录")
-        ttk.Label(login, textvariable=self.login_state_var).grid(
-            row=1, column=0, columnspan=7, sticky=tk.W, pady=(6, 0)
+        ctk.CTkLabel(inner, textvariable=self.login_state_var, text_color=HINT).grid(
+            row=3, column=0, columnspan=3, sticky=tk.W, pady=(8, 0)
         )
 
-        # 2. Listen settings.
-        settings = ttk.LabelFrame(main, text="监听设置", padding=10)
-        settings.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(settings, text="最小金额（元）").grid(row=0, column=0, sticky=tk.W, padx=(0, 6))
+    def _build_conditions_section(self, main):
+        settings = self._section(main, "接单条件")
+        inner = ctk.CTkFrame(settings, fg_color="transparent")
+        inner.pack(fill=tk.X, padx=12, pady=8)
+        inner.columnconfigure(2, weight=1)
+
         self.min_amount_var = tk.StringVar()
-        ttk.Entry(settings, textvariable=self.min_amount_var, width=10).grid(row=0, column=1, sticky=tk.W)
-        ttk.Label(settings, text="最大金额（元，0 表示不限制）").grid(row=0, column=2, sticky=tk.W, padx=(16, 6))
+        self._form_row(
+            inner, 0, "最小金额（元）",
+            self._entry(inner, self.min_amount_var, 120),
+            "只抢不低于这个价的单",
+        )
         self.max_amount_var = tk.StringVar()
-        ttk.Entry(settings, textvariable=self.max_amount_var, width=10).grid(row=0, column=3, sticky=tk.W)
-        ttk.Label(settings, text="抢单后延时（秒）").grid(row=0, column=4, sticky=tk.W, padx=(16, 6))
-        self.user_delay_var = tk.StringVar()
-        ttk.Entry(settings, textvariable=self.user_delay_var, width=6).grid(row=0, column=5, sticky=tk.W)
-        ttk.Label(settings, text="轮询间隔（秒）").grid(row=0, column=6, sticky=tk.W, padx=(16, 6))
+        self._form_row(
+            inner, 1, "最大金额（元）",
+            self._entry(inner, self.max_amount_var, 120),
+            "高于这个价不抢；填 0 表示不限制",
+        )
         self.poll_interval_var = tk.StringVar()
-        ttk.Entry(settings, textvariable=self.poll_interval_var, width=6).grid(row=0, column=7, sticky=tk.W)
-
-        ttk.Label(settings, text="备注检测").grid(row=1, column=0, sticky=tk.W, padx=(0, 6), pady=(8, 0))
+        self._form_row(
+            inner, 2, "轮询间隔（秒）",
+            self._entry(inner, self.poll_interval_var, 120),
+            "每隔多久刷一次订单列表",
+        )
         self.memo_mode_var = tk.StringVar()
-        self.memo_mode_box = ttk.Combobox(
-            settings, textvariable=self.memo_mode_var, width=18, state="readonly",
+        self.memo_mode_box = ctk.CTkComboBox(
+            inner, variable=self.memo_mode_var, width=150, state="readonly",
             values=["不检测备注", "有备注不抢"],
+            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+            button_color=BLUE, button_hover_color=BLUE_DARK,
+            dropdown_fg_color="white", dropdown_text_color=TEXT_DARK,
         )
-        self.memo_mode_box.grid(row=1, column=1, columnspan=2, sticky=tk.W, pady=(8, 0))
-        ttk.Label(settings, text="备注关键词（一行一个，命中就不抢）").grid(
-            row=1, column=3, columnspan=3, sticky=tk.W, padx=(16, 0), pady=(8, 0)
+        self._form_row(
+            inner, 3, "备注检测", self.memo_mode_box,
+            "“不检测备注”只按关键词过滤；“有备注不抢”则订单带任何备注都跳过。"
+            "备注关键词命中时本身总会跳过",
         )
-        ttk.Label(settings, text="黑名单微信号（一行一个）").grid(
-            row=1, column=6, columnspan=2, sticky=tk.W, padx=(16, 0), pady=(8, 0)
-        )
-        self.keyword_text = tk.Text(settings, width=32, height=4)
-        self.keyword_text.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(4, 0))
-        self.blacklist_text = tk.Text(settings, width=32, height=4)
-        self.blacklist_text.grid(row=2, column=4, columnspan=4, sticky=tk.W, padx=(16, 0), pady=(4, 0))
 
-        btn_row = ttk.Frame(settings)
-        btn_row.grid(row=3, column=0, columnspan=8, sticky=tk.W, pady=(8, 0))
-        ttk.Button(btn_row, text="保存设置", command=self._on_save_settings).pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="高级设置", command=self._open_advanced).pack(side=tk.LEFT, padx=(8, 0))
+        # Two large text boxes, side by side.
+        boxes = ctk.CTkFrame(inner, fg_color="transparent")
+        boxes.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=(8, 0))
+        boxes.columnconfigure(0, weight=1)
+        boxes.columnconfigure(1, weight=1)
 
-        # 3. Listen control.
-        control = ttk.LabelFrame(main, text="监听", padding=10)
-        control.pack(fill=tk.X, pady=(0, 8))
-        self.start_btn = ttk.Button(control, text="开始监听", command=self._on_start_listen)
+        kw_frame = ctk.CTkFrame(boxes, fg_color="transparent")
+        kw_frame.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 12))
+        ctk.CTkLabel(kw_frame, text="备注关键词（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
+        self._hint_label(kw_frame, "命中任意一个就不抢").pack(anchor=tk.W)
+        self.keyword_text = _PlaceholderText(kw_frame, "例如：加急", width=340, height=56)
+        self.keyword_text.pack(fill=tk.X, pady=(4, 0))
+
+        bl_frame = ctk.CTkFrame(boxes, fg_color="transparent")
+        bl_frame.grid(row=0, column=1, sticky=tk.NSEW)
+        ctk.CTkLabel(bl_frame, text="黑名单微信号（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
+        self._hint_label(bl_frame, "每行一个微信号，命中就不抢").pack(anchor=tk.W)
+        self.blacklist_text = _PlaceholderText(bl_frame, "例如：wechat123", width=340, height=56)
+        self.blacklist_text.pack(fill=tk.X, pady=(4, 0))
+
+        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_row.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
+        _primary_button(btn_row, "保存设置", self._on_save_settings).pack(side=tk.LEFT)
+        _secondary_button(btn_row, "高级设置", self._open_advanced).pack(side=tk.LEFT, padx=(8, 0))
+
+    def _build_control_section(self, main):
+        control = self._section(main, "监听控制")
+        inner = ctk.CTkFrame(control, fg_color="transparent")
+        inner.pack(fill=tk.X, padx=12, pady=8)
+        self.start_btn = _primary_button(inner, "开始监听", self._on_start_listen)
         self.start_btn.pack(side=tk.LEFT)
-        self.stop_btn = ttk.Button(control, text="停止监听", command=self._on_stop_listen, state=tk.DISABLED)
+        self.stop_btn = _secondary_button(inner, "停止监听", self._on_stop_listen)
+        self.stop_btn.configure(state="disabled")
         self.stop_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.listen_state_var = tk.StringVar(value="未开始监听")
-        ttk.Label(control, textvariable=self.listen_state_var).pack(side=tk.LEFT, padx=(16, 0))
+        ctk.CTkLabel(inner, textvariable=self.listen_state_var, text_color=HINT).pack(
+            side=tk.LEFT, padx=(16, 0)
+        )
 
-        # 4. Run log.
-        log_frame = ttk.LabelFrame(main, text="运行日志", padding=10)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        self.log_text = scrolledtext.ScrolledText(log_frame, state=tk.DISABLED, height=12)
+    def _build_log_section(self, main):
+        ctk.CTkLabel(
+            main, text="运行日志", text_color=BLUE, anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor=tk.W, pady=(0, 2))
+        log_card = ctk.CTkFrame(
+            main, fg_color=CARD_BG, border_color=CARD_BORDER,
+            border_width=1, corner_radius=12,
+        )
+        log_card.pack(fill=tk.BOTH, expand=True)
+        inner = ctk.CTkFrame(log_card, fg_color="transparent")
+        inner.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
+        self.log_text = ctk.CTkTextbox(
+            inner, state="disabled", height=170,
+            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+        )
         self.log_text.pack(fill=tk.BOTH, expand=True)
         self.log_text.tag_config("info", foreground="")
         self.log_text.tag_config("success", foreground="#1a7f37")
         self.log_text.tag_config("warning", foreground="#9a6700")
         self.log_text.tag_config("error", foreground="#cf222e")
         self.log_text.tag_config("debug", foreground="#666666")
-        ttk.Button(log_frame, text="清空日志", command=self._clear_log).pack(anchor=tk.W, pady=(6, 0))
+        _secondary_button(inner, "清空日志", self._clear_log).pack(anchor=tk.W, pady=(8, 0))
 
     def _load_settings_into_widgets(self):
         self.phone_var.set(self.cfg.get("phone", ""))
         self.password_var.set(self.cfg.get("password", ""))
         self.min_amount_var.set(str(self.cfg.get("min_amount", 10.0)))
         self.max_amount_var.set(str(self.cfg.get("max_amount", 0.0)))
-        self.user_delay_var.set(str(self.cfg.get("user_delay", 0)))
         self.poll_interval_var.set(str(self.cfg.get("poll_interval_sec", 0.5)))
         self.memo_mode_box.set("有备注不抢" if int(self.cfg.get("memo_mode", 0)) == 1 else "不检测备注")
-        self.keyword_text.delete("1.0", tk.END)
-        self.keyword_text.insert(tk.END, "\n".join(self.cfg.get("memo_keywords", [])))
-        self.blacklist_text.delete("1.0", tk.END)
-        self.blacklist_text.insert(tk.END, "\n".join(self.cfg.get("blacklist", [])))
+        self.keyword_text.set_lines(self.cfg.get("memo_keywords", []))
+        self.blacklist_text.set_lines(self.cfg.get("blacklist", []))
 
     # -- logging ------------------------------------------------------------
 
@@ -177,10 +369,10 @@ class App(tk.Tk):
             while True:
                 level, message = self.log_queue.get_nowait()
                 stamp = time.strftime("%H:%M:%S")
-                self.log_text.configure(state=tk.NORMAL)
+                self.log_text.configure(state="normal")
                 self.log_text.insert(tk.END, "[%s] %s\n" % (stamp, message), level)
                 self.log_text.see(tk.END)
-                self.log_text.configure(state=tk.DISABLED)
+                self.log_text.configure(state="disabled")
                 if level in ("success", "error", "warning"):
                     self.voice.speak(message)
         except queue.Empty:
@@ -188,9 +380,9 @@ class App(tk.Tk):
         self.after(200, self._drain_logs)
 
     def _clear_log(self):
-        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.configure(state="normal")
         self.log_text.delete("1.0", tk.END)
-        self.log_text.configure(state=tk.DISABLED)
+        self.log_text.configure(state="disabled")
 
     # -- settings -----------------------------------------------------------
 
@@ -198,28 +390,24 @@ class App(tk.Tk):
         try:
             min_amount = float(self.min_amount_var.get())
             max_amount = float(self.max_amount_var.get())
-            user_delay = int(self.user_delay_var.get())
             poll_interval = float(self.poll_interval_var.get())
         except ValueError:
-            raise cfgmod.ConfigError("金额必须是数字，延时和轮询间隔必须是数字")
+            raise cfgmod.ConfigError("金额和轮询间隔必须是数字")
         if min_amount < 0 or max_amount < 0:
             raise cfgmod.ConfigError("金额不能小于 0")
         if max_amount > 0 and max_amount < min_amount:
             raise cfgmod.ConfigError("最大金额不能小于最小金额；填 0 表示不限制")
-        if user_delay < 0 or poll_interval <= 0:
-            raise cfgmod.ConfigError("延时不能小于 0，轮询间隔必须大于 0")
-        keywords = [line.strip() for line in self.keyword_text.get("1.0", tk.END).splitlines()]
-        blacklist = [line.strip() for line in self.blacklist_text.get("1.0", tk.END).splitlines()]
+        if poll_interval <= 0:
+            raise cfgmod.ConfigError("轮询间隔必须大于 0")
         return {
             "phone": self.phone_var.get().strip(),
             "password": self.password_var.get(),
             "min_amount": min_amount,
             "max_amount": max_amount,
-            "user_delay": user_delay,
             "poll_interval_sec": poll_interval,
             "memo_mode": 1 if self.memo_mode_var.get() == "有备注不抢" else 0,
-            "memo_keywords": [k for k in keywords if k],
-            "blacklist": [b for b in blacklist if b],
+            "memo_keywords": self.keyword_text.get_lines(),
+            "blacklist": self.blacklist_text.get_lines(),
         }
 
     def _on_save_settings(self):
@@ -318,22 +506,22 @@ class App(tk.Tk):
         self.engine = Engine(self.client, self.cfg, log=self.log, speak=self.voice.speak)
         if self.engine.start(phone, password):
             self.listen_state_var.set("正在监听")
-            self.start_btn.configure(state=tk.DISABLED)
-            self.stop_btn.configure(state=tk.NORMAL)
+            self.start_btn.configure(state="disabled")
+            self.stop_btn.configure(state="normal")
 
     def _on_stop_listen(self):
         if self.engine is not None:
             self.engine.stop()
         self.listen_state_var.set("已停止监听")
-        self.start_btn.configure(state=tk.NORMAL)
-        self.stop_btn.configure(state=tk.DISABLED)
+        self.start_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
 
     def _refresh_buttons(self):
-        if self.engine is not None and not self.engine.running and self.start_btn["state"] == tk.DISABLED:
+        if self.engine is not None and not self.engine.running and self.start_btn.cget("state") == "disabled":
             # Engine stopped on its own (e.g. grab succeeded).
             self.listen_state_var.set("监听已停止")
-            self.start_btn.configure(state=tk.NORMAL)
-            self.stop_btn.configure(state=tk.DISABLED)
+            self.start_btn.configure(state="normal")
+            self.stop_btn.configure(state="disabled")
         self.after(500, self._refresh_buttons)
 
     def _on_close(self):
@@ -343,59 +531,76 @@ class App(tk.Tk):
         self.destroy()
 
 
-class AdvancedDialog(tk.Toplevel):
+class AdvancedDialog(ctk.CTkToplevel):
     """Advanced settings: AES pairs, shop id, timeout, TLS, voice."""
 
     def __init__(self, parent: App, cfg: dict, on_saved):
-        super().__init__(parent)
+        super().__init__(parent, fg_color=WINDOW_BG)
         self.title("高级设置")
         self.cfg = dict(cfg)
         self._on_saved = on_saved
         self.resizable(False, False)
 
-        frame = ttk.Frame(self, padding=14)
-        frame.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=14)
+        ctk.CTkLabel(
+            frame, text="高级设置", text_color=BLUE, anchor="w",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).pack(anchor=tk.W, pady=(0, 4))
+        ctk.CTkLabel(
             frame,
-            text="加解密密钥可在配置文件中修改；密钥只用于解密服务器响应，\n"
+            text="加解密密钥可在配置文件中修改；密钥只用于解密服务器响应，"
                  "主密钥解密失败时自动尝试备用密钥。",
-            wraplength=460,
+            text_color=HINT, wraplength=520, anchor="w", justify="left",
         ).pack(anchor=tk.W, pady=(0, 10))
+        rows_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        rows_frame.pack(fill=tk.X)
+        rows_frame.columnconfigure(2, weight=1)
 
         self.entries: dict[str, tk.StringVar] = {}
         rows = [
-            ("aes_key_hex", "主密钥（十六进制）"),
-            ("aes_iv_hex", "主 IV（十六进制）"),
-            ("aes_key_hex_alt", "备用密钥（十六进制）"),
-            ("aes_iv_hex_alt", "备用 IV（十六进制）"),
-            ("shop_id", "优先店铺 ID"),
-            ("request_timeout_sec", "请求超时（秒）"),
+            ("aes_key_hex", "主密钥（十六进制）", "解密服务器响应的主密钥"),
+            ("aes_iv_hex", "主 IV（十六进制）", "配合主密钥使用"),
+            ("aes_key_hex_alt", "备用密钥（十六进制）", "主密钥解密失败时自动尝试"),
+            ("aes_iv_hex_alt", "备用 IV（十六进制）", "配合备用密钥使用"),
+            ("shop_id", "优先店铺 ID", "登录后优先切换到的店铺"),
+            ("request_timeout_sec", "请求超时（秒）", "单次请求最长等待时间"),
         ]
-        for key, label in rows:
-            row = ttk.Frame(frame)
-            row.pack(fill=tk.X, pady=3)
-            ttk.Label(row, text=label, width=22).pack(side=tk.LEFT)
+        for i, (key, label, hint) in enumerate(rows):
+            ctk.CTkLabel(
+                rows_frame, text=label, width=150, anchor="e", text_color=TEXT_DARK,
+            ).grid(row=i, column=0, sticky=tk.E, padx=(0, 8), pady=4)
             var = tk.StringVar(value=str(self.cfg.get(key, "")))
             self.entries[key] = var
-            width = 68 if "aes" in key else 12
-            ttk.Entry(row, textvariable=var, width=width).pack(side=tk.LEFT)
+            width = 500 if "aes" in key else 120
+            ctk.CTkEntry(
+                rows_frame, textvariable=var, width=width,
+                fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+            ).grid(row=i, column=1, sticky=tk.W, pady=4)
+            ctk.CTkLabel(
+                rows_frame, text=hint, text_color=HINT,
+                font=ctk.CTkFont(size=12), anchor="w",
+            ).grid(row=i, column=2, sticky=tk.W, padx=(12, 0), pady=4)
 
         self.verify_var = tk.BooleanVar(value=bool(self.cfg.get("verify_tls", True)))
-        ttk.Checkbutton(frame, text="验证服务器 TLS 证书（推荐开启）", variable=self.verify_var).pack(
-            anchor=tk.W, pady=(8, 0)
-        )
+        ctk.CTkCheckBox(
+            frame, text="验证服务器 TLS 证书（推荐开启）", variable=self.verify_var,
+            text_color=TEXT_DARK, fg_color=BLUE, hover_color=BLUE_DARK,
+        ).pack(anchor=tk.W, pady=(8, 0))
         self.voice_var = tk.BooleanVar(value=bool(self.cfg.get("voice_enabled", True)))
-        ttk.Checkbutton(frame, text="语音播报（需要本机语音支持）", variable=self.voice_var).pack(
-            anchor=tk.W
-        )
-        ttk.Label(frame, text="配置文件：%s" % cfgmod.config_path(), wraplength=460).pack(
-            anchor=tk.W, pady=(8, 0)
-        )
+        ctk.CTkCheckBox(
+            frame, text="语音播报（需要本机语音支持）", variable=self.voice_var,
+            text_color=TEXT_DARK, fg_color=BLUE, hover_color=BLUE_DARK,
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            frame, text="配置文件：%s" % cfgmod.config_path(),
+            text_color=HINT, wraplength=700, anchor="w", justify="left",
+        ).pack(anchor=tk.W, pady=(8, 0))
 
-        btns = ttk.Frame(frame)
+        btns = ctk.CTkFrame(frame, fg_color="transparent")
         btns.pack(fill=tk.X, pady=(12, 0))
-        ttk.Button(btns, text="保存", command=self._save).pack(side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(btns, text="取消", command=self.destroy).pack(side=tk.RIGHT)
+        _primary_button(btns, "保存", self._save).pack(side=tk.RIGHT, padx=(6, 0))
+        _secondary_button(btns, "取消", self.destroy).pack(side=tk.RIGHT)
 
     def _save(self):
         try:

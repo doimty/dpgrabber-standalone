@@ -44,7 +44,13 @@ DEFAULT_CONFIG = {
     # --- listening rules (PROTOCOL.md sections 6-7) ---
     "min_amount": 10.0,        # yuan; orders below this are dropped
     "max_amount": 0.0,         # yuan; 0 means no upper limit
-    "user_delay": 0,           # extra seconds to wait before submitting, after the precise wait
+    # --- confirm task (DPGConfirmationTask, DPGEngine.m) ---
+    # Hall-order confirm window (seconds) from the task start; used when
+    # the order has a createTime, otherwise the fallback window applies.
+    "random_confirm_window_sec": 20,
+    "random_confirm_fallback_sec": 20,
+    # Delay between confirm retries inside the window (seconds).
+    "confirm_retry_delay_sec": 0.5,
     "poll_interval_sec": 0.5,  # delay between empty polls (reference tool ListenDelay default)
     "memo_mode": 0,            # 0 = ignore memos, 1 = drop orders that have any memo
     "memo_keywords": [],       # drop an order if its memo contains any of these (case-insensitive)
@@ -96,6 +102,9 @@ def validate(cfg: dict) -> dict:
     keys) and return it. Raises ConfigError on invalid values."""
     merged = dict(DEFAULT_CONFIG)
     merged.update(cfg or {})
+    # user_delay was removed with the precise-wait flow; drop it from
+    # configs written by older versions.
+    merged.pop("user_delay", None)
 
     for name in ("aes_key_hex", "aes_key_hex_alt"):
         raw = _hex_bytes(merged[name], name)
@@ -116,12 +125,17 @@ def validate(cfg: dict) -> dict:
         merged["min_amount"]
     ):
         raise ConfigError("max_amount must be 0 (unlimited) or >= min_amount")
-    if int(merged["user_delay"]) < 0:
-        raise ConfigError("user_delay must not be negative")
     if float(merged["poll_interval_sec"]) <= 0:
         raise ConfigError("poll_interval_sec must be positive")
     if int(merged["memo_mode"]) not in (0, 1):
         raise ConfigError("memo_mode must be 0 (ignore memos) or 1 (drop memo orders)")
+    for name in ("random_confirm_window_sec", "random_confirm_fallback_sec"):
+        value = float(merged[name])
+        if not 0.1 <= value <= 86400:
+            raise ConfigError("%s must be between 0.1 and 86400" % name)
+    retry = float(merged["confirm_retry_delay_sec"])
+    if not 0 <= retry <= 60:
+        raise ConfigError("confirm_retry_delay_sec must be between 0 and 60")
     if float(merged["request_timeout_sec"]) <= 0:
         raise ConfigError("request_timeout_sec must be positive")
     if not isinstance(merged["memo_keywords"], list) or not isinstance(
