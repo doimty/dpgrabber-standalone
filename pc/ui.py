@@ -23,6 +23,7 @@ with ``after()``.
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -131,11 +132,15 @@ class App(ctk.CTk):
         self.client = self._make_client()
         self.voice = Voice(enabled=bool(cfg.get("voice_enabled", True)))
         self.engine: Engine | None = None
+        self._listening = False
         self._login_thread: threading.Thread | None = None
         self._build_widgets()
         self._load_settings_into_widgets()
         self.after(200, self._drain_logs)
         self.after(500, self._refresh_buttons)
+        # Canary: proves on launch that the log drain is alive. If even
+        # this line never appears, the log textbox itself is not rendering.
+        self.log("info", "DPGrabber PC 已启动")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # -- construction -----------------------------------------------------
@@ -360,6 +365,11 @@ class App(ctk.CTk):
         self.blacklist_text.set_lines(self.cfg.get("blacklist", []))
 
     # -- logging ------------------------------------------------------------
+    # Log lines go through a queue so worker threads never touch widgets.
+    # The drain loop must never die: a single bad line (or a platform
+    # quirk in the textbox) used to raise out of _drain_logs before the
+    # after() reschedule, freezing the log forever with no symptom.
+    # The reschedule now lives in a finally, and each line is guarded.
 
     def log(self, level: str, message: str):
         self.log_queue.put((level, message))
@@ -367,17 +377,48 @@ class App(ctk.CTk):
     def _drain_logs(self):
         try:
             while True:
-                level, message = self.log_queue.get_nowait()
-                stamp = time.strftime("%H:%M:%S")
-                self.log_text.configure(state="normal")
-                self.log_text.insert(tk.END, "[%s] %s\n" % (stamp, message), level)
+                try:
+                    level, message = self.log_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._append_log_line(level, message)
+        finally:
+            self.after(200, self._drain_logs)
+
+    def _append_log_line(self, level: str, message: str):
+        stamp = time.strftime("%H:%M:%S")
+        text = "[%s] %s\n" % (stamp, message)
+        try:
+            self.log_text.configure(state="normal")
+            self.log_text.insert(tk.END, text, level)
+            self.log_text.see(tk.END)
+            self.log_text.configure(state="disabled")
+        except Exception:
+            # State toggling can fail on some platforms; fall back to a
+            # direct insert so the line is never silently lost.
+            try:
+                self.log_text.insert(tk.END, text, level)
                 self.log_text.see(tk.END)
-                self.log_text.configure(state="disabled")
-                if level in ("success", "error", "warning"):
-                    self.voice.speak(message)
-        except queue.Empty:
+            except Exception:
+                pass
+        self._mirror_log_line(text)
+        if level in ("success", "error", "warning"):
+            try:
+                self.voice.speak(message)
+            except Exception:
+                pass
+
+    def _mirror_log_line(self, text: str):
+        # Best-effort copy of the run log next to the config file, so a
+        # display problem never destroys the evidence. Never raises.
+        try:
+            path = os.path.join(cfgmod.config_dir(), "dpgrabber_pc.log")
+            if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
+                open(path, "w", encoding="utf-8").close()
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
             pass
-        self.after(200, self._drain_logs)
 
     def _clear_log(self):
         self.log_text.configure(state="normal")
@@ -505,11 +546,13 @@ class App(ctk.CTk):
         self.cfg.update(updates)
         self.engine = Engine(self.client, self.cfg, log=self.log, speak=self.voice.speak)
         if self.engine.start(phone, password):
+            self._listening = True
             self.listen_state_var.set("正在监听")
             self.start_btn.configure(state="disabled")
             self.stop_btn.configure(state="normal")
 
     def _on_stop_listen(self):
+        self._listening = False
         if self.engine is not None:
             self.engine.stop()
         self.listen_state_var.set("已停止监听")
@@ -517,12 +560,20 @@ class App(ctk.CTk):
         self.stop_btn.configure(state="disabled")
 
     def _refresh_buttons(self):
-        if self.engine is not None and not self.engine.running and self.start_btn.cget("state") == "disabled":
-            # Engine stopped on its own (e.g. grab succeeded).
-            self.listen_state_var.set("监听已停止")
-            self.start_btn.configure(state="normal")
-            self.stop_btn.configure(state="disabled")
-        self.after(500, self._refresh_buttons)
+        # Never read a CTkButton's state with ["state"]/cget — the
+        # underlying canvas widget has no -state option and it raises
+        # TclError, which used to kill this loop the first time the
+        # engine existed but was not running. Track listening in a
+        # plain flag instead, and always reschedule.
+        try:
+            if self._listening and self.engine is not None and not self.engine.running:
+                # Engine stopped on its own (e.g. grab succeeded).
+                self._listening = False
+                self.listen_state_var.set("监听已停止")
+                self.start_btn.configure(state="normal")
+                self.stop_btn.configure(state="disabled")
+        finally:
+            self.after(500, self._refresh_buttons)
 
     def _on_close(self):
         if self.engine is not None:
