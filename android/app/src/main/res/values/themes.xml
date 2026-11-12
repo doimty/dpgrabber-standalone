@@ -4,6 +4,7 @@
         <item name="colorPrimary">#2961FF</item>
         <item name="colorPrimaryDark">#1A40BF</item>
         <item name="colorAccent">#2961FF</item>
+        <item name="colorBackground">@color/background</item>
         <item name="android:windowBackground">?attr/colorBackground</item>
     </style>
 

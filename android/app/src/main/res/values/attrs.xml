@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App background color, follows day/night via values-night/colors.xml.
+         Declared here because Theme.AppCompat (unlike Material) does not
+         define a colorBackground attribute of its own. -->
+    <attr name="colorBackground" format="color" />
+</resources>
