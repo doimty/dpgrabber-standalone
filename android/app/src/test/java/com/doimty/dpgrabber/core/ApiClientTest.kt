@@ -23,7 +23,10 @@ class FakeTransport : HttpTransport {
 
     data class Scripted(val status: Int, val body: ByteArray)
 
-    val calls = mutableListOf<Call>()
+    // CopyOnWriteArrayList: the engine's poll thread records calls while
+    // tests iterate this list after stop() — a plain ArrayList throws
+    // ConcurrentModificationException there (flaky CI failure).
+    val calls = java.util.concurrent.CopyOnWriteArrayList<Call>()
     private val scripts = mutableListOf<Pair<(Call) -> Boolean, Scripted>>()
     var defaultResponse = Scripted(200, """{"code":0}""".toByteArray(Charsets.UTF_8))
 

@@ -59,7 +59,7 @@ class EngineTest {
     private fun engineFor(
         transport: FakeTransport,
         config: AppConfig = AppConfig(pollIntervalSec = 0.05),
-        logs: MutableList<String> = mutableListOf()
+        logs: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
     ): ListenEngine {
         val client = TestKit.client(transport)
         return ListenEngine(
@@ -101,7 +101,7 @@ class EngineTest {
             )
         )
         transport.scriptJson("/s/c/order/confirm", TestKit.plain("code" to 0))
-        val logs = mutableListOf<String>()
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val engine = engineFor(transport, logs = logs)
         assertTrue(engine.start("13800138000", "secret"))
         assertTrue("engine should stop after a successful grab", awaitStop(engine))
@@ -122,7 +122,7 @@ class EngineTest {
             "/s/c/order/randomList",
             TestKit.plain("code" to 0, "list" to orders)
         )
-        val logs = mutableListOf<String>()
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val config = AppConfig(pollIntervalSec = 0.05, minAmount = 100.0)
         val engine = engineFor(transport, config, logs)
         assertTrue(engine.start("13800138000", "secret"))
@@ -151,7 +151,7 @@ class EngineTest {
                 )
             }
         }
-        val logs = mutableListOf<String>()
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val engine = engineFor(transport, logs = logs)
         assertTrue(engine.start("13800138000", "secret"))
         Thread.sleep(800)
@@ -186,7 +186,7 @@ class EngineTest {
             "/s/c/order/confirm",
             TestKit.plain("code" to 1, "msg" to "已被抢走")
         )
-        val logs = mutableListOf<String>()
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val engine = engineFor(transport, logs = logs)
         assertTrue(engine.start("13800138000", "secret"))
         // The failed grab returns to polling; the same order is de-duped,
@@ -211,7 +211,7 @@ class EngineTest {
         )
         // Order fails the filter (amount 25 < min 100) so it is skipped
         // after being marked seen; a second poll must not re-log it.
-        val logs = mutableListOf<String>()
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val engine2 = ListenEngine(
             client = client,
             config = AppConfig(pollIntervalSec = 0.05, minAmount = 100.0),
