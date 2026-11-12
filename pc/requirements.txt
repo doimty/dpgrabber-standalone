@@ -1,0 +1,5 @@
+requests>=2.28
+pycryptodome>=3.15
+# Optional: spoken announcements on Windows (pyttsx3). The program works
+# without it; voice just stays silent when the library cannot initialise.
+pyttsx3
