@@ -1,0 +1,232 @@
+// DPGrabber iOS - Local configuration.
+//
+// Stored as JSON in Application Support (DPGrabber/config.json). It holds
+// the login account (phone + password), listening rules and the AES key/IV
+// pairs, so keep it private. The password is ALSO mirrored into the
+// Keychain by the app layer (CredentialStore); the JSON file is the
+// single source of truth for the listening rules and crypto settings.
+//
+// No real account, token or password is ever shipped in code or in the
+// template: `phone` / `password` default to empty strings and the user
+// fills them in through the UI.
+//
+// Key/IV defaults follow PROTOCOL.md §4 and §10.6: the primary pair is
+// DPGrabber's AES-256 set, the alternate pair is the PC reference tool's
+// AES-128 set. The API client tries the primary pair first and falls back
+// to the alternate pair when decryption fails ("decrypt with whichever
+// works"). Both pairs are editable in Advanced settings.
+
+import Foundation
+
+/// Errors raised by config validation / IO.
+public struct ConfigError: Error, Equatable {
+    public let message: String
+    public init(_ message: String) { self.message = message }
+}
+
+/// DPGrabber AES-256 set (DPGAPIClient.m:12-13). Primary.
+public let defaultAESKeyHex = "faf6bcb4eeaa8aa62154ed3b8c14cf5bce08cdf83086b9188abdca6f2c8bcbb1"
+public let defaultAESIVHex = "d45df726d59d21fac023cdad3dfcea86"
+/// PC reference tool AES-128 set (DP.py:305-306). Alternate / fallback.
+/// NOTE: in the reference tool's config the key named "key" holds
+/// 81b120ef... and the key named "iv" holds e6a4cc05...; the AES key is
+/// 81b120ef... and the AES IV is e6a4cc05... (PROTOCOL.md §4.3).
+public let altAESKeyHex = "81b120ef00216c33b266763abb02e6d1"
+public let altAESIVHex = "e6a4cc0507dfe344b042289eeb945dce"
+
+public struct DPGConfig: Codable, Equatable {
+    // --- login account (manual mode, PROTOCOL.md §3.2) ---
+    public var phone: String = ""
+    public var password: String = ""
+    /// Preferred shop to switch to after login (DPGrabber default 92).
+    public var shopID: Int = 92
+    // --- listening rules (PROTOCOL.md §6-§7) ---
+    /// Yuan; orders below this are dropped.
+    public var minAmount: Double = 10.0
+    /// Yuan; 0 means no upper limit.
+    public var maxAmount: Double = 0.0
+    /// Extra seconds to wait before submitting, after the precise wait.
+    public var userDelay: Int = 0
+    /// Delay between empty polls (reference tool ListenDelay default).
+    public var pollIntervalSec: Double = 0.5
+    /// 0 = ignore memos, 1 = drop orders that have any memo.
+    public var memoMode: Int = 0
+    /// Drop an order if its memo contains any of these (case-insensitive).
+    public var memoKeywords: [String] = []
+    /// WeChat ids; drop orders from these customers.
+    public var blacklist: [String] = []
+    // --- crypto (PROTOCOL.md §4) ---
+    public var aesKeyHex: String = defaultAESKeyHex
+    public var aesIVHex: String = defaultAESIVHex
+    public var aesKeyHexAlt: String = altAESKeyHex
+    public var aesIVHexAlt: String = altAESIVHex
+    // --- transport / misc ---
+    public var requestTimeoutSec: Double = 15
+    /// Verify the server TLS certificate (recommended).
+    public var verifyTLS: Bool = true
+    /// Spoken announcements (AVSpeechSynthesizer).
+    public var voiceEnabled: Bool = true
+    /// De-dup window for already-seen order ids (seconds).
+    public var seenTTLSec: Double = 60
+
+    public init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case phone, password
+        case shopID = "shop_id"
+        case minAmount = "min_amount"
+        case maxAmount = "max_amount"
+        case userDelay = "user_delay"
+        case pollIntervalSec = "poll_interval_sec"
+        case memoMode = "memo_mode"
+        case memoKeywords = "memo_keywords"
+        case blacklist
+        case aesKeyHex = "aes_key_hex"
+        case aesIVHex = "aes_iv_hex"
+        case aesKeyHexAlt = "aes_key_hex_alt"
+        case aesIVHexAlt = "aes_iv_hex_alt"
+        case requestTimeoutSec = "request_timeout_sec"
+        case verifyTLS = "verify_tls"
+        case voiceEnabled = "voice_enabled"
+        case seenTTLSec = "seen_ttl_sec"
+    }
+
+    /// Validate a decoded config, filling defaults for missing keys.
+    /// Throws ConfigError on invalid values.
+    public static func validated(from raw: [String: Any]) throws -> DPGConfig {
+        var cfg = DPGConfig()
+        func decode<T>(_ type: T.Type, _ key: String, _ defaultValue: T) -> T where T: Decodable {
+            guard let value = raw[key] else { return defaultValue }
+            if let direct = value as? T { return direct }
+            // Numbers may arrive as a different numeric type (Int vs
+            // Double) and booleans as NSNumber; coerce explicitly.
+            // NOTE: JSONSerialization.data(withJSONObject:) must NOT be
+            // used here: it only accepts NSArray/NSDictionary at the top
+            // level, and swift-corelibs-foundation traps (fatalError)
+            // on scalar values instead of throwing.
+            switch type {
+            case is Double.Type:
+                if let number = value as? NSNumber { return number.doubleValue as! T }
+            case is Int.Type:
+                if let number = value as? NSNumber { return number.intValue as! T }
+            case is Bool.Type:
+                if let number = value as? NSNumber { return number.boolValue as! T }
+            case is [String].Type:
+                if let array = value as? [Any] { return array.compactMap { $0 as? String } as! T }
+            default:
+                break
+            }
+            return defaultValue
+        }
+        cfg.phone = decode(String.self, "phone", "")
+        cfg.password = decode(String.self, "password", "")
+        cfg.shopID = decode(Int.self, "shop_id", 92)
+        cfg.minAmount = decode(Double.self, "min_amount", 10.0)
+        cfg.maxAmount = decode(Double.self, "max_amount", 0.0)
+        cfg.userDelay = decode(Int.self, "user_delay", 0)
+        cfg.pollIntervalSec = decode(Double.self, "poll_interval_sec", 0.5)
+        cfg.memoMode = decode(Int.self, "memo_mode", 0)
+        cfg.memoKeywords = decode([String].self, "memo_keywords", [])
+        cfg.blacklist = decode([String].self, "blacklist", [])
+        cfg.aesKeyHex = decode(String.self, "aes_key_hex", defaultAESKeyHex)
+        cfg.aesIVHex = decode(String.self, "aes_iv_hex", defaultAESIVHex)
+        cfg.aesKeyHexAlt = decode(String.self, "aes_key_hex_alt", altAESKeyHex)
+        cfg.aesIVHexAlt = decode(String.self, "aes_iv_hex_alt", altAESIVHex)
+        cfg.requestTimeoutSec = decode(Double.self, "request_timeout_sec", 15)
+        cfg.verifyTLS = decode(Bool.self, "verify_tls", true)
+        cfg.voiceEnabled = decode(Bool.self, "voice_enabled", true)
+        cfg.seenTTLSec = decode(Double.self, "seen_ttl_sec", 60)
+        return try cfg.validated()
+    }
+
+    /// Validate this config in place (trims lists) and return it.
+    public func validated() throws -> DPGConfig {
+        var cfg = self
+        for (name, hex) in [("aes_key_hex", cfg.aesKeyHex), ("aes_key_hex_alt", cfg.aesKeyHexAlt)] {
+            let bytes = try hexDecode(hex)
+            guard bytes.count == 16 || bytes.count == 32 else {
+                throw ConfigError("\(name) must decode to 16 bytes (AES-128) or 32 bytes (AES-256)")
+            }
+        }
+        for (name, hex) in [("aes_iv_hex", cfg.aesIVHex), ("aes_iv_hex_alt", cfg.aesIVHexAlt)] {
+            let bytes = try hexDecode(hex)
+            guard bytes.count == 16 else {
+                throw ConfigError("\(name) must decode to 16 bytes")
+            }
+        }
+        guard cfg.shopID > 0 else { throw ConfigError("shop_id must be a positive integer") }
+        guard cfg.minAmount >= 0, cfg.maxAmount >= 0 else {
+            throw ConfigError("amounts must not be negative")
+        }
+        guard cfg.maxAmount == 0 || cfg.maxAmount >= cfg.minAmount else {
+            throw ConfigError("max_amount must be 0 (unlimited) or >= min_amount")
+        }
+        guard cfg.userDelay >= 0 else { throw ConfigError("user_delay must not be negative") }
+        guard cfg.pollIntervalSec > 0 else { throw ConfigError("poll_interval_sec must be positive") }
+        guard cfg.memoMode == 0 || cfg.memoMode == 1 else {
+            throw ConfigError("memo_mode must be 0 (ignore memos) or 1 (drop memo orders)")
+        }
+        guard cfg.requestTimeoutSec > 0 else { throw ConfigError("request_timeout_sec must be positive") }
+        cfg.memoKeywords = cfg.memoKeywords.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        cfg.blacklist = cfg.blacklist.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        cfg.phone = cfg.phone.trimmingCharacters(in: .whitespaces)
+        return cfg
+    }
+
+    /// Encode to JSON data (sorted keys, pretty printed).
+    public func jsonData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(self)
+    }
+
+    /// Decode from JSON data (missing keys take defaults).
+    public static func from(jsonData: Data) throws -> DPGConfig {
+        guard let raw = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            throw ConfigError("config file must contain a JSON object")
+        }
+        return try validated(from: raw)
+    }
+}
+
+/// Default config file location: Application Support/DPGrabber/config.json.
+public func defaultConfigURL() -> URL? {
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("DPGrabber")
+        .appendingPathComponent("config.json")
+}
+
+/// Load the config; create the default template (no credentials) when
+/// the file does not exist.
+public func loadConfig(from url: URL? = nil) throws -> DPGConfig {
+    let url = url ?? defaultConfigURL()
+    guard let url else { return DPGConfig() }
+    if !FileManager.default.fileExists(atPath: url.path) {
+        let cfg = DPGConfig()
+        try saveConfig(cfg, to: url)
+        return cfg
+    }
+    let data = try Data(contentsOf: url)
+    return try DPGConfig.from(jsonData: data)
+}
+
+/// Save the config (validated first), creating parent directories.
+public func saveConfig(_ config: DPGConfig, to url: URL? = nil) throws {
+    let url = url ?? defaultConfigURL()
+    guard let url else { throw ConfigError("no config location available") }
+    let cfg = try config.validated()
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let tmp = url.appendingPathExtension("tmp")
+    try cfg.jsonData().write(to: tmp, options: [.atomic])
+    // Atomic write already replaced the target; move into place.
+    if FileManager.default.fileExists(atPath: url.path) {
+        try FileManager.default.removeItem(at: url)
+    }
+    try FileManager.default.moveItem(at: tmp, to: url)
+}
+
+/// Mask a phone number for logs: keep first 3 and last 4 digits.
+public func maskPhone(_ phone: String) -> String {
+    if phone.count <= 7 { return "***" }
+    return String(phone.prefix(3)) + "****" + String(phone.suffix(4))
+}

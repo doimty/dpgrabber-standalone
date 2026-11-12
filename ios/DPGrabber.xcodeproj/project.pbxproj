@@ -1,0 +1,350 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+/* Begin PBXBuildFile section */
+		4A5BDF08B8071FF5910A7288 /* AES.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CE2E5A47C28571BF2D1A969 /* AES.swift */; };
+		04886FB6A520D7A3E752F383 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58FC63D01097D93B3D590205 /* ApiClient.swift */; };
+		60BCE9675BDACC9E1317C7AB /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62062686E740EC821B8199BA /* Config.swift */; };
+		273834FAF778F16448B8A6E0 /* Crypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23C4B8724B04BA867947B189 /* Crypto.swift */; };
+		955F79E38C4E2D80B020D133 /* GrabTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9678C48054450ADEBE208BAF /* GrabTiming.swift */; };
+		9FD305BA631180AF4D575AA9 /* ListenEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C57770AED7791ED846B113 /* ListenEngine.swift */; };
+		7C5EE9AA3BC9F86D1C7231A7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D09913232CC355942ECEA3 /* Models.swift */; };
+		7AEAA3E88AE1CCD81C5A5902 /* OrderFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCACDF313C9CA9A8B9B5CF9 /* OrderFilter.swift */; };
+		5492EE03D7BD9A1F17B10E1A /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEA890AC290D4F4FC3F5FF55 /* AppViewModel.swift */; };
+		45995ED1949A451EF9B90E86 /* AudioKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB2EF2DABA7F3BB15BC31809 /* AudioKeepAlive.swift */; };
+		F05855A91FF18F5BDB0D194E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5C3992C48D670D591200FC1 /* ContentView.swift */; };
+		EB907F6F0FFAE18F3BB7DD8E /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAF630C32B0E76B654A329C3 /* CredentialStore.swift */; };
+		F6585F525AFD8FA3B67687B7 /* DPGrabberApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D32E7BD5D3F47D295C9029 /* DPGrabberApp.swift */; };
+		DECDA729EE101C4AF2D59091 /* LogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7783613781B5B9ED277254B1 /* LogStore.swift */; };
+		1C3EB2659DD52435C61E9900 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 584A4257FA026ABC8F3C52DD /* SettingsView.swift */; };
+		EC4CF97BA5A7ED26BB6549BE /* VoiceAnnouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DBA08F9E4C1D3568EB3477C /* VoiceAnnouncer.swift */; };
+		BD039786D1DAF7A970015BDF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 598A3303FEE0B21D30900F11 /* Assets.xcassets */; };
+		337D39D65D0AA221346F41AE /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = D6B48328D53EC06163F3F6FE /* LaunchScreen.storyboard */; };
+		8F56A7F2D00D6F57F29049DB /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C8AB93F32D06E5645DD299B /* AVFoundation.framework */; };
+		A1CC59899A85E7E3695E16B8 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 427EAAC8A37E70E7B8500FAC /* Security.framework */; };
+		9FB3DCCE412588265C872AB1 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3634540E40EC6B996840B9EC /* UserNotifications.framework */; };
+/* End PBXBuildFile section */
+/* Begin PBXFileReference section */
+		4CE2E5A47C28571BF2D1A969 /* AES.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AES.swift; sourceTree = "<group>"; };
+		58FC63D01097D93B3D590205 /* ApiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApiClient.swift; sourceTree = "<group>"; };
+		62062686E740EC821B8199BA /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+		23C4B8724B04BA867947B189 /* Crypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Crypto.swift; sourceTree = "<group>"; };
+		9678C48054450ADEBE208BAF /* GrabTiming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrabTiming.swift; sourceTree = "<group>"; };
+		B8C57770AED7791ED846B113 /* ListenEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenEngine.swift; sourceTree = "<group>"; };
+		30D09913232CC355942ECEA3 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		1DCACDF313C9CA9A8B9B5CF9 /* OrderFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderFilter.swift; sourceTree = "<group>"; };
+		AEA890AC290D4F4FC3F5FF55 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
+		DB2EF2DABA7F3BB15BC31809 /* AudioKeepAlive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioKeepAlive.swift; sourceTree = "<group>"; };
+		C5C3992C48D670D591200FC1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		CAF630C32B0E76B654A329C3 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
+		D7D32E7BD5D3F47D295C9029 /* DPGrabberApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DPGrabberApp.swift; sourceTree = "<group>"; };
+		7783613781B5B9ED277254B1 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
+		584A4257FA026ABC8F3C52DD /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		7DBA08F9E4C1D3568EB3477C /* VoiceAnnouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAnnouncer.swift; sourceTree = "<group>"; };
+		598A3303FEE0B21D30900F11 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		8DC783DDD80BF3CBC7895DC1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		D6B48328D53EC06163F3F6FE /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		5C8AB93F32D06E5645DD299B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = "System/Library/Frameworks/AVFoundation.framework"; sourceTree = SDKROOT; };
+		427EAAC8A37E70E7B8500FAC /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = "System/Library/Frameworks/Security.framework"; sourceTree = SDKROOT; };
+		3634540E40EC6B996840B9EC /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = "System/Library/Frameworks/UserNotifications.framework"; sourceTree = SDKROOT; };
+		63644F5BAC1EE147F09CC97C /* DPGrabber.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DPGrabber.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+/* Begin PBXFrameworksBuildPhase section */
+		D3B9799A74CFB7388AE1A29D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8F56A7F2D00D6F57F29049DB /* AVFoundation.framework */,
+				A1CC59899A85E7E3695E16B8 /* Security.framework */,
+				9FB3DCCE412588265C872AB1 /* UserNotifications.framework */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+/* Begin PBXGroup section */
+		3E55646611CD630C6193ABD5 = {
+			isa = PBXGroup;
+			children = (
+				839393AC19AC7BCE6F623E12 /* Sources */,
+				212B3758D9A02E43B3111A45 /* App */,
+				8C1969BC5989E871C77EB3CC /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		839393AC19AC7BCE6F623E12 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				1DEA83CA69ACE09770A3CE46 /* DPGrabberCore */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		1DEA83CA69ACE09770A3CE46 /* DPGrabberCore */ = {
+			isa = PBXGroup;
+			children = (
+				4CE2E5A47C28571BF2D1A969 /* AES.swift */,
+				58FC63D01097D93B3D590205 /* ApiClient.swift */,
+				62062686E740EC821B8199BA /* Config.swift */,
+				23C4B8724B04BA867947B189 /* Crypto.swift */,
+				9678C48054450ADEBE208BAF /* GrabTiming.swift */,
+				B8C57770AED7791ED846B113 /* ListenEngine.swift */,
+				30D09913232CC355942ECEA3 /* Models.swift */,
+				1DCACDF313C9CA9A8B9B5CF9 /* OrderFilter.swift */,
+			);
+			path = DPGrabberCore;
+			sourceTree = "<group>";
+		};
+		212B3758D9A02E43B3111A45 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				AEA890AC290D4F4FC3F5FF55 /* AppViewModel.swift */,
+				DB2EF2DABA7F3BB15BC31809 /* AudioKeepAlive.swift */,
+				C5C3992C48D670D591200FC1 /* ContentView.swift */,
+				CAF630C32B0E76B654A329C3 /* CredentialStore.swift */,
+				D7D32E7BD5D3F47D295C9029 /* DPGrabberApp.swift */,
+				7783613781B5B9ED277254B1 /* LogStore.swift */,
+				584A4257FA026ABC8F3C52DD /* SettingsView.swift */,
+				7DBA08F9E4C1D3568EB3477C /* VoiceAnnouncer.swift */,
+				598A3303FEE0B21D30900F11 /* Assets.xcassets */,
+				8DC783DDD80BF3CBC7895DC1 /* Info.plist */,
+				D6B48328D53EC06163F3F6FE /* LaunchScreen.storyboard */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		8C1969BC5989E871C77EB3CC /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				63644F5BAC1EE147F09CC97C /* DPGrabber.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+/* Begin PBXNativeTarget section */
+		075788DC916D4DBE3A8DD990 /* DPGrabber */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A2092533F0850847C9FB62FB /* Build configuration list for PBXNativeTarget "DPGrabber" */;
+			buildPhases = (
+				D407F4F9501EBE895F2B7139 /* Sources */,
+				D3B9799A74CFB7388AE1A29D /* Frameworks */,
+				C9E0FF5CD9455C44DE4E1BE8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = DPGrabber;
+			productName = DPGrabber;
+			productReference = 63644F5BAC1EE147F09CC97C /* DPGrabber.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+/* Begin PBXProject section */
+		0D2D42E8E3AC67B44B8AB737 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					075788DC916D4DBE3A8DD990 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = 3D59A5380EBD5A1E1BB4A452 /* Build configuration list for PBXProject "DPGrabber" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = zh_CN;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				zh_CN,
+			);
+			mainGroup = 3E55646611CD630C6193ABD5;
+			productRefGroup = 8C1969BC5989E871C77EB3CC /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				075788DC916D4DBE3A8DD990 /* DPGrabber */,
+			);
+		};
+/* End PBXProject section */
+/* Begin PBXResourcesBuildPhase section */
+		C9E0FF5CD9455C44DE4E1BE8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BD039786D1DAF7A970015BDF /* Assets.xcassets */,
+				337D39D65D0AA221346F41AE /* LaunchScreen.storyboard */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+/* Begin PBXSourcesBuildPhase section */
+		D407F4F9501EBE895F2B7139 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4A5BDF08B8071FF5910A7288 /* AES.swift */,
+				04886FB6A520D7A3E752F383 /* ApiClient.swift */,
+				60BCE9675BDACC9E1317C7AB /* Config.swift */,
+				273834FAF778F16448B8A6E0 /* Crypto.swift */,
+				955F79E38C4E2D80B020D133 /* GrabTiming.swift */,
+				9FD305BA631180AF4D575AA9 /* ListenEngine.swift */,
+				7C5EE9AA3BC9F86D1C7231A7 /* Models.swift */,
+				7AEAA3E88AE1CCD81C5A5902 /* OrderFilter.swift */,
+				5492EE03D7BD9A1F17B10E1A /* AppViewModel.swift */,
+				45995ED1949A451EF9B90E86 /* AudioKeepAlive.swift */,
+				F05855A91FF18F5BDB0D194E /* ContentView.swift */,
+				EB907F6F0FFAE18F3BB7DD8E /* CredentialStore.swift */,
+				F6585F525AFD8FA3B67687B7 /* DPGrabberApp.swift */,
+				DECDA729EE101C4AF2D59091 /* LogStore.swift */,
+				1C3EB2659DD52435C61E9900 /* SettingsView.swift */,
+				EC4CF97BA5A7ED26BB6549BE /* VoiceAnnouncer.swift */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+/* Begin XCBuildConfiguration section */
+		0AE3D3D817795CE7FA77C1BD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			ALWAYS_SEARCH_USER_PATHS = NO;
+			CLANG_ANALYZER_NONNULL = YES;
+			CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+			CLANG_CXX_LANGUAGE_STANDARD = gnu++20;
+			CLANG_ENABLE_MODULES = YES;
+			CLANG_ENABLE_OBJC_ARC = YES;
+			CLANG_ENABLE_OBJC_WEAK = YES;
+			CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+			CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+			COPY_PHASE_STRIP = NO;
+			DEBUG_INFORMATION_FORMAT = dwarf;
+			ENABLE_STRICT_OBJC_MSGSEND = YES;
+			ENABLE_TESTABILITY = YES;
+			GCC_C_LANGUAGE_STANDARD = gnu17;
+			GCC_NO_COMMON_BLOCKS = YES;
+			GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+			IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+			LOCALIZATION_PREFS_STRING = zh_CN;
+			MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+			MTL_FAST_MATH = YES;
+			ONLY_ACTIVE_ARCH = YES;
+			SDKROOT = iphoneos;
+			SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BEB962F8AAB269278A4A8885 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			ALWAYS_SEARCH_USER_PATHS = NO;
+			CLANG_ANALYZER_NONNULL = YES;
+			CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+			CLANG_CXX_LANGUAGE_STANDARD = gnu++20;
+			CLANG_ENABLE_MODULES = YES;
+			CLANG_ENABLE_OBJC_ARC = YES;
+			CLANG_ENABLE_OBJC_WEAK = YES;
+			CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+			CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+			COPY_PHASE_STRIP = NO;
+			DEBUG_INFORMATION_FORMAT = dwarf;
+			ENABLE_STRICT_OBJC_MSGSEND = YES;
+			ENABLE_TESTABILITY = YES;
+			GCC_C_LANGUAGE_STANDARD = gnu17;
+			GCC_NO_COMMON_BLOCKS = YES;
+			GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+			IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+			LOCALIZATION_PREFS_STRING = zh_CN;
+			MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+			MTL_FAST_MATH = YES;
+			ONLY_ACTIVE_ARCH = YES;
+			SDKROOT = iphoneos;
+			SWIFT_VERSION = 5.0;
+			DEBUG_INFORMATION_FORMAT = dwarf-with-dsym;
+			ENABLE_NS_ASSERTIONS = NO;
+			MTL_ENABLE_DEBUG_INFO = NO;
+			SWIFT_OPTIMIZATION_LEVEL = -O;
+			SWIFT_COMPILATION_MODE = wholemodule;
+			VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		F12F48228D9675BC2F6782AF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+			CODE_SIGN_STYLE = Manual;
+			CURRENT_PROJECT_VERSION = 1;
+			DEVELOPMENT_TEAM = "";
+			GENERATE_INFOPLIST_FILE = NO;
+			INFOPLIST_FILE = "App/Info.plist";
+			LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+			MARKETING_VERSION = 1.0.0;
+			PRODUCT_BUNDLE_IDENTIFIER = com.doimty.dpgrabber;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SUPPORTED_PLATFORMS = iphoneos;
+			SWIFT_VERSION = 5.0;
+			TARGETED_DEVICE_FAMILY = 1;
+			DEBUG_INFORMATION_FORMAT = dwarf;
+			MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+			MTL_FAST_MATH = YES;
+			ONLY_ACTIVE_ARCH = YES;
+			SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+			SWIFT_OPTIMIZATION_LEVEL = -Onone;
+			};
+			name = Debug;
+		};
+		AED9437AB3A11F293E5E5E92 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+			CODE_SIGN_STYLE = Manual;
+			CURRENT_PROJECT_VERSION = 1;
+			DEVELOPMENT_TEAM = "";
+			GENERATE_INFOPLIST_FILE = NO;
+			INFOPLIST_FILE = "App/Info.plist";
+			LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+			MARKETING_VERSION = 1.0.0;
+			PRODUCT_BUNDLE_IDENTIFIER = com.doimty.dpgrabber;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SUPPORTED_PLATFORMS = iphoneos;
+			SWIFT_VERSION = 5.0;
+			TARGETED_DEVICE_FAMILY = 1;
+			DEBUG_INFORMATION_FORMAT = dwarf-with-dsym;
+			MTL_ENABLE_DEBUG_INFO = NO;
+			SWIFT_COMPILATION_MODE = wholemodule;
+			SWIFT_OPTIMIZATION_LEVEL = -O;
+			VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+/* Begin XCConfigurationList section */
+		3D59A5380EBD5A1E1BB4A452 /* Build configuration list for PBXProject "DPGrabber" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0AE3D3D817795CE7FA77C1BD /* Debug */,
+				BEB962F8AAB269278A4A8885 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A2092533F0850847C9FB62FB /* Build configuration list for PBXNativeTarget "DPGrabber" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F12F48228D9675BC2F6782AF /* Debug */,
+				AED9437AB3A11F293E5E5E92 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0D2D42E8E3AC67B44B8AB737 /* Project object */;
+}
