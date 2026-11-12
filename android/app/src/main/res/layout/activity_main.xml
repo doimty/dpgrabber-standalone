@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/credentialsWarning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/credentials_unencrypted_warning"
+            android:textColor="#B00020"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_login" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_phone" />
+
+        <EditText
+            android:id="@+id/phoneInput"
+            style="@style/FieldInput"
+            android:hint="@string/hint_phone"
+            android:inputType="phone"
+            android:maxLines="1" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_password" />
+
+        <EditText
+            android:id="@+id/passwordInput"
+            style="@style/FieldInput"
+            android:hint="@string/hint_password"
+            android:inputType="textPassword"
+            android:maxLines="1" />
+
+        <Button
+            android:id="@+id/loginButton"
+            style="@style/PrimaryButton"
+            android:text="@string/btn_login" />
+
+        <TextView
+            android:id="@+id/loginStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="@string/login_not_logged_in"
+            android:textSize="14sp" />
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_settings" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_min_amount" />
+
+        <EditText
+            android:id="@+id/minAmountInput"
+            style="@style/FieldInput"
+            android:inputType="numberDecimal"
+            android:maxLines="1" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_max_amount" />
+
+        <EditText
+            android:id="@+id/maxAmountInput"
+            style="@style/FieldInput"
+            android:inputType="numberDecimal"
+            android:maxLines="1" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_user_delay" />
+
+        <EditText
+            android:id="@+id/userDelayInput"
+            style="@style/FieldInput"
+            android:inputType="number"
+            android:maxLines="1" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_poll_interval" />
+
+        <EditText
+            android:id="@+id/pollIntervalInput"
+            style="@style/FieldInput"
+            android:inputType="numberDecimal"
+            android:maxLines="1" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_memo_mode" />
+
+        <Spinner
+            android:id="@+id/memoModeSpinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:entries="@array/memo_mode_options" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_memo_keywords" />
+
+        <EditText
+            android:id="@+id/memoKeywordsInput"
+            style="@style/FieldInput"
+            android:hint="@string/hint_memo_keywords"
+            android:inputType="textMultiLine"
+            android:minLines="2" />
+
+        <TextView
+            style="@style/FieldLabel"
+            android:text="@string/label_blacklist" />
+
+        <EditText
+            android:id="@+id/blacklistInput"
+            style="@style/FieldInput"
+            android:hint="@string/hint_blacklist"
+            android:inputType="textMultiLine"
+            android:minLines="2" />
+
+        <Button
+            android:id="@+id/saveSettingsButton"
+            style="@style/PrimaryButton"
+            android:text="@string/btn_save_settings" />
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_listen" />
+
+        <Button
+            android:id="@+id/startButton"
+            style="@style/PrimaryButton"
+            android:text="@string/btn_start_listen" />
+
+        <Button
+            android:id="@+id/stopButton"
+            style="@style/NormalButton"
+            android:text="@string/btn_stop_listen" />
+
+        <TextView
+            android:id="@+id/listenStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="@string/status_idle"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingTop="8dp">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:paddingTop="0dp"
+                android:text="@string/section_log" />
+
+            <Button
+                android:id="@+id/clearLogButton"
+                style="@style/NormalButton"
+                android:layout_width="wrap_content"
+                android:layout_marginTop="0dp"
+                android:text="@string/btn_clear_log" />
+        </LinearLayout>
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:background="@drawable/bg_input">
+
+            <TextView
+                android:id="@+id/logView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:padding="8dp"
+                android:text="@string/log_empty"
+                android:textIsSelectable="true"
+                android:textSize="12sp"
+                android:typeface="monospace" />
+        </ScrollView>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:text="DPGrabber 独立版 · 手机号 + 密码登录 · 不注入宿主 App"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>

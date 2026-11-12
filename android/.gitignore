@@ -1,0 +1,17 @@
+# Android / Gradle
+.gradle/
+local.properties
+*.iml
+.idea/
+app/build/
+build/
+*.hprof
+
+# Local verification scratch (downloaded jars, kotlinc output) - not part of the app
+.build-libs/
+.build-out/
+
+# Keystores and signing configs - never commit
+*.keystore
+*.jks
+keystore.properties
