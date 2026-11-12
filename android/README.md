@@ -81,7 +81,9 @@ GitHub 后自动编出 debug APK 并上传为 artifact）。
 `../.github/workflows/android.yml`：推到 GitHub 后自动跑
 `./gradlew testDebugUnitTest` 与 `./gradlew assembleDebug`，产物
 `DPGrabber-android-debug`（debug APK）与单测报告随 run 上传为
-artifact。触发条件：`android/**` 有改动的 push / PR，或手动触发。
+artifact。触发条件：`android/**` 或本工作流文件有改动的 push / PR，或手动触发。
+注意：`defaults.run.working-directory` 只对 `run` 步骤生效，
+`upload-artifact` 的 `path` 按仓库根目录解析，须写 `android/...` 前缀。
 
 ## 与规格书的出入（有意为之）
 
