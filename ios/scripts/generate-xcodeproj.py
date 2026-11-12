@@ -18,6 +18,7 @@ unsigned by default (CODE_SIGNING_ALLOWED=NO in CI).
 
 import hashlib
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,11 +42,17 @@ def obj_id(seed: str) -> str:
 
 
 def q(value: str) -> str:
-    """Quote a plist string when it needs quoting."""
+    """Quote a plist string when it needs quoting.
+
+    OpenStep bare strings may only contain A-Za-z0-9 _ $ / : . -
+    (Xcode's CFPropertyList parser rejects anything else unquoted, e.g.
+    the '+' in 'gnu++20' breaks the project with 'missing semicolon').
+    Quote anything outside that set.
+    """
     if value == "":
         return '""'
-    if any(c in value for c in ' $/()"=;'):
-        return '"%s"' % value.replace('"', '\\"')
+    if not re.fullmatch(r"[A-Za-z0-9_$/:.\-]+", value):
+        return '"%s"' % value.replace("\\", "\\\\").replace('"', '\\"')
     return value
 
 
