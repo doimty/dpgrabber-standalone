@@ -1,15 +1,17 @@
-"""DPGrabber PC - CustomTkinter user interface (blue-white theme).
+"""DPGrabber PC - CustomTkinter user interface (iOS liquid-glass theme).
 
 Own wording and layout ("DPGrabber PC"). The reference tool's UI text and
 brand are not copied; only the functional flow is aligned with it
 (PROTOCOL.md): login, listen settings, start/stop listening, run log.
 
-Style: the blue-white look of the DPGrabber panel — light blue-white
-window background, white cards with blue titles, a solid blue hero band
-with a lighter accent strip (CustomTkinter has no gradient, so the band
-is two stacked solid blocks), blue primary buttons, white secondary
-buttons with a blue outline. Still plain Python + tkinter underneath
-(CustomTkinter); no new fonts, no image assets.
+Style: iOS liquid glass — frosted glass cards with soft shadows and large
+radii, a luminous blue gradient hero band with a specular top edge, and
+pill buttons whose gradient, specular highlight and border are baked into
+an image. True backdrop blur is not available to tkinter, so the glass
+look is simulated with baked gradients, highlights and frosted tints;
+there is no real blur of what sits behind the window. Still plain Python
++ tkinter underneath (CustomTkinter); the gradients are drawn with Pillow
+at runtime and fall back to solid colours if Pillow is missing.
 
 Layout: four titled sections (login / order conditions / listen control /
 run log). Inside a section every field is one row: label right-aligned,
@@ -32,6 +34,13 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
+try:
+    from PIL import Image, ImageDraw, ImageTk
+    _PIL_AVAILABLE = True
+except Exception:
+    Image = ImageDraw = ImageTk = None
+    _PIL_AVAILABLE = False
+
 import config as cfgmod
 from dpapi import ApiClient, ApiError, extract_clerk
 from engine import Engine
@@ -43,32 +52,244 @@ ctk.set_default_color_theme("blue")
 APP_TITLE = "DPGrabber PC"
 WINDOW_SIZE = "1000x960"
 
-# Blue-white palette.
+# Liquid-glass palette.
 BLUE = "#1F6AA5"
 BLUE_DARK = "#185A8A"
 BLUE_DISABLED = "#9BB3C4"
 BLUE_ACCENT = "#63A4D6"
-WINDOW_BG = "#F2F7FC"
-CARD_BG = "#FFFFFF"
-CARD_BORDER = "#D5E3F2"
+WINDOW_BG = "#EAF2FA"
+CARD_BG = "#F8FCFF"
+CARD_BORDER = "#CFE2F5"
+CARD_SHADOW = "#D8E6F5"
 ENTRY_BORDER = "#B9D2EC"
 TEXT_DARK = "#1F2A37"
 HINT = "#5B7A99"
 PLACEHOLDER = "#9AA8B8"
 
+# Gradient stops (RGB) for the baked glass images.
+HERO_TOP = (74, 168, 240)
+HERO_BOTTOM = (23, 105, 176)
+BTN_PRIMARY_TOP = (92, 179, 242)
+BTN_PRIMARY_BOTTOM = (30, 116, 196)
+BTN_PRIMARY_HOVER_TOP = (124, 194, 247)
+BTN_PRIMARY_HOVER_BOTTOM = (42, 130, 210)
+BTN_DISABLED_TOP = (201, 216, 228)
+BTN_DISABLED_BOTTOM = (167, 188, 203)
+BTN_SECONDARY_TOP = (255, 255, 255)
+BTN_SECONDARY_BOTTOM = (233, 242, 250)
+BTN_SECONDARY_HOVER_BOTTOM = (216, 233, 248)
+BTN_SECONDARY_DISABLED_TOP = (244, 247, 250)
+BTN_SECONDARY_DISABLED_BOTTOM = (230, 236, 241)
+BTN_DISABLED_TEXT = "#8A9BA8"
+
+
+def _lerp_rgb(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _rgb_hex(rgb):
+    return "#%02x%02x%02x" % rgb
+
+
+def _vgrad_image(width, height, top, bottom):
+    """Vertical gradient, built as a 1px-wide column and stretched (fast)."""
+    col = Image.new("RGBA", (1, height))
+    px = col.load()
+    for y in range(height):
+        px[0, y] = _lerp_rgb(top, bottom, y / max(height - 1, 1)) + (255,)
+    return col.resize((width, height))
+
+
+def _spec_band(width, height, alpha):
+    """White specular band fading from `alpha` at the top to 0."""
+    col = Image.new("RGBA", (1, height))
+    px = col.load()
+    for y in range(height):
+        px[0, y] = (255, 255, 255, int(alpha * (1 - y / max(height - 1, 1))))
+    return col.resize((width, height))
+
+
+def _glass_pill_image(width, height, top, bottom, border=None, spec_alpha=90):
+    """Rounded pill: vertical gradient + specular top + optional border."""
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    grad = _vgrad_image(width, height, top, bottom)
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, width - 1, height - 1], radius=height // 2, fill=255)
+    img.paste(grad, (0, 0), mask)
+    spec_h = max(1, height // 2)
+    spec = _spec_band(width, spec_h, spec_alpha)
+    img.paste(spec, (0, 0), Image.composite(
+        spec.split()[3], Image.new("L", (width, spec_h), 0),
+        mask.crop((0, 0, width, spec_h))))
+    if border is not None:
+        ImageDraw.Draw(img).rounded_rectangle(
+            [1, 1, width - 2, height - 2], radius=height // 2 - 1,
+            outline=border + (255,), width=2)
+    return img
+
+
+def _hero_image(width, height=56):
+    """Hero band gradient with a specular top and a bright bottom edge."""
+    img = _vgrad_image(width, height, HERO_TOP, HERO_BOTTOM)
+    img.paste(_spec_band(width, 20, 70), (0, 0), _spec_band(width, 20, 70))
+    for y in range(height - 2, height):
+        for x in range(width):
+            img.putpixel((x, y), (207, 235, 251, 255))
+    return img
+
+
+def _window_scaling(widget):
+    """Display scaling factor for the widget's window (1.0 when unknown)."""
+    try:
+        from customtkinter.windows.widgets.scaling import ScalingTracker
+        return float(ScalingTracker.get_window_scaling(widget))
+    except Exception:
+        pass
+    try:
+        return float(widget.tk.call("tk", "scaling"))
+    except Exception:
+        return 1.0
+
+
+def _opaque_bg(widget):
+    """Nearest solid background colour above `widget` (for image corners)."""
+    w = widget
+    while w is not None:
+        try:
+            color = w.cget("fg_color")
+        except Exception:
+            color = None
+        if color and color != "transparent":
+            return color
+        try:
+            color = w.cget("bg")
+        except Exception:
+            color = None
+        if color:
+            return color
+        w = getattr(w, "master", None)
+    return WINDOW_BG
+
+
+# (variant, state, width, height) -> PhotoImage cache for glass buttons.
+_GLASS_PHOTO_CACHE: dict = {}
+
+
+def _glass_button_photos(variant, width, height):
+    key = (variant, width, height)
+    cached = _GLASS_PHOTO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if variant == "primary":
+        stops = {
+            "normal": (BTN_PRIMARY_TOP, BTN_PRIMARY_BOTTOM, None, 110),
+            "hover": (BTN_PRIMARY_HOVER_TOP, BTN_PRIMARY_HOVER_BOTTOM, None, 110),
+            "disabled": (BTN_DISABLED_TOP, BTN_DISABLED_BOTTOM, None, 40),
+        }
+    else:
+        stops = {
+            "normal": (BTN_SECONDARY_TOP, BTN_SECONDARY_BOTTOM, (185, 210, 236), 60),
+            "hover": (BTN_SECONDARY_TOP, BTN_SECONDARY_HOVER_BOTTOM, (185, 210, 236), 60),
+            "disabled": (BTN_SECONDARY_DISABLED_TOP, BTN_SECONDARY_DISABLED_BOTTOM,
+                         (205, 216, 228), 30),
+        }
+    photos = {}
+    for state, (top, bottom, border, spec) in stops.items():
+        pil_img = _glass_pill_image(width, height, top, bottom, border, spec)
+        photos[state] = ImageTk.PhotoImage(pil_img)
+    _GLASS_PHOTO_CACHE[key] = photos
+    return photos
+
+
+class _GlassButton(tk.Label):
+    """Liquid-glass pill button: baked gradient image + text on a label.
+
+    A plain tkinter label, so the image is shown at its exact pixel size
+    with no CustomTkinter scaling surprises. Supports the subset of the
+    CTkButton interface the app uses: pack, configure(state/fg_color/
+    hover_color), cget("state").
+    """
+
+    def __init__(self, master, text, command, variant="primary"):
+        self._variant = variant
+        self._command = command
+        self._state = "normal"
+        self._hover = False
+        scale = _window_scaling(master)
+        width = max(40, round(100 * scale))
+        height = max(16, round(32 * scale))
+        self._photos = _glass_button_photos(variant, width, height)
+        text_color = "white" if variant == "primary" else BLUE
+        super().__init__(
+            master, text=text, image=self._photos["normal"], compound="center",
+            fg=text_color, bg=_opaque_bg(master),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            borderwidth=0, highlightthickness=0,
+        )
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    def _on_release(self, event):
+        if self._state != "normal" or self._command is None:
+            return
+        if 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height():
+            self._command()
+
+    def _on_enter(self, _event):
+        self._hover = True
+        if self._state == "normal":
+            super().configure(image=self._photos["hover"], cursor="hand2")
+
+    def _on_leave(self, _event):
+        self._hover = False
+        if self._state == "normal":
+            super().configure(image=self._photos["normal"], cursor="")
+
+    def _apply_state(self):
+        if self._state == "disabled":
+            super().configure(image=self._photos["disabled"],
+                              fg=BTN_DISABLED_TEXT, cursor="")
+        else:
+            img = self._photos["hover"] if self._hover else self._photos["normal"]
+            text_color = "white" if self._variant == "primary" else BLUE
+            super().configure(image=img, fg=text_color,
+                              cursor="hand2" if self._hover else "")
+
+    def configure(self, **kwargs):
+        state = kwargs.pop("state", None)
+        kwargs.pop("fg_color", None)
+        kwargs.pop("hover_color", None)
+        if state is not None:
+            self._state = state
+            self._apply_state()
+        if kwargs:
+            super().configure(**kwargs)
+
+    def cget(self, name):
+        if name == "state":
+            return self._state
+        return super().cget(name)
+
 
 def _primary_button(master, text, command):
+    if _PIL_AVAILABLE:
+        return _GlassButton(master, text, command, variant="primary")
     return ctk.CTkButton(
         master, text=text, command=command, width=100, height=32,
         fg_color=BLUE, hover_color=BLUE_DARK, text_color="white",
+        corner_radius=16,
     )
 
 
 def _secondary_button(master, text, command):
+    if _PIL_AVAILABLE:
+        return _GlassButton(master, text, command, variant="secondary")
     return ctk.CTkButton(
         master, text=text, command=command, width=100, height=32,
         fg_color="white", hover_color="#EAF2FA", border_color=BLUE,
-        border_width=1, text_color=BLUE,
+        border_width=1, text_color=BLUE, corner_radius=16,
     )
 
 
@@ -159,21 +380,7 @@ class App(ctk.CTk):
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(fill=tk.BOTH, expand=True)
 
-        # Blue hero band: solid blue + a lighter accent strip underneath
-        # (CustomTkinter has no gradient, this is the closest match).
-        hero = ctk.CTkFrame(main, fg_color=BLUE, corner_radius=0, height=56)
-        hero.pack(fill=tk.X)
-        hero.pack_propagate(False)
-        ctk.CTkLabel(
-            hero, text=APP_TITLE, text_color="white",
-            font=ctk.CTkFont(size=20, weight="bold"),
-        ).pack(side=tk.LEFT, padx=20)
-        self.status_var = tk.StringVar(value="未登录")
-        ctk.CTkLabel(
-            hero, textvariable=self.status_var, text_color="#DCEEFF",
-            font=ctk.CTkFont(size=13),
-        ).pack(side=tk.RIGHT, padx=20)
-        ctk.CTkFrame(main, fg_color=BLUE_ACCENT, corner_radius=0, height=4).pack(fill=tk.X)
+        self._build_hero(main)
 
         body = ctk.CTkFrame(main, fg_color="transparent")
         body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 10))
@@ -183,17 +390,58 @@ class App(ctk.CTk):
         self._build_control_section(body)
         self._build_log_section(body)
 
+    def _build_hero(self, main):
+        # Liquid-glass hero band: a baked gradient image in a plain label
+        # (a label can hold children, so the title/status sit on top of
+        # the gradient). Regenerated when the window width changes.
+        self._hero_width = 0
+        self._hero_photo = None
+        self._hero_after = None
+        self.status_var = tk.StringVar(value="未登录")
+        if _PIL_AVAILABLE:
+            label_bg = _rgb_hex(_lerp_rgb(HERO_TOP, HERO_BOTTOM, 0.5))
+        else:
+            label_bg = _rgb_hex(HERO_BOTTOM)
+        self.hero_label = tk.Label(main, bg=_rgb_hex(HERO_BOTTOM))
+        self.hero_label.pack(fill=tk.X)
+        tk.Label(
+            self.hero_label, text=APP_TITLE, fg="white", bg=label_bg,
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).pack(side=tk.LEFT, padx=20)
+        tk.Label(
+            self.hero_label, textvariable=self.status_var, fg="#DCEEFF",
+            bg=label_bg, font=ctk.CTkFont(size=13),
+        ).pack(side=tk.RIGHT, padx=20)
+        self.hero_label.bind("<Configure>", self._on_hero_configure)
+        self._refresh_hero(1000)
+
+    def _on_hero_configure(self, event):
+        width = event.width
+        if abs(width - self._hero_width) > 2:
+            if self._hero_after is not None:
+                self.after_cancel(self._hero_after)
+            self._hero_after = self.after(80, lambda: self._refresh_hero(width))
+
+    def _refresh_hero(self, width):
+        if not _PIL_AVAILABLE or width < 50:
+            return
+        self._hero_width = width
+        self._hero_photo = ImageTk.PhotoImage(_hero_image(width, 56))
+        self.hero_label.configure(image=self._hero_photo)
+
     def _section(self, parent, title):
-        """Blue section title + white card; returns the card frame."""
+        """Blue section title + frosted glass card; returns the card frame."""
         ctk.CTkLabel(
             parent, text=title, text_color=BLUE, anchor="w",
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor=tk.W, pady=(0, 2))
+        shadow = ctk.CTkFrame(parent, fg_color=CARD_SHADOW, corner_radius=16)
+        shadow.pack(fill=tk.X, pady=(0, 10))
         card = ctk.CTkFrame(
-            parent, fg_color=CARD_BG, border_color=CARD_BORDER,
-            border_width=1, corner_radius=12,
+            shadow, fg_color=CARD_BG, border_color=CARD_BORDER,
+            border_width=1, corner_radius=16,
         )
-        card.pack(fill=tk.X, pady=(0, 10))
+        card.pack(fill=tk.X, pady=(0, 2))
         return card
 
     def _hint_label(self, parent, text):
@@ -215,7 +463,7 @@ class App(ctk.CTk):
 
     def _entry(self, parent, var, width):
         return ctk.CTkEntry(
-            parent, textvariable=var, width=width,
+            parent, textvariable=var, width=width, corner_radius=10,
             fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
         )
 
@@ -233,6 +481,7 @@ class App(ctk.CTk):
         self.password_var = tk.StringVar()
         self.password_entry = ctk.CTkEntry(
             pw_frame, textvariable=self.password_var, width=220, show="*",
+            corner_radius=10,
             fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
         )
         self.password_entry.pack(side=tk.LEFT)
@@ -281,6 +530,7 @@ class App(ctk.CTk):
         self.memo_mode_var = tk.StringVar()
         self.memo_mode_box = ctk.CTkComboBox(
             inner, variable=self.memo_mode_var, width=150, state="readonly",
+            corner_radius=10,
             values=["不检测备注", "有备注不抢"],
             fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
             button_color=BLUE, button_hover_color=BLUE_DARK,
@@ -302,14 +552,16 @@ class App(ctk.CTk):
         kw_frame.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 12))
         ctk.CTkLabel(kw_frame, text="备注关键词（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
         self._hint_label(kw_frame, "命中任意一个就不抢").pack(anchor=tk.W)
-        self.keyword_text = _PlaceholderText(kw_frame, "例如：加急", width=340, height=56)
+        self.keyword_text = _PlaceholderText(
+            kw_frame, "例如：加急", width=340, height=56, corner_radius=10)
         self.keyword_text.pack(fill=tk.X, pady=(4, 0))
 
         bl_frame = ctk.CTkFrame(boxes, fg_color="transparent")
         bl_frame.grid(row=0, column=1, sticky=tk.NSEW)
         ctk.CTkLabel(bl_frame, text="黑名单微信号（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
         self._hint_label(bl_frame, "每行一个微信号，命中就不抢").pack(anchor=tk.W)
-        self.blacklist_text = _PlaceholderText(bl_frame, "例如：wechat123", width=340, height=56)
+        self.blacklist_text = _PlaceholderText(
+            bl_frame, "例如：wechat123", width=340, height=56, corner_radius=10)
         self.blacklist_text.pack(fill=tk.X, pady=(4, 0))
 
         btn_row = ctk.CTkFrame(inner, fg_color="transparent")
@@ -336,11 +588,13 @@ class App(ctk.CTk):
             main, text="运行日志", text_color=BLUE, anchor="w",
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor=tk.W, pady=(0, 2))
+        log_shadow = ctk.CTkFrame(main, fg_color=CARD_SHADOW, corner_radius=16)
+        log_shadow.pack(fill=tk.BOTH, expand=True)
         log_card = ctk.CTkFrame(
-            main, fg_color=CARD_BG, border_color=CARD_BORDER,
-            border_width=1, corner_radius=12,
+            log_shadow, fg_color=CARD_BG, border_color=CARD_BORDER,
+            border_width=1, corner_radius=16,
         )
-        log_card.pack(fill=tk.BOTH, expand=True)
+        log_card.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
         inner = ctk.CTkFrame(log_card, fg_color="transparent")
         inner.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
         # The run log used to be a CTkTextbox. On Windows its text
@@ -567,9 +821,11 @@ class App(ctk.CTk):
             self._set_listen_buttons(True)
 
     def _set_listen_buttons(self, listening: bool):
-        # CTk only greys a disabled button's TEXT; the blue fill stays,
-        # so a disabled primary button still looks clickable. Swap the
-        # fill too, so the state is visible at a glance.
+        # _GlassButton swaps its baked gradient image per state, so the
+        # disabled look is a grey pill (a CTkButton only greys its text
+        # and still looks clickable). The fg_color/hover_color arguments
+        # are accepted by both button implementations; the fallback
+        # CTkButton uses them to grey its fill.
         if listening:
             self.start_btn.configure(
                 state="disabled", fg_color=BLUE_DISABLED,
@@ -654,7 +910,7 @@ class AdvancedDialog(ctk.CTkToplevel):
             self.entries[key] = var
             width = 500 if "aes" in key else 120
             ctk.CTkEntry(
-                rows_frame, textvariable=var, width=width,
+                rows_frame, textvariable=var, width=width, corner_radius=10,
                 fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
             ).grid(row=i, column=1, sticky=tk.W, pady=4)
             ctk.CTkLabel(
