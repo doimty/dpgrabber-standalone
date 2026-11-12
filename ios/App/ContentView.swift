@@ -31,7 +31,7 @@ struct ContentView: View {
                     SettingsView(viewModel: viewModel)
                 }
             }
-            .alert(isPresented: $viewModel.hasError) {
+            .alert(isPresented: viewModel.hasError) {
                 Alert(title: Text("提示"),
                       message: Text(viewModel.lastError ?? ""),
                       dismissButton: .default(Text("好")) {
