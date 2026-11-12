@@ -46,6 +46,7 @@ WINDOW_SIZE = "1000x960"
 # Blue-white palette.
 BLUE = "#1F6AA5"
 BLUE_DARK = "#185A8A"
+BLUE_DISABLED = "#9BB3C4"
 BLUE_ACCENT = "#63A4D6"
 WINDOW_BG = "#F2F7FC"
 CARD_BG = "#FFFFFF"
@@ -342,11 +343,26 @@ class App(ctk.CTk):
         log_card.pack(fill=tk.BOTH, expand=True)
         inner = ctk.CTkFrame(log_card, fg_color="transparent")
         inner.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
-        self.log_text = ctk.CTkTextbox(
-            inner, state="disabled", height=170,
-            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+        # The run log used to be a CTkTextbox. On Windows its text
+        # vanished when the window was maximized (and never came back on
+        # restore), while the file mirror proved the app kept generating
+        # every line — so the loss was in CTk's redraw/scrollbar
+        # machinery, not in the log data. A plain tk.Text has none of
+        # that machinery, so it cannot lose its content that way.
+        log_frame = tk.Frame(inner, bg="white")
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        self.log_text = tk.Text(
+            log_frame, state="disabled", height=10, wrap="word",
+            bg="white", fg=TEXT_DARK, relief="flat",
+            highlightthickness=0, borderwidth=0,
+            font=ctk.CTkFont(size=13),
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll = tk.Scrollbar(
+            log_frame, orient="vertical", command=self.log_text.yview,
+        )
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
         self.log_text.tag_config("info", foreground="")
         self.log_text.tag_config("success", foreground="#1a7f37")
         self.log_text.tag_config("warning", foreground="#9a6700")
@@ -548,16 +564,30 @@ class App(ctk.CTk):
         if self.engine.start(phone, password):
             self._listening = True
             self.listen_state_var.set("正在监听")
-            self.start_btn.configure(state="disabled")
+            self._set_listen_buttons(True)
+
+    def _set_listen_buttons(self, listening: bool):
+        # CTk only greys a disabled button's TEXT; the blue fill stays,
+        # so a disabled primary button still looks clickable. Swap the
+        # fill too, so the state is visible at a glance.
+        if listening:
+            self.start_btn.configure(
+                state="disabled", fg_color=BLUE_DISABLED,
+                hover_color=BLUE_DISABLED,
+            )
             self.stop_btn.configure(state="normal")
+        else:
+            self.start_btn.configure(
+                state="normal", fg_color=BLUE, hover_color=BLUE_DARK,
+            )
+            self.stop_btn.configure(state="disabled")
 
     def _on_stop_listen(self):
         self._listening = False
         if self.engine is not None:
             self.engine.stop()
         self.listen_state_var.set("已停止监听")
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
+        self._set_listen_buttons(False)
 
     def _refresh_buttons(self):
         # Never read a CTkButton's state with ["state"]/cget — the
@@ -570,8 +600,7 @@ class App(ctk.CTk):
                 # Engine stopped on its own (e.g. grab succeeded).
                 self._listening = False
                 self.listen_state_var.set("监听已停止")
-                self.start_btn.configure(state="normal")
-                self.stop_btn.configure(state="disabled")
+                self._set_listen_buttons(False)
         finally:
             self.after(500, self._refresh_buttons)
 
