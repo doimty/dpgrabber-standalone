@@ -114,6 +114,31 @@ def classify_confirm(result: dict):
     return "retry", message
 
 
+def confirm_wait_for_order(cfg: dict, order: dict, shop_id=None, rng=None,
+                           now_ms: int | None = None) -> float:
+    """Seconds to wait before the FIRST confirm, measured from createTime.
+
+    The platform's countdown starts when the order is created; a blind wait
+    starts when we happen to poll it, so a 0.5 s poll (0.25-0.75 with jitter)
+    silently shifts every attempt by up to three quarters of a second. With a
+    3 s shop rule plus a 2.8 s wait that lands at ~3.3 s after creation — late
+    enough for the order to be gone ("订单好像跑走了").
+
+    Returns the configured wait (which already includes the per-shop offset)
+    minus the time already elapsed since createTime, never below 0. Falls back
+    to the blind wait when the order carries no createTime.
+    """
+    target = confirm_wait_seconds(cfg, shop_id, rng)
+    if target <= 0:
+        return 0.0
+    create_ms = normalize_ms(order.get("createTime")) if isinstance(order, dict) else 0
+    if create_ms <= 0:
+        return target
+    now = now_ms if now_ms is not None else int(time.time() * 1000)
+    elapsed = max(0.0, (now - create_ms) / 1000.0)
+    return max(0.0, target - elapsed)
+
+
 def confirm_budget_seconds(order: dict, window_sec: float, fallback_sec: float) -> float:
     """Confirm window budget in seconds (deadlineForOrderAtWall, random
     kind): the window when the order has a createTime, the fallback
@@ -629,9 +654,13 @@ class Engine:
         amount = amount_yuan_from_cents(order.get("totalAmount"))
         number = str(order.get("no") or order_id)
         self.log("info", "尝试接单 %s ￥%.2f" % (number, amount))
-        # Confirm wait (autoduopei shop-92 rule): one random wait before
-        # the FIRST confirm attempt only; 0 when not configured.
-        wait = confirm_wait_seconds(self.cfg, self._current_shop_id(), self._rng)
+        # Confirm wait: one wait before the FIRST confirm attempt only; 0 when
+        # not configured. Measured from createTime so the polling interval
+        # does not push the attempt past the shop's countdown.
+        wait = confirm_wait_for_order(
+            self.cfg, order, self._current_shop_id(), self._rng,
+            int(self.now() * 1000) if self.now else None,
+        )
         if wait > 0:
             self.log("info", "确认前等待 %.2f 秒" % wait)
             if not self._sleep(wait):
