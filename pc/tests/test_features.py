@@ -855,5 +855,37 @@ class AutoWaitOffsetTests(unittest.TestCase):
         self.assertAlmostEqual(slept[0], 5.3, places=3)
 
 
+class AutoStopAfterGrabTests(unittest.TestCase):
+    """接到单后是否自动停监听，必须可配置。"""
+
+    def _engine(self, auto_stop):
+        engine = Engine.__new__(Engine)
+        engine.cfg = {"auto_stop_after_grab": auto_stop}
+        engine.logs = []
+        engine.log = lambda level, msg: engine.logs.append((level, msg))
+        engine.speak = lambda text: None
+        engine.stopped = False
+        engine.stop = lambda: setattr(engine, "stopped", True)
+        engine.on_grab = None
+        return engine
+
+    def test_on_by_default_stops_listening(self):
+        engine = self._engine(True)
+        outcome, _ = engine._grab_success({"no": "1", "totalAmount": 1000}, "1", 1)
+        self.assertEqual(outcome, "ok")
+        self.assertTrue(engine.stopped)
+
+    def test_off_keeps_polling(self):
+        engine = self._engine(False)
+        outcome, _ = engine._grab_success({"no": "1", "totalAmount": 1000}, "1", 1)
+        self.assertEqual(outcome, "ok")
+        self.assertFalse(engine.stopped)
+        self.assertTrue(any("继续轮询" in m for _, m in engine.logs))
+
+    def test_config_defaults_to_true(self):
+        self.assertTrue(cfgmod.validate({})["auto_stop_after_grab"])
+        self.assertFalse(cfgmod.validate({"auto_stop_after_grab": False})["auto_stop_after_grab"])
+
+
 if __name__ == "__main__":
     unittest.main()
