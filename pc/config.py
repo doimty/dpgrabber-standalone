@@ -54,7 +54,8 @@ DEFAULT_CONFIG = {
     "random_confirm_fallback_sec": 20,
     # Delay between confirm retries inside the window (seconds).
     "confirm_retry_delay_sec": 0.5,
-    "poll_interval_sec": 0.5,  # delay between empty polls (reference tool ListenDelay default)
+    "poll_interval_sec": 0.5,
+        "poll_jitter_sec": 0.25,  # delay between empty polls (reference tool ListenDelay default)
     "memo_mode": 0,            # 0 = ignore memos, 1 = drop orders that have any memo
     "memo_keywords": [],       # drop an order if its memo contains any of these (case-insensitive)
     "blacklist": [],           # WeChat ids; drop orders from these customers
