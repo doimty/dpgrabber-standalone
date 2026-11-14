@@ -791,5 +791,69 @@ class LoginSessionShopTests(unittest.TestCase):
         self.assertEqual(seen.get("sid"), "1391")
 
 
+class AutoWaitOffsetTests(unittest.TestCase):
+    """偏移必须真的进到确认前的等待里，而且按会话所在的店铺判断。"""
+
+    def test_offset_applies_only_to_the_three_shops(self):
+        cfg = {"confirm_wait_min": 5, "confirm_wait_max": 5, "auto_wait_offset": 0.3}
+        for sid in (50, 105, 1391):
+            self.assertAlmostEqual(confirm_wait_seconds(cfg, sid), 5.3)
+        for sid in (92, None, 0):
+            self.assertAlmostEqual(confirm_wait_seconds(cfg, sid), 5.0)
+
+    def test_offset_is_ignored_when_no_wait_is_configured(self):
+        cfg = {"confirm_wait_min": 0, "confirm_wait_max": 0, "auto_wait_offset": 0.3}
+        self.assertEqual(confirm_wait_seconds(cfg, 50), 0.0)
+
+    def test_shop_id_comes_from_the_session_not_the_config(self):
+        engine = Engine.__new__(Engine)
+        engine.cfg = {"shop_id": 0}
+
+        class Client:
+            session = None
+
+        client = Client()
+        engine.client = client
+        self.assertIsNone(engine._current_shop_id())
+
+        class Session:
+            sid = "50"
+
+        client.session = Session()
+        self.assertEqual(engine._current_shop_id(), 50)
+
+        engine.cfg = {"shop_id": 92}
+        client.session = None
+        self.assertEqual(engine._current_shop_id(), 92)
+
+    def test_confirm_task_waits_the_offset_amount(self):
+        slept = []
+
+        class Stub:
+            session = None
+
+            def order_confirm(self, order_id, timeout=15):
+                return {"code": 0, "msg": "已接单"}
+
+        from dpapi import Session
+
+        class Session50:
+            sid = "50"
+
+        stub = Stub()
+        stub.session = Session50()
+        cfg = {
+            "confirm_wait_min": 5, "confirm_wait_max": 5, "auto_wait_offset": 0.3,
+            "random_confirm_window_sec": 20, "random_confirm_fallback_sec": 20,
+            "confirm_retry_delay_sec": 0.01, "min_amount": 0, "max_amount": 0,
+            "memo_mode": 0, "memo_keywords": [], "blacklist": [],
+        }
+        engine = Engine(stub, cfg, lambda level, msg: None)
+        engine._sleep = lambda seconds: (slept.append(seconds), True)[1]
+        engine._confirm_task({"no": "1", "totalAmount": 1000}, "1", "p", "w")
+        self.assertTrue(slept, "nothing was awaited")
+        self.assertAlmostEqual(slept[0], 5.3, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()
