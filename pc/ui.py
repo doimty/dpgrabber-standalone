@@ -50,6 +50,7 @@ import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import QSizeGrip
 from PySide6.QtGui import QColor, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -284,6 +285,12 @@ QLabel#hint { color: %(HINT)s; font-size: 12px; }
 QLabel#sidebarHint { color: %(SIDEBAR_HINT)s; font-size: 12px; }
 QLabel#sidebarLabel { color: %(SIDEBAR_TEXT)s; font-size: 13px; }
 QLabel#sidebarState { color: %(SIDEBAR_HINT)s; font-size: 12px; }
+QPushButton#winMin, QPushButton#winMax, QPushButton#winClose {
+    background: transparent; color: white; border: none;
+    border-radius: 8px; font-size: 13px;
+}
+QPushButton#winMin:hover, QPushButton#winMax:hover { background: rgba(255,255,255,0.22); }
+QPushButton#winClose:hover { background: #D9453D; }
 QLabel#avatarBadge {
     background: %(BLUE)s; color: white; font-size: 21px; font-weight: bold;
     border-radius: 22px;
@@ -582,6 +589,11 @@ class App(QMainWindow):
 
     def __init__(self, cfg: dict):
         super().__init__()
+        # Native title bar off: it drew the stock Windows strip with a 16px
+        # icon above our own hero bar. The hero doubles as the title bar and
+        # carries the window buttons below.
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self._drag_offset = None
         self.setWindowTitle(APP_TITLE)
         # WINDOW_SIZE is taller than a 1080p screen, so the bottom of the
         # sidebar (高级设置) opened off-screen. Fit the available desktop and
@@ -712,6 +724,10 @@ class App(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_golden_split()
+        grip = getattr(self, "size_grip", None)
+        if grip is not None:
+            grip.move(self.width() - 18, self.height() - 18)
+            grip.raise_()
 
     def _build_widgets(self):
         central = QWidget()
@@ -722,6 +738,10 @@ class App(QMainWindow):
         root.setSpacing(0)
 
         self._build_hero(root)
+        # frameless windows have no frame to grab: a grip in the corner restores
+        # resize, and resizeEvent keeps it pinned there
+        self.size_grip = QSizeGrip(central)
+        self.size_grip.setStyleSheet("background: transparent;")
 
         body = QWidget()
         body_layout = QHBoxLayout(body)
@@ -822,7 +842,60 @@ class App(QMainWindow):
         advanced.setFixedHeight(34)
         advanced.clicked.connect(self._open_advanced)
         layout.addWidget(advanced)
+
+        layout.addSpacing(13)
+        for text, slot, name in (
+            ("–", self.showMinimized, "winMin"),
+            ("□", self._toggle_maximize, "winMax"),
+            ("✕", self.close, "winClose"),
+        ):
+            button = QPushButton(text)
+            button.setObjectName(name)
+            button.setFixedSize(34, 34)
+            button.clicked.connect(slot)
+            layout.addWidget(button)
         root.addWidget(hero)
+
+    def _toggle_maximize(self):
+        """Manual maximise: a frameless showMaximized() can cover the taskbar."""
+        if getattr(self, "_maximized_state", False):
+            self.setGeometry(self._normal_geometry)
+            self._maximized_state = False
+            return
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        self._normal_geometry = self.geometry()
+        self.setGeometry(screen.availableGeometry())
+        self._maximized_state = True
+
+    def mousePressEvent(self, event):
+        # Drag anywhere the hero is not covered by a control.
+        if event.button() == Qt.LeftButton and event.position().y() <= 55:
+            child = self.childAt(event.position().toPoint())
+            if child is None or not isinstance(child, QPushButton):
+                self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.position().y() <= 55:
+            self._toggle_maximize()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def _sidebar_card(self, parent_layout, title):
         title_label = QLabel(title)
