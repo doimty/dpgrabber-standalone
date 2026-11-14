@@ -614,6 +614,10 @@ class App(QMainWindow):
         # icon above our own hero bar. The hero doubles as the title bar and
         # carries the window buttons below.
         self.setWindowFlag(Qt.FramelessWindowHint, True)
+        # A mask alone leaves the corner pixels painted with the platform's
+        # opaque backing store, which is the white sliver seen under each
+        # rounded corner. Translucency lets the clipped area show the desktop.
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self._drag_offset = None
         self.setWindowTitle(APP_TITLE)
         # WINDOW_SIZE is taller than a 1080p screen, so the bottom of the
@@ -1998,7 +2002,22 @@ class App(QMainWindow):
         self.log_text.clear()
 
     def _on_status(self, text: str):
-        self.status_label.setText(text)
+        """Hero status stays short: the full sentence lives in the sidebar.
+
+        The login worker emits "已登录：<name>（ID：<id>），店铺 sid=<sid>", which
+        next to 今日抢单 / 监听状态 / 续费率 / 主题 / 高级设置 / three window
+        buttons has no room at an 1180px window.
+        """
+        if text.startswith("已登录"):
+            name = getattr(self, "_clerk_name", "") or ""
+            self.status_label.setText("已登录 · %s" % name if name else "已登录")
+            self.status_label.setToolTip(text)
+        elif text.startswith("登录失败"):
+            self.status_label.setText("登录失败")
+            self.status_label.setToolTip(text)
+        else:
+            self.status_label.setText(text)
+            self.status_label.setToolTip("")
 
     def _on_login_state(self, text: str):
         self.login_state_label.setText(text)
