@@ -47,11 +47,14 @@ import os
 import re
 import sys
 import threading
+import urllib.request
+from pathlib import Path
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QSizeGrip
-from PySide6.QtGui import QColor, QPalette, QTextCharFormat, QTextCursor
+from PySide6.QtGui import (QColor, QPainterPath, QPalette, QPixmap, QRegion,
+                           QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -590,6 +593,9 @@ class App(QMainWindow):
     log_signal = Signal(str, str)
     status_signal = Signal(str)
     login_state_signal = Signal(str)
+    week_orders_signal = Signal(object)   # int, or None when unknown
+    clerk_state_signal = Signal(object)    # {"status": int, "items": [...], "enabled": [...]}
+    avatar_signal = Signal(str)           # local path, or "" 
     listen_state_signal = Signal(str)
     history_entry_signal = Signal(dict)
     refresh_history_signal = Signal()
@@ -636,6 +642,9 @@ class App(QMainWindow):
         self.log_signal.connect(self._on_log_line)
         self.status_signal.connect(self._on_status)
         self.login_state_signal.connect(self._on_login_state)
+        self.week_orders_signal.connect(self._on_week_orders)
+        self.clerk_state_signal.connect(self._on_clerk_state)
+        self.avatar_signal.connect(self._on_avatar)
         self.listen_state_signal.connect(self._on_listen_state)
         self.history_entry_signal.connect(self._on_history_entry)
         self.refresh_history_signal.connect(self._refresh_history)
@@ -740,9 +749,19 @@ class App(QMainWindow):
         if wrap.width() != form_width:
             wrap.setFixedWidth(form_width)
 
+    WINDOW_RADIUS = 13
+
+    def _apply_window_mask(self):
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(),
+                            self.WINDOW_RADIUS, self.WINDOW_RADIUS)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._apply_window_mask()
         self._apply_golden_split()
+        self._apply_window_mask()
         grip = getattr(self, "size_grip", None)
         if grip is not None:
             grip.move(self.width() - 18, self.height() - 18)
@@ -785,6 +804,7 @@ class App(QMainWindow):
         sidebar_layout.setSpacing(0)
         self._build_login_section(sidebar_layout)
         self._build_control_section(sidebar_layout)
+        self._build_item_switch_section(sidebar_layout)
         self._build_stats_section(sidebar_layout)
         sidebar_layout.addStretch(1)
         body_layout.addWidget(sidebar)
@@ -1017,6 +1037,145 @@ class App(QMainWindow):
         layout.addWidget(self.account_box)
         return card
 
+    def _fetch_avatar(self, clerk: dict):
+        """Download the clerk's avatarUrl once, cached next to the config."""
+        url = str(clerk.get("avatarUrl") or "")
+        if not url.startswith(("http://", "https://")):
+            self.avatar_signal.emit("")
+            return
+        cache_dir = Path.home() / ".dpgrabber"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            suffix = ".gif" if url.lower().endswith(".gif") else ".img"
+            target = cache_dir / ("avatar_%s%s" % (clerk.get("id") or "me", suffix))
+            if not target.exists() or target.stat().st_size < 1024:
+                with urllib.request.urlopen(url, timeout=15) as response:
+                    data = response.read()
+                if len(data) > 512:
+                    target.write_bytes(data)
+            self.avatar_signal.emit(str(target))
+        except Exception:
+            self.avatar_signal.emit("")
+
+    def _fetch_clerk_state(self, session, clerk: dict):
+        """Online status (1 online / 2 offline) plus 接单类型 switches."""
+        items, enabled = [], []
+        try:
+            listing = self.client.item_switch_list(session=session)
+            items = list(listing.get("itemSwitchList") or [])
+            enabled = [int(i) for i in (listing.get("clerkItemSwitchIds") or [])]
+        except Exception:
+            pass
+        try:
+            status = int(clerk.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
+        self.clerk_state_signal.emit({"status": status, "items": items, "enabled": enabled})
+
+    def _on_clerk_state(self, state):
+        status = int(state.get("status") or 0)
+        if getattr(self, "online_check", None) is not None:
+            self.online_check.blockSignals(True)
+            self.online_check.setChecked(status == 1)
+            self.online_check.blockSignals(False)
+            self.online_check.setText("在线接单（当前在线）" if status == 1 else "在线接单（当前离线）")
+        self._rebuild_item_switches(state.get("items") or [], state.get("enabled") or [])
+
+    def _rebuild_item_switches(self, items, enabled):
+        holder = getattr(self, "item_switch_box", None)
+        if holder is None:
+            return
+        while holder.count():
+            child = holder.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.item_checks = {}
+        for item in items:
+            box = QCheckBox(str(item.get("name") or item.get("id")))
+            box.setObjectName("sidebarCheck")
+            box.setChecked(int(item.get("id")) in enabled)
+            box.toggled.connect(
+                lambda checked, item_id=int(item.get("id")): self._toggle_item_switch(item_id, checked)
+            )
+            holder.addWidget(box)
+            self.item_checks[int(item.get("id"))] = box
+        if not items:
+            hint = QLabel("登录后显示")
+            hint.setObjectName("sidebarHint")
+            holder.addWidget(hint)
+
+    def _toggle_online(self, checked: bool):
+        session = getattr(self.client, "session", None)
+        if session is None:
+            return
+        target = 1 if checked else 2
+
+        def worker():
+            try:
+                result = self.client.set_online(target, False, session=session)
+            except Exception as exc:
+                result = {"code": -1, "msg": str(exc)[:80]}
+            ok = result.get("code") == 0
+            self.log("success" if ok else "error",
+                     "已上线" if ok and target == 1 else
+                     ("已下线" if ok else "切换在线状态失败：%s" % result.get("msg")))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _toggle_item_switch(self, item_id: int, enabled: bool):
+        session = getattr(self.client, "session", None)
+        if session is None:
+            return
+        current = [int(i) for i, box in (getattr(self, "item_checks", {}) or {}).items() if box.isChecked()]
+
+        def worker():
+            try:
+                result = self.client.set_item_switch(item_id, current, session=session)
+            except Exception as exc:
+                result = {"code": -1, "msg": str(exc)[:80]}
+            ok = result.get("code") == 0
+            self.log("success" if ok else "error",
+                     "接单类型已更新" if ok else "接单类型更新失败：%s" % result.get("msg"))
+            if not ok:
+                self.clerk_state_signal.emit({"status": 0, "items": [], "enabled": []})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fetch_week_orders(self, session):
+        """本周接单 straight from the platform (Monday 00:00 -> now)."""
+        try:
+            now = time.localtime()
+            monday = time.strftime(
+                "%Y-%m-%d 00:00:00",
+                time.localtime(time.time() - now.tm_wday * 86400),
+            )
+            end = time.strftime("%Y-%m-%d %H:%M:%S")
+            total = self.client.order_total(monday, end, session=session)
+        except Exception:
+            total = -1
+        self.week_orders_signal.emit(total if total >= 0 else None)
+
+    def _on_week_orders(self, total):
+        self._week_orders = total
+        label = getattr(self, "week_count_label", None)
+        if label is not None:
+            label.setText("—" if total is None else str(total))
+
+    def _on_avatar(self, path: str):
+        label = getattr(self, "avatar_label", None)
+        if label is None or not path:
+            return
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return
+        pixmap = pixmap.scaled(44, 44, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        label.setPixmap(pixmap)
+        label.setText("")
+        circle = QPainterPath()
+        circle.addEllipse(0, 0, label.width(), label.height())
+        label.setMask(QRegion(circle.toFillPolygon().toPolygon()))
+
     def _show_account_card(self, signed_in: bool):
         """Signed in: the form collapses into avatar + identity + logout."""
         self.login_form.setVisible(not signed_in)
@@ -1035,20 +1194,8 @@ class App(QMainWindow):
         self.account_phone_label.setText(cfgmod.mask_phone(phone) if phone else "")
         self.avatar_label.setText(((name or phone or "·")[0]).upper())
 
-        week = 0
-        try:
-            now = time.time()
-            for entry in history_mod.load():
-                stamp = str(entry.get("grabbed_at") or "")
-                try:
-                    when = time.mktime(time.strptime(stamp, "%Y-%m-%dT%H:%M:%S"))
-                except ValueError:
-                    continue
-                if now - when <= 7 * 86400:
-                    week += 1
-        except Exception:
-            week = 0
-        self.week_count_label.setText(str(week))
+        total = getattr(self, "_week_orders", None)
+        self.week_count_label.setText("—" if total is None else str(total))
         rate = self.cfg.get("last_renewal_rate")
         self.renewal_label.setText("%d%%" % rate if isinstance(rate, int) else "—")
 
@@ -1088,6 +1235,15 @@ class App(QMainWindow):
             outcome = str(entry.get("outcome") or "success")
             counts[outcome if outcome in counts else "failed"] += 1
         return counts
+
+    def _build_item_switch_section(self, sidebar_layout):
+        card, column = self._sidebar_card(sidebar_layout, "接单类型")
+        self.item_switch_box = QVBoxLayout()
+        self.item_switch_box.setSpacing(4)
+        self.item_checks = {}
+        column.addLayout(self.item_switch_box)
+        self._rebuild_item_switches([], [])
+        return card
 
     def _build_stats_section(self, sidebar_layout):
         """今日统计 : sidebar card under 监听控制, where the space was empty."""
@@ -1296,6 +1452,11 @@ class App(QMainWindow):
         self.auto_stop_check.setChecked(bool(self.cfg.get("auto_stop_after_grab", True)))
         self.auto_stop_check.setToolTip("关闭后抢到一单会继续轮询，适合连续接单")
         layout.addWidget(self.auto_stop_check)
+        self.online_check = QCheckBox("在线接单（离线中）")
+        self.online_check.setObjectName("sidebarCheck")
+        self.online_check.setToolTip("对应平台的 status：1 上线 / 2 下线")
+        self.online_check.toggled.connect(self._toggle_online)
+        layout.addWidget(self.online_check)
 
     def _build_theme_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "主题")
@@ -1804,6 +1965,9 @@ class App(QMainWindow):
                 clerk = None
             self._clerk_name = str((clerk or {}).get("name") or "")
             self._clerk_id = str((clerk or {}).get("id") or "")
+            self._fetch_avatar(clerk or {})
+            self._fetch_week_orders(session)
+            self._fetch_clerk_state(session, clerk or {})
             if clerk:
                 label = "已登录：%s（ID：%s），店铺 sid=%s" % (
                     clerk.get("name") or "", clerk.get("id") or "", session.sid,
