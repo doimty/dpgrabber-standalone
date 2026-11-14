@@ -1343,7 +1343,17 @@ class App(QMainWindow):
         chip.setStyleSheet("color: %s; font-size: 13px;" % colour)
         chip.setVisible(True)
 
+    def _apply_week_stats(self):
+        """Draw 本周接单 / 续费率 from the cached statistics dict.
+
+        Both the login worker (week_orders_signal) and the account-card refresh
+        call this; the refresh used to write "—" over the values the worker had
+        just fetched.
+        """
+        self._on_week_orders(getattr(self, "_week_stats", None))
+
     def _on_week_orders(self, stats):
+        self._week_stats = stats
         """Three platform ratios, each with its own formula.
 
         续费率 = continuedAmount / orderAmount    (money, this is the gate the
@@ -1423,12 +1433,13 @@ class App(QMainWindow):
             "%s（ID %s）" % (name, clerk_id) if name and clerk_id else shown
         )
         self.account_phone_label.setText(cfgmod.mask_phone(phone) if phone else "")
-        self.avatar_label.setText(((name or phone or "·")[0]).upper())
+        # The login worker emits the avatar before the login state, so this
+        # refresh used to overwrite the just-loaded photo with a letter.
+        existing = self.avatar_label.pixmap()
+        if existing is None or existing.isNull():
+            self.avatar_label.setText(((name or phone or "·")[0]).upper())
 
-        total = getattr(self, "_week_orders", None)
-        self.week_count_label.setText("—" if total is None else str(total))
-        rate = self.cfg.get("last_renewal_rate")
-        self.renewal_label.setText("%d%%" % rate if isinstance(rate, int) else "—")
+        self._apply_week_stats()
 
     def _note_renewal_rate(self, reason: str):
         """The platform states 续费率 in its refusals; cache it for the card."""
