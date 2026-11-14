@@ -1204,7 +1204,7 @@ class App(QMainWindow):
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
             source = cache_dir / ("avatar_%s.img" % clerk_id)
-            target = cache_dir / ("avatar_%s_v2.png" % clerk_id)
+            target = cache_dir / ("avatar_%s_v3.png" % clerk_id)
 
             if not source.exists() or source.stat().st_size < 1024:
                 with urllib.request.urlopen(url, timeout=15) as response:
@@ -1227,11 +1227,23 @@ class App(QMainWindow):
                     raw = source.read_bytes() if source.exists() else b""
                     if raw:
                         image = Image.open(io.BytesIO(raw)).convert("RGBA")
-                        if max(image.size) > 512:
-                            image.thumbnail((512, 512))
+                        side = 176 * 4                     # 4x supersampling
+                        scale = side / float(min(image.size))
+                        image = image.resize(
+                            (max(1, int(image.width * scale)),
+                             max(1, int(image.height * scale))), Image.LANCZOS)
+                        left = (image.width - side) // 2
+                        top = (image.height - side) // 2
+                        image = image.crop((left, top, left + side, top + side))
+                        mask = Image.new("L", (side, side), 0)
+                        from PIL import ImageDraw
+                        ImageDraw.Draw(mask).ellipse((0, 0, side - 1, side - 1), fill=255)
+                        mask = mask.resize((176, 176), Image.LANCZOS)
+                        circle = Image.new("RGBA", (176, 176), (0, 0, 0, 0))
+                        circle.paste(image.resize((176, 176), Image.LANCZOS), (0, 0), mask)
                         # write beside the target and swap: never fails on a lock
                         temp = target.with_suffix(".tmp")
-                        image.save(temp, "PNG")
+                        circle.save(temp, "PNG")
                         temp.replace(target)
                 except Exception:
                     pass
@@ -1452,11 +1464,13 @@ class App(QMainWindow):
         pixmap = pixmap.scaled(target, target, Qt.KeepAspectRatioByExpanding,
                                Qt.SmoothTransformation)
         pixmap.setDevicePixelRatio(dpr)
+        # The cached PNG already carries a supersampled circular alpha, so the
+        # label only scales it: no mask, no painter, no clipped edges.
+        label.setMask(QRegion())
+        label.setStyleSheet("background: transparent; border: none;")
+        label.setAlignment(Qt.AlignCenter)
         label.setPixmap(pixmap)
         label.setText("")
-        circle = QPainterPath()
-        circle.addEllipse(0, 0, label.width(), label.height())
-        label.setMask(QRegion(circle.toFillPolygon().toPolygon()))
 
     def _show_account_card(self, signed_in: bool):
         """Signed in: the form collapses into avatar + identity + logout."""
@@ -1478,6 +1492,8 @@ class App(QMainWindow):
         # refresh used to overwrite the just-loaded photo with a letter.
         existing = self.avatar_label.pixmap()
         if existing is None or existing.isNull():
+            # back to the letter badge: restore the QSS circle behind it
+            self.avatar_label.setStyleSheet("")
             self.avatar_label.setText(((name or phone or "·")[0]).upper())
 
         self._apply_week_stats()
