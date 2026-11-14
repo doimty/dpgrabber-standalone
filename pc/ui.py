@@ -51,10 +51,10 @@ import urllib.request
 from pathlib import Path
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtWidgets import QSizeGrip
-from PySide6.QtGui import (QColor, QPainterPath, QPalette, QPixmap, QRegion,
-                           QTextCharFormat, QTextCursor)
+from PySide6.QtGui import (QColor, QImage, QPainter, QPainterPath, QPalette,
+                           QPixmap, QRegion, QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -230,11 +230,14 @@ def _chevron_png(direction: str, color_hex: str, theme_id: str = DEFAULT_THEME) 
 _CHEVRON_CACHE: dict = {}
 
 _STYLESHEET_TEMPLATE = """
-QMainWindow, QWidget#central { background: %(WINDOW_BG)s; }
+QMainWindow, QWidget#central { background: transparent; }
 /* The body sits in a scroll area since 24ca8cde; without these rules the
    viewport keeps the system's light background and the dark themes get a
    white band behind the section titles. */
-QScrollArea#bodyScroll { background: %(WINDOW_BG)s; border: none; }
+QScrollArea#bodyScroll {
+    background: %(WINDOW_BG)s; border: none;
+    border-bottom-left-radius: 13px; border-bottom-right-radius: 13px;
+}
 QScrollArea#bodyScroll > QWidget > QWidget { background: %(WINDOW_BG)s; }
 QScrollArea#bodyScroll QScrollBar:vertical { background: transparent; }
 QDialog { background: %(WINDOW_BG)s; }
@@ -259,6 +262,8 @@ QFrame#sidebarCard {
     border-radius: 13px;
 }
 QFrame#hero {
+    border-top-left-radius: 13px;
+    border-top-right-radius: 13px;
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(HERO_TOP)s, stop:1 %(HERO_BOTTOM)s);
     border-bottom: 2px solid %(HERO_BORDER)s;
@@ -764,8 +769,22 @@ class App(QMainWindow):
     WINDOW_RADIUS = 13
 
     def _apply_window_mask(self):
+        """Rounded corners via a QRegion mask.
+
+        Alternatives evaluated on Windows 10 (19044):
+          - self.render() into an offscreen image and draw it through a clip
+            path: Qt answers "Recursive repaint detected" /
+            "paintEngine: Should no longer be called" inside a translucent
+            top-level, so it cannot be used here;
+          - DWM rounding: Windows 11 only;
+          - QSS radii on the outer surfaces: the scroll area's square viewport
+            repaints over the hero's rounded corners.
+        The mask is binary, so a 1px stair-step remains at 125% scaling; the
+        window is translucent so the clipped pixels show the desktop instead of
+        a white backing.
+        """
         path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(),
+        path.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
                             self.WINDOW_RADIUS, self.WINDOW_RADIUS)
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
