@@ -1350,10 +1350,12 @@ class AdvancedDialog(QDialog):
     (customers never see them); they live in the config file / code
     defaults only."""
 
+    test_result = Signal(bool, str)
+
     def __init__(self, parent: App, cfg: dict, on_saved):
         super().__init__(parent)
         self.setWindowTitle("高级设置")
-        self.setFixedSize(780, 640)
+        self.setFixedSize(800, 700)
         self.cfg = dict(cfg)
         self._on_saved = on_saved
 
@@ -1383,7 +1385,8 @@ class AdvancedDialog(QDialog):
             lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             grid.addWidget(lab, i, 0)
             edit = QLineEdit(str(self.cfg.get(key, "")))
-            edit.setFixedWidth(120)
+            edit.setFixedWidth(210)
+            edit.setCursorPosition(0)
             self.entries[key] = edit
             grid.addWidget(edit, i, 1)
             h = QLabel(hint)
@@ -1449,10 +1452,18 @@ class AdvancedDialog(QDialog):
         current = str(self.cfg.get("notify_provider") or "serverchan")
         index = [self.notify_provider_box.itemData(i) for i in range(self.notify_provider_box.count())].index(current)          if current in [self.notify_provider_box.itemData(i) for i in range(self.notify_provider_box.count())] else 0
         self.notify_provider_box.setCurrentIndex(index)
+        self.test_button = QPushButton("发送测试")
+        self.test_button.setObjectName("secondary")
+        self.test_button.clicked.connect(self._send_test_push)
         self.notify_row.addWidget(self.notify_check)
         self.notify_row.addWidget(self.notify_provider_box)
+        self.notify_row.addWidget(self.test_button)
         self.notify_row.addStretch(1)
         root.addLayout(self.notify_row)
+        self.test_label = QLabel("")
+        self.test_label.setObjectName("hint")
+        root.addWidget(self.test_label)
+        self.test_result.connect(self._show_test_result)
         self.voice_check = QCheckBox("语音播报（需要本机语音支持）")
         self.voice_check.setChecked(bool(self.cfg.get("voice_enabled", True)))
         root.addWidget(self.voice_check)
@@ -1473,6 +1484,39 @@ class AdvancedDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(save_btn)
         root.addLayout(btns)
+
+    def _notify_cfg_from_widgets(self) -> dict:
+        cfg = dict(self.cfg)
+        cfg["notify_enabled"] = True
+        cfg["notify_provider"] = str(self.notify_provider_box.currentData() or "serverchan")
+        for key in ("notify_key", "notify_webhook", "notify_bark_server"):
+            edit = self.entries.get(key)
+            if edit is not None:
+                cfg[key] = edit.text().strip()
+        return cfg
+
+    def _send_test_push(self):
+        from notify import Notifier
+
+        cfg = self._notify_cfg_from_widgets()
+        self.test_button.setEnabled(False)
+        self.test_label.setText("发送中…")
+
+        def worker():
+            ok = Notifier(cfg).send(
+                "DPGrabber 测试推送",
+                "如果你看到这条，说明推送通道配置正确。",
+            )
+            self.test_result.emit(ok, Notifier(cfg).describe())
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_test_result(self, ok: bool, provider: str):
+        self.test_button.setEnabled(True)
+        self.test_label.setText(
+            "%s 测试推送已发送" % provider if ok else
+            "%s 测试推送失败（检查密钥 / 网络 / 渠道）" % provider
+        )
 
     def _save(self):
         try:
