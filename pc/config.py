@@ -43,7 +43,7 @@ DEFAULT_CONFIG = {
     "phone": "",
     "password": "",
     # Preferred shop to switch to after login (DPGrabber default 92).
-    "shop_id": 92,
+    "shop_id": 0,
     # --- listening rules (PROTOCOL.md sections 6-7) ---
     "min_amount": 10.0,        # yuan; orders below this are dropped
     "max_amount": 0.0,         # yuan; 0 means no upper limit
@@ -178,8 +178,8 @@ def validate(cfg: dict) -> dict:
         if len(raw) != 16:
             raise ConfigError("%s must decode to 16 bytes" % name)
 
-    if not isinstance(merged["shop_id"], int) or merged["shop_id"] <= 0:
-        raise ConfigError("shop_id must be a positive integer")
+    if not isinstance(merged["shop_id"], int) or merged["shop_id"] < 0:
+        raise ConfigError("shop_id must be 0 (auto) or a positive shop id")
     if float(merged["min_amount"]) < 0 or float(merged["max_amount"]) < 0:
         raise ConfigError("amounts must not be negative")
     if float(merged["max_amount"]) > 0 and float(merged["max_amount"]) < float(
