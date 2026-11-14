@@ -119,6 +119,63 @@ OUTCOME_LABELS = {
 }
 
 
+def _asset_dir():
+    """Writable folder for the generated arrow/check PNGs, or None.
+
+    tempfile.gettempdir() raises FileNotFoundError when every candidate is
+    missing or unwritable, and build_stylesheet() runs at import time, so an
+    unusable TEMP took the whole app down before a window could exist.
+    Fall back to a per-user folder, then to the directory of this file.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    candidates = []
+    try:
+        candidates.append(_Path(tempfile.gettempdir()))
+    except Exception:
+        pass
+    candidates.append(_Path.home() / ".dpgrabber")
+    candidates.append(_Path(__file__).resolve().parent)
+    for folder in candidates:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            probe = folder / ".dpg_asset_probe"
+            probe.write_bytes(b"1")
+            probe.unlink()
+            return folder
+        except Exception:
+            continue
+    return None
+
+
+def _check_png(color_hex, theme_id=DEFAULT_THEME):
+    """Tick for a checked box; Qt stops drawing its own once the indicator
+    gets a custom fill."""
+    if not _PIL_AVAILABLE:
+        return ""
+    folder = _asset_dir()
+    if folder is None:
+        return ""
+    key = ("check", theme_id)
+    path = folder / ("dpgrabber_check_%s.png" % theme_id)
+    if _CHEVRON_CACHE.get(key) == color_hex and path.exists():
+        return path.as_posix()
+    w = h = 12
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    draw.line([(2, 6), (5, 9), (10, 3)], fill=(r, g, b, 255), width=2, joint="curve")
+    try:
+        img.save(str(path), "PNG")
+    except OSError:
+        return ""
+    _CHEVRON_CACHE[key] = color_hex
+    return path.as_posix()
+
+
 def _chevron_png(direction: str, color_hex: str, theme_id: str = DEFAULT_THEME) -> str:
     """Draw a small chevron (up/down) in the theme's accent colour and
     save it as a PNG.
@@ -132,14 +189,14 @@ def _chevron_png(direction: str, color_hex: str, theme_id: str = DEFAULT_THEME) 
     """
     if not _PIL_AVAILABLE:
         return ""
-    import tempfile
+    folder = _asset_dir()
+    if folder is None:
+        return ""
 
     key = (direction, theme_id)
-    if _CHEVRON_CACHE.get(key) == color_hex:
-        path = os.path.join(tempfile.gettempdir(),
-                            "dpgrabber_chevron_%s_%s.png" % (direction, theme_id))
-        if os.path.exists(path):
-            return path.replace("\\", "/")
+    path = folder / ("dpgrabber_chevron_%s_%s.png" % (direction, theme_id))
+    if _CHEVRON_CACHE.get(key) == color_hex and path.exists():
+        return path.as_posix()
 
     w, h = 14, 10
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -153,15 +210,13 @@ def _chevron_png(direction: str, color_hex: str, theme_id: str = DEFAULT_THEME) 
     else:
         draw.line([(2, h - 2), (w // 2, 2), (w - 2, h - 2)],
                   fill=(r, g, b, 255), width=2, joint="curve")
-    path = os.path.join(tempfile.gettempdir(),
-                        "dpgrabber_chevron_%s_%s.png" % (direction, theme_id))
     try:
-        img.save(path, "PNG")
+        img.save(str(path), "PNG")
     except OSError:
         return ""
     _CHEVRON_CACHE[key] = color_hex
-    # Forward slashes so the path works inside a QSS url() on Windows too.
-    return path.replace("\\", "/")
+    # as_posix: forward slashes so url() works inside QSS on Windows too.
+    return path.as_posix()
 
 
 # (direction, theme_id) -> colour the cached PNG was drawn with.
@@ -288,7 +343,7 @@ QCheckBox::indicator:unchecked {
 }
 QCheckBox::indicator:checked {
     border: 1px solid %(BLUE)s; border-radius: 6px;
-    background: %(BLUE)s;
+    background: %(BLUE)s; %(CHECK_CSS)s
 }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { border: none; }
@@ -319,6 +374,7 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
     """
     p = dict(THEMES[DEFAULT_THEME]["palette"])
     p.update(palette or {})
+    check_mark = _check_png("#FFFFFF", theme_id)
     chevron_down = _chevron_png("down", p["accent"], theme_id)
     chevron_up = _chevron_png("up", p["accent"], theme_id)
     subs = {
@@ -350,6 +406,7 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
         "HISTORY_REASON": p["history_reason"],
         "CHEVRON_DOWN_CSS": ('image: url("%s");' % chevron_down) if chevron_down else "",
         "CHEVRON_UP_CSS": ('image: url("%s");' % chevron_up) if chevron_up else "",
+        "CHECK_CSS": ('image: url("%s");' % check_mark) if check_mark else "",
     }
     return _STYLESHEET_TEMPLATE % subs
 
