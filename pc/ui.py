@@ -570,6 +570,7 @@ class App(QMainWindow):
             self._theme_id = DEFAULT_THEME
         self._palette = palette_for(self._theme_id)
         self.client = self._make_client()
+        self._log_history: list = []
         self.voice = Voice(enabled=bool(cfg.get("voice_enabled", True)))
         from notify import Notifier
         self.notifier = Notifier(cfg)
@@ -895,6 +896,7 @@ class App(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             apply_theme(app, self._palette, theme_id)
+        self._rebuild_log()
         self.cfg["theme"] = theme_id
         try:
             cfgmod.save(self.cfg)
@@ -1221,6 +1223,10 @@ class App(QMainWindow):
     def _on_log_line(self, level: str, message: str):
         stamp = time.strftime("%H:%M:%S")
         text = "[%s] %s" % (stamp, message)
+        # Per-line colours are baked in when the line is written, so a theme
+        # switch has to re-render the whole document or old lines keep the old
+        # theme's ink (dark text on a dark background read as "still broken").
+        self._log_history.append((level, text))
         # Colours come from the active theme's palette so the log stays
         # readable on dark and light themes alike.
         p = self._palette
@@ -1245,6 +1251,7 @@ class App(QMainWindow):
                 self.log_text.appendPlainText(text)
             except Exception:
                 pass
+        self._log_history_trim()
         self._mirror_log_line(text + "\n")
         if level == "success" and "抢单成功" in message:
             self.grab_count += 1
@@ -1264,6 +1271,40 @@ class App(QMainWindow):
                 open(path, "w", encoding="utf-8").close()
             with open(path, "a", encoding="utf-8") as f:
                 f.write(text)
+        except Exception:
+            pass
+
+    _LOG_HISTORY_MAX = 2000
+
+    def _log_history_trim(self):
+        history = getattr(self, "_log_history", None)
+        if history is not None and len(history) > self._LOG_HISTORY_MAX:
+            del history[0:len(history) - self._LOG_HISTORY_MAX]
+
+    def _rebuild_log(self):
+        """Re-colour every retained line with the active palette."""
+        history = list(getattr(self, "_log_history", []))
+        if not history:
+            return
+        p = self._palette
+        colors = {
+            "info": p.get("log_info", TEXT_DARK),
+            "success": p.get("log_success", "#1A7F37"),
+            "warning": p.get("log_warning", "#9A6700"),
+            "error": p.get("log_error", "#CF222E"),
+            "debug": p.get("log_debug", "#666666"),
+        }
+        try:
+            self.log_text.clear()
+            cursor = self.log_text.textCursor()
+            for level, text in history:
+                cursor.movePosition(QTextCursor.End)
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor(colors.get(level, TEXT_DARK)))
+                cursor.setCharFormat(fmt)
+                cursor.insertText(text + "\n")
+            self.log_text.setTextCursor(cursor)
+            self.log_text.ensureCursorVisible()
         except Exception:
             pass
 
