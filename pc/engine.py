@@ -51,13 +51,26 @@ from dpapi import ApiClient, ApiError, amount_yuan_from_cents, extract_clerk, no
 #: A confirm reply whose message contains one of these means success.
 CONFIRMED_WORDS = ("已接单", "已确认", "接单成功", "确认成功")
 #: A confirm reply whose message contains one of these is terminally failed.
-TERMINAL_WORDS = ("取消", "已被", "不存在", "无权", "权限", "失效", "超时")
+#: Qualification / quota refusals must end the task immediately instead of
+#: burning the whole confirm window: measured on autoduopei.cc (2026-11-14),
+#: the platform answers "本周订单8单，当前续费率22%，需要达标续费率30%…" and
+#: retrying cannot change the standing of the account.
+QUALIFICATION_WORDS = ("续费率", "达标", "资质", "额度", "次数不足", "上限", "本周订单")
+
+TERMINAL_WORDS = (
+    "取消", "已被", "不存在", "无权", "权限", "失效", "超时",
+) + QUALIFICATION_WORDS
 
 
 def terminal_reason(message) -> str:
     """Human-readable reason for a terminal confirm failure
     (DPGTerminalReason, DPGEngine.m)."""
     text = str(message or "")
+    # A qualification refusal is the platform's own wording about this
+    # account, so pass it through untouched: the log and the history then show
+    # the real reason instead of a rewritten label.
+    if any(word in text for word in QUALIFICATION_WORDS):
+        return text if text else "平台拒绝（资质/额度）"
     for word in ("已被", "被其他", "他人抢", "别人抢", "抢走"):
         if word in text:
             return "被其他人抢走"
