@@ -258,6 +258,21 @@ QFrame#hero {
     border-bottom: 2px solid %(HERO_BORDER)s;
 }
 QLabel#heroTitle { color: white; font-size: 20px; font-weight: bold; }
+QComboBox#heroCombo {
+    background: rgba(255,255,255,0.16); color: white; font-size: 12px;
+    border: 1px solid rgba(255,255,255,0.55); border-radius: 8px;
+    padding: 3px 8px; min-height: 18px;
+}
+QComboBox#heroCombo::drop-down { width: 20px; border: none; background: transparent; }
+QComboBox#heroCombo QAbstractItemView {
+    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 8px; padding: 4px; }
+QPushButton#heroButton {
+    background: rgba(255,255,255,0.16); color: white; font-size: 12px;
+    font-weight: bold; border: 1px solid rgba(255,255,255,0.55);
+    border-radius: 8px; padding: 4px 12px; min-height: 18px;
+}
+QPushButton#heroButton:hover { background: rgba(255,255,255,0.30); }
 QLabel#heroStat { color: white; font-size: 13px; font-weight: bold; }
 QLabel#heroStatDim { color: %(HERO_STAT_DIM)s; font-size: 13px; }
 QLabel#sectionTitle { color: %(BLUE)s; font-size: 14px; font-weight: bold; }
@@ -681,9 +696,6 @@ class App(QMainWindow):
         sidebar_layout.setSpacing(0)
         self._build_login_section(sidebar_layout)
         self._build_control_section(sidebar_layout)
-        self._build_theme_section(sidebar_layout)
-        sidebar_layout.addStretch(1)
-        self._build_advanced_button(sidebar_layout)
         sidebar_layout.addStretch(1)
         body_layout.addWidget(sidebar)
 
@@ -692,6 +704,19 @@ class App(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         self._build_conditions_section(main_layout)
+        # Log and history sit side by side: stacked they each kept a full-width
+        # card with an empty right half.
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(12)
+        log_column = QVBoxLayout()
+        log_column.setSpacing(0)
+        self._build_log_section(log_column)
+        history_column = QVBoxLayout()
+        history_column.setSpacing(0)
+        self._build_history_section(history_column)
+        bottom_row.addLayout(log_column, 3)
+        bottom_row.addLayout(history_column, 2)
+        main_layout.addLayout(bottom_row, 1)
         self._build_log_section(main_layout)
         self._build_history_section(main_layout)
         body_layout.addWidget(main_area, 1)
@@ -715,6 +740,23 @@ class App(QMainWindow):
         self.status_label = QLabel("未登录")
         self.status_label.setObjectName("heroStatDim")
         layout.addWidget(self.status_label)
+
+        # Toolbar controls live in the hero: the sidebar is for the account and
+        # the run switch, not for periodic settings.
+        layout.addSpacing(18)
+        self.theme_box = QComboBox()
+        self.theme_box.setObjectName("heroCombo")
+        self.theme_box.setFixedWidth(132)
+        for theme_id, theme in THEMES.items():
+            self.theme_box.addItem(theme["name"], theme_id)
+        self.theme_box.setCurrentIndex(list(THEMES.keys()).index(self._theme_id))
+        self.theme_box.currentIndexChanged.connect(self._on_theme_changed)
+        layout.addWidget(self.theme_box)
+        layout.addSpacing(8)
+        advanced = QPushButton("高级设置")
+        advanced.setObjectName("heroButton")
+        advanced.clicked.connect(self._open_advanced)
+        layout.addWidget(advanced)
         root.addWidget(hero)
 
     def _sidebar_card(self, parent_layout, title):
@@ -807,12 +849,12 @@ class App(QMainWindow):
         self.confirm_wait_min_spin.setRange(0, 120)
         self.confirm_wait_min_spin.setSuffix(" 秒")
         self._form_row(grid, 4, "抢单前等待最小（秒）", self.confirm_wait_min_spin,
-                       "0 不等待；可与最大值相同")
+                       "0 不等待；可等于最大值")
         self.confirm_wait_max_spin = QSpinBox()
         self.confirm_wait_max_spin.setRange(0, 120)
         self.confirm_wait_max_spin.setSuffix(" 秒")
         self._form_row(grid, 5, "抢单前等待最大（秒）", self.confirm_wait_max_spin,
-                       "与最小值相同即固定等待")
+                       "相同即固定等待")
         # A stretched form leaves a huge empty band beside every hint.
         inner.setMaximumWidth(980)
         for widget in (self.memo_mode_box, self.confirm_wait_min_spin,
@@ -869,6 +911,11 @@ class App(QMainWindow):
         self.listen_state_sidebar_label.setObjectName("sidebarState")
         self.listen_state_sidebar_label.setWordWrap(True)
         layout.addWidget(self.listen_state_sidebar_label)
+        self.auto_stop_check = QCheckBox("接到单后自动停止监听")
+        self.auto_stop_check.setObjectName("sidebarCheck")
+        self.auto_stop_check.setChecked(bool(self.cfg.get("auto_stop_after_grab", True)))
+        self.auto_stop_check.setToolTip("关闭后抢到一单会继续轮询，适合连续接单")
+        layout.addWidget(self.auto_stop_check)
 
     def _build_theme_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "主题")
@@ -1645,6 +1692,7 @@ class AdvancedDialog(QDialog):
                 else:
                     self.cfg[key] = value
             self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
+            self.cfg["auto_stop_after_grab"] = self.auto_stop_check.isChecked()
             self.cfg["notify_enabled"] = self.notify_check.isChecked()
             self.cfg["notify_provider"] = str(self.notify_provider_box.currentData() or "serverchan")
             self.cfg["verify_tls"] = self.verify_check.isChecked()
