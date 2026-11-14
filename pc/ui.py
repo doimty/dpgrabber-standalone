@@ -807,12 +807,12 @@ class App(QMainWindow):
         self.confirm_wait_min_spin.setRange(0, 120)
         self.confirm_wait_min_spin.setSuffix(" 秒")
         self._form_row(grid, 4, "抢单前等待最小（秒）", self.confirm_wait_min_spin,
-                       "启用时 ≥ 3 秒")
+                       "0 不等待；可与最大值相同")
         self.confirm_wait_max_spin = QSpinBox()
         self.confirm_wait_max_spin.setRange(0, 120)
         self.confirm_wait_max_spin.setSuffix(" 秒")
         self._form_row(grid, 5, "抢单前等待最大（秒）", self.confirm_wait_max_spin,
-                       "启用时 差值 ≥ 2 秒")
+                       "与最小值相同即固定等待")
         # A stretched form leaves a huge empty band beside every hint.
         inner.setMaximumWidth(980)
         for widget in (self.memo_mode_box, self.confirm_wait_min_spin,
@@ -1159,10 +1159,12 @@ class App(QMainWindow):
         confirm_min = int(self.confirm_wait_min_spin.value())
         confirm_max = int(self.confirm_wait_max_spin.value())
         if confirm_min > 0 or confirm_max > 0:
-            if confirm_min < 3:
-                raise cfgmod.ConfigError("抢单前等待最小时长应 ≥ 3 秒（或都填 0 表示不等待）")
-            if confirm_max - confirm_min < 2:
-                raise cfgmod.ConfigError("抢单前等待最大值应比最小值大至少 2 秒")
+            # A fixed wait (min == max) is a valid configuration; only an
+            # inverted or absurd window is refused.
+            if confirm_max < confirm_min:
+                raise cfgmod.ConfigError("最大等待不能小于最小等待")
+            if confirm_max > 120:
+                raise cfgmod.ConfigError("等待秒数上限 120 秒")
         run_enabled = self.run_rest_check.isChecked()
         run_min = int(self.risk_run_min_spin.value())
         run_max = int(self.risk_run_max_spin.value())
