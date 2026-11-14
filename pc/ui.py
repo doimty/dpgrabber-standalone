@@ -43,6 +43,21 @@ from __future__ import annotations
 
 import ctypes
 import inspect
+import platform
+
+
+def _windows_build() -> int:
+    import sys as _sys          # this helper sits above the module's own imports
+    if _sys.platform != "win32":
+        return 0
+    try:
+        return int(platform.version().split(".")[2])
+    except Exception:
+        return 0
+
+
+#: Mica and DWM-drawn rounded corners need Windows 11 (build >= 22000).
+WINDOWS_11 = _windows_build() >= 22000
 import os
 import re
 import sys
@@ -440,7 +455,8 @@ QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
 """
 
 
-def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
+def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME,
+                     mica: bool = False) -> str:
     """Build the full QSS for a palette.
 
     Every colour comes from the palette — nothing is hardcoded in the
@@ -453,8 +469,13 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
     check_mark = _check_png("#FFFFFF", theme_id)
     chevron_down = _chevron_png("down", p["accent"], theme_id)
     chevron_up = _chevron_png("up", p["accent"], theme_id)
+    window_bg = p["window_bg"]
+    if mica:
+        colour = QColor(window_bg)
+        window_bg = "rgba(%d, %d, %d, %d)" % (
+            colour.red(), colour.green(), colour.blue(), 186)  # ~73% opaque
     subs = {
-        "WINDOW_BG": p["window_bg"],
+        "WINDOW_BG": window_bg,
         "CARD_BG": p["card_bg"],
         "CARD_BORDER": p["card_border"],
         "BLUE": p["accent"],
@@ -491,7 +512,8 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
 STYLESHEET = build_stylesheet(_DAY, DEFAULT_THEME)
 
 
-def apply_theme(qapp, palette: dict, theme_id: str = DEFAULT_THEME) -> None:
+def apply_theme(qapp, palette: dict, theme_id: str = DEFAULT_THEME,
+                mica: bool = False) -> None:
     """Apply a theme to the application: QSS plus placeholder colour.
 
     QSS cannot set placeholder-text colour, so the palette's hint colour
@@ -500,10 +522,40 @@ def apply_theme(qapp, palette: dict, theme_id: str = DEFAULT_THEME) -> None:
     placeholder role is touched; every other palette colour is left
     alone.
     """
-    qapp.setStyleSheet(build_stylesheet(palette, theme_id))
+    qapp.setStyleSheet(build_stylesheet(palette, theme_id, mica=mica))
     pal = qapp.palette()
     pal.setColor(QPalette.PlaceholderText, QColor(palette.get("hint", "#5B7A99")))
     qapp.setPalette(pal)
+
+
+def _apply_windows_effects(window: QMainWindow, dark: bool = True) -> bool:
+    """Mica backdrop + DWM rounded corners (Windows 11 only).
+
+    Both need an *opaque* top-level: WA_TranslucentBackground and a QRegion
+    mask each disable the DWM frame, which is why they are only used when this
+    returns False.
+    """
+    if sys.platform != "win32" or not WINDOWS_11:
+        return False
+    try:
+        hwnd = int(window.winId())
+        dwm = ctypes.windll.dwmapi
+    except Exception:
+        return False
+
+    def set_int(index: int, value: int) -> bool:
+        raw = ctypes.c_int(value)
+        try:
+            return dwm.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd), index, ctypes.byref(raw),
+                ctypes.sizeof(raw)) == 0
+        except Exception:
+            return False
+
+    ok = set_int(38, 2)            # DWMWA_SYSTEMBACKDROP_TYPE = Mica
+    set_int(20, 1 if dark else 0)  # DWMWA_USE_IMMERSIVE_DARK_MODE
+    set_int(33, 2)                 # DWMWA_WINDOW_CORNER_PREFERENCE = round
+    return ok
 
 
 def _apply_mica(window: QMainWindow) -> bool:
@@ -622,7 +674,10 @@ class App(QMainWindow):
         # A mask alone leaves the corner pixels painted with the platform's
         # opaque backing store, which is the white sliver seen under each
         # rounded corner. Translucency lets the clipped area show the desktop.
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # Mica and DWM rounding both require an opaque window; translucency is
+        # only the Windows 10 fallback.
+        if not WINDOWS_11:
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
         self._drag_offset = None
         self.setWindowTitle(APP_TITLE)
         # WINDOW_SIZE is taller than a 1080p screen, so the bottom of the
@@ -692,8 +747,21 @@ class App(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if getattr(self, "_mica_restyled", False):
+            return
+        self._mica_restyled = True
+        app = QApplication.instance()
+        if app is not None and getattr(self, "_mica", False):
+            apply_theme(app, self._palette, self._theme_id, mica=True)
+
+
+        super().showEvent(event)
         if not self._mica_applied:
             self._mica_applied = True
+            self._mica = _apply_windows_effects(
+            self, dark=(self._theme_id or "").lower() in ("night", "violet", "blue")
+        )
+        if not self._mica:
             _apply_mica(self)
 
     def _primary_button(self, text, slot):
@@ -783,6 +851,9 @@ class App(QMainWindow):
         window is translucent so the clipped pixels show the desktop instead of
         a white backing.
         """
+        if WINDOWS_11:
+            self.clearMask()
+            return
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
                             self.WINDOW_RADIUS, self.WINDOW_RADIUS)
