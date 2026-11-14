@@ -565,6 +565,8 @@ class App(QMainWindow):
         self._palette = palette_for(self._theme_id)
         self.client = self._make_client()
         self.voice = Voice(enabled=bool(cfg.get("voice_enabled", True)))
+        from notify import Notifier
+        self.notifier = Notifier(cfg)
         self.engine: Engine | None = None
         self._listening = False
         self._login_thread: threading.Thread | None = None
@@ -1029,6 +1031,23 @@ class App(QMainWindow):
         entry = self._history_entry_for_order(order, order_id, "success", "")
         self._recorded_order_keys.add((entry["no"], entry["id"]))
         self.history_entry_signal.emit(entry)
+        self._push_grab(entry)
+
+    def _push_grab(self, entry: dict):
+        """Push the successful grab on a worker thread; never blocks or raises."""
+        if not getattr(self, "notifier", None) or not self.notifier.enabled:
+            return
+        title = "抢单成功 %s" % entry.get("no", "")
+        body = "金额 %s 元\n订单 %s\n时间 %s" % (
+            entry.get("amount", "?"), entry.get("no", ""), entry.get("grabbed_at", ""),
+        )
+
+        def worker():
+            ok = self.notifier.send(title, body)
+            self.log("info" if ok else "warning",
+                     "推送(%s)%s" % (self.notifier.describe(), "已发送" if ok else "失败"))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_outcome(self, order: dict, outcome: str, reason: str):
         """Engine callback once per order leaving the confirm loop.
@@ -1131,6 +1150,8 @@ class App(QMainWindow):
         self.cfg = new_cfg
         self.client = self._make_client()
         self.voice.enabled = bool(new_cfg.get("voice_enabled", True))
+        from notify import Notifier
+        self.notifier = Notifier(new_cfg)
         self.log("success", "高级设置已保存")
 
     # -- logging (signal-driven; worker threads only emit) ------------------
@@ -1332,7 +1353,7 @@ class AdvancedDialog(QDialog):
     def __init__(self, parent: App, cfg: dict, on_saved):
         super().__init__(parent)
         self.setWindowTitle("高级设置")
-        self.setFixedSize(760, 560)
+        self.setFixedSize(780, 640)
         self.cfg = dict(cfg)
         self._on_saved = on_saved
 
@@ -1352,6 +1373,8 @@ class AdvancedDialog(QDialog):
             ("shop_id", "优先店铺（0=自动）",
          "0 = 自动挑选账号有店员权限的店铺；填数字则优先该店铺，无权限时自动改选"),
             ("request_timeout_sec", "请求超时（秒）", "单次请求最长等待时间"),
+            ("notify_key", "推送密钥", "Server酱 / PushPlus 的 SendKey；webhook 渠道忽略"),
+            ("notify_webhook", "推送 Webhook", "自定义地址，收到 {title, body} JSON；非空时优先于密钥"),
         ]
         for i, (key, label, hint) in enumerate(rows):
             lab = QLabel(label)
@@ -1366,10 +1389,11 @@ class AdvancedDialog(QDialog):
             h.setObjectName("hint")
             grid.addWidget(h, i, 2)
         # 自动等待偏移 (秒): only applies to shops 50/105/1391.
+        auto_row = len(rows)
         lab = QLabel("自动等待偏移（秒）")
         lab.setObjectName("fieldLabel")
         lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(lab, 2, 0)
+        grid.addWidget(lab, auto_row, 0)
         self.auto_wait_offset_spin = QDoubleSpinBox()
         self.auto_wait_offset_spin.setRange(-0.5, 0.5)
         self.auto_wait_offset_spin.setSingleStep(0.05)
@@ -1378,10 +1402,10 @@ class AdvancedDialog(QDialog):
             self.auto_wait_offset_spin.setValue(float(self.cfg.get("auto_wait_offset", 0.0) or 0.0))
         except (TypeError, ValueError):
             self.auto_wait_offset_spin.setValue(0.0)
-        grid.addWidget(self.auto_wait_offset_spin, 2, 1)
+        grid.addWidget(self.auto_wait_offset_spin, auto_row, 1)
         h = QLabel("仅适用于店铺 50 / 105 / 1391；正值延后、负值提前")
         h.setObjectName("hint")
-        grid.addWidget(h, 2, 2)
+        grid.addWidget(h, auto_row, 2)
         root.addWidget(form)
 
         lists_row = QHBoxLayout()
@@ -1414,6 +1438,20 @@ class AdvancedDialog(QDialog):
         self.verify_check = QCheckBox("验证服务器 TLS 证书（推荐开启）")
         self.verify_check.setChecked(bool(self.cfg.get("verify_tls", True)))
         root.addWidget(self.verify_check)
+        self.notify_row = QHBoxLayout()
+        self.notify_check = QCheckBox("开启抢单推送")
+        self.notify_check.setChecked(bool(self.cfg.get("notify_enabled", False)))
+        self.notify_provider_box = QComboBox()
+        from notify import PROVIDERS, PROVIDER_NAMES
+        for key in PROVIDERS:
+            self.notify_provider_box.addItem(PROVIDER_NAMES[key], key)
+        current = str(self.cfg.get("notify_provider") or "serverchan")
+        index = [self.notify_provider_box.itemData(i) for i in range(self.notify_provider_box.count())].index(current)          if current in [self.notify_provider_box.itemData(i) for i in range(self.notify_provider_box.count())] else 0
+        self.notify_provider_box.setCurrentIndex(index)
+        self.notify_row.addWidget(self.notify_check)
+        self.notify_row.addWidget(self.notify_provider_box)
+        self.notify_row.addStretch(1)
+        root.addLayout(self.notify_row)
         self.voice_check = QCheckBox("语音播报（需要本机语音支持）")
         self.voice_check.setChecked(bool(self.cfg.get("voice_enabled", True)))
         root.addWidget(self.voice_check)
@@ -1446,6 +1484,8 @@ class AdvancedDialog(QDialog):
                 else:
                     self.cfg[key] = value
             self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
+            self.cfg["notify_enabled"] = self.notify_check.isChecked()
+            self.cfg["notify_provider"] = str(self.notify_provider_box.currentData() or "serverchan")
             self.cfg["verify_tls"] = self.verify_check.isChecked()
             self.cfg["voice_enabled"] = self.voice_check.isChecked()
             self.cfg["memo_keywords"] = _lines(self.keyword_text)
