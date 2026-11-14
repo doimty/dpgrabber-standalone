@@ -1,5 +1,11 @@
 requests>=2.28
 pycryptodome>=3.15
+# Pillow: draws the per-theme chevron PNGs for combo/spin arrows
+# (ui.py _chevron_png). Without it the arrows silently fall back to
+# Qt's default grey triangle and test_themes fails in CI, where Pillow
+# is not otherwise installed. Also needed in the packaged exe so the
+# arrows match the active theme there too.
+Pillow>=10.4
 # Qt UI (PySide6 Widgets, LGPL — closed-source OK). Use the Essentials
 # build to keep the packaged exe smaller; the full PySide6 package also
 # works. CustomTkinter/tkinter is no longer used by the app (the old UI
