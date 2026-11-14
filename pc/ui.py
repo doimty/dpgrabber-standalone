@@ -700,27 +700,21 @@ class App(QMainWindow):
         body_layout.addWidget(sidebar)
 
         main_area = QWidget()
-        main_layout = QVBoxLayout(main_area)
+        main_layout = QHBoxLayout(main_area)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        self._build_conditions_section(main_layout)
-        # Log and history sit side by side: stacked they each kept a full-width
-        # card with an empty right half.
-        bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(12)
-        log_column = QVBoxLayout()
-        log_column.setSpacing(0)
-        self._build_log_section(log_column)
-        history_column = QVBoxLayout()
-        history_column.setSpacing(0)
-        self._build_history_section(history_column)
-        bottom_row.addLayout(log_column, 2)
-        bottom_row.addLayout(history_column, 3)
-        self.log_text.setMinimumHeight(200)
-        self.history_list.setMinimumHeight(200)
-        main_layout.addLayout(bottom_row, 1)
-        self._build_log_section(main_layout)
-        self._build_history_section(main_layout)
+        main_layout.setSpacing(12)
+        form_column = QVBoxLayout()
+        form_column.setSpacing(0)
+        self._build_conditions_section(form_column)
+        form_column.addStretch(1)
+        right_column = QVBoxLayout()
+        right_column.setSpacing(0)
+        self._build_log_section(right_column)
+        self._build_history_section(right_column)
+        main_layout.addLayout(form_column, 2)
+        main_layout.addLayout(right_column, 3)
+
+
         body_layout.addWidget(main_area, 1)
 
     def _build_hero(self, root):
@@ -844,7 +838,7 @@ class App(QMainWindow):
                        "列表刷新节奏")
         for widget in (self.min_amount_edit, self.max_amount_edit,
                        self.poll_interval_edit):
-            widget.setFixedWidth(190)
+            widget.setFixedWidth(150)
         self.memo_mode_box = QComboBox()
         self.memo_mode_box.addItems(["不检测备注", "有备注不抢"])
         self._form_row(grid, 3, "备注检测", self.memo_mode_box,
@@ -859,16 +853,18 @@ class App(QMainWindow):
         self.confirm_wait_max_spin.setSuffix(" 秒")
         self._form_row(grid, 5, "抢单前等待最大（秒）", self.confirm_wait_max_spin,
                        "相同即固定等待")
-        # A stretched form leaves a huge empty band beside every hint.
-        inner.setMaximumWidth(980)
+        inner.setMaximumWidth(560)
         for widget in (self.memo_mode_box, self.confirm_wait_min_spin,
                        self.confirm_wait_max_spin):
-            widget.setFixedWidth(190)
+            widget.setFixedWidth(150)
         card_layout.addWidget(inner, 0, Qt.AlignLeft)
 
         # 刷新与休息 (run/rest): visible toggle + four minute fields.
-        rest_group = QGroupBox("刷新与休息")
+        rest_group = QWidget()
         rest_grid = QGridLayout(rest_group)
+        rest_title = QLabel("刷新与休息")
+        rest_title.setObjectName("subTitle")
+        rest_grid.addWidget(rest_title, 0, 0, 1, 4)
         self.run_rest_check = QCheckBox("开启刷新与休息（风控店铺轮换休息）")
         self.run_rest_check.setChecked(True)
         rest_grid.addWidget(self.run_rest_check, 0, 0, 1, 4)
@@ -884,7 +880,7 @@ class App(QMainWindow):
         self.risk_rest_max_spin = QSpinBox()
         self.risk_rest_max_spin.setRange(0, 600)
         self.risk_rest_max_spin.setSuffix(" 分钟")
-        for col, (lab_text, spin) in enumerate([
+        for index, (lab_text, spin) in enumerate([
             ("刷新最短", self.risk_run_min_spin),
             ("刷新最长", self.risk_run_max_spin),
             ("休息最短", self.risk_rest_min_spin),
@@ -892,8 +888,10 @@ class App(QMainWindow):
         ]):
             lab = QLabel(lab_text)
             lab.setObjectName("fieldLabel")
-            rest_grid.addWidget(lab, 1, col * 2)
-            rest_grid.addWidget(spin, 1, col * 2 + 1)
+            row = 2 + index // 2
+            col = (index % 2) * 2
+            rest_grid.addWidget(lab, row, col)
+            rest_grid.addWidget(spin, row, col + 1)
         rest_grid.setVerticalSpacing(4)
         card_layout.addWidget(rest_group)
 
