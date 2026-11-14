@@ -245,7 +245,7 @@ def _chevron_png(direction: str, color_hex: str, theme_id: str = DEFAULT_THEME) 
 _CHEVRON_CACHE: dict = {}
 
 _STYLESHEET_TEMPLATE = """
-QMainWindow, QWidget#central { background: transparent; }
+QMainWindow, QWidget#central { background: %(WINDOW_BG)s; }
 /* The body sits in a scroll area since 24ca8cde; without these rules the
    viewport keeps the system's light background and the dark themes get a
    white band behind the section titles. */
@@ -277,8 +277,6 @@ QFrame#sidebarCard {
     border-radius: 13px;
 }
 QFrame#hero {
-    border-top-left-radius: 13px;
-    border-top-right-radius: 13px;
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(HERO_TOP)s, stop:1 %(HERO_BOTTOM)s);
     border-bottom: 2px solid %(HERO_BORDER)s;
@@ -566,6 +564,14 @@ def _apply_windows_effects(window: QMainWindow, dark: bool = True) -> bool:
     ok = set_int(38, 2)            # DWMWA_SYSTEMBACKDROP_TYPE = Mica
     set_int(20, 1 if dark else 0)  # DWMWA_USE_IMMERSIVE_DARK_MODE
     set_int(33, 2)                 # DWMWA_WINDOW_CORNER_PREFERENCE = round
+    # DWMWA_BORDER_COLOR: without this DWM draws a 1px frame ring around the
+    # frameless window, which reads as a dark outline on the rounded corners.
+    raw = ctypes.c_uint(0xFFFFFFFE)   # DWMWA_COLOR_NONE
+    try:
+        dwm.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), 34,
+                                  ctypes.byref(raw), ctypes.sizeof(raw))
+    except Exception:
+        pass
     return ok
 
 
