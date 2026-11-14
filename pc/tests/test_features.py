@@ -887,5 +887,21 @@ class AutoStopAfterGrabTests(unittest.TestCase):
         self.assertFalse(cfgmod.validate({"auto_stop_after_grab": False})["auto_stop_after_grab"])
 
 
+class VanishedOrderTests(unittest.TestCase):
+    """「哎呀订单好像跑走了」是终态：重试只会拿到同一句（店铺 50 实测）。"""
+
+    def test_vanished_order_is_terminal_and_verbatim(self):
+        from engine import classify_confirm
+        msg = "哎呀订单好像跑走了，再试试~"
+        outcome, reason = classify_confirm({"code": 1, "msg": msg})
+        self.assertEqual(outcome, "fail")
+        self.assertEqual(reason, msg)
+
+    def test_countdown_message_still_retries(self):
+        from engine import classify_confirm
+        outcome, _ = classify_confirm({"code": 1, "msg": "未满足抢单倒计时秒数，请重新抢单"})
+        self.assertEqual(outcome, "retry")
+
+
 if __name__ == "__main__":
     unittest.main()
