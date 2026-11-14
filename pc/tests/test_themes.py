@@ -142,5 +142,28 @@ class ThemeConfigTests(unittest.TestCase):
         self.assertEqual(cfg["theme"], "day")
 
 
+class AssetFolderTests(unittest.TestCase):
+    """build_stylesheet runs at import time, so an unusable TEMP must not
+    raise: 2026-11-14 the app died with FileNotFoundError before any window."""
+
+    def test_asset_dir_survives_a_broken_temp(self):
+        import tempfile
+        from unittest import mock
+        import ui as app_ui
+
+        with mock.patch.object(tempfile, "gettempdir",
+                               side_effect=FileNotFoundError("no temp")):
+            folder = app_ui._asset_dir()
+        self.assertIsNotNone(folder, "no fallback folder")
+        probe = folder / ".dpg_asset_probe2"
+        probe.write_bytes(b"1")
+        probe.unlink()
+
+    def test_stylesheet_references_a_check_image(self):
+        for theme_id, theme in THEMES.items():
+            css = build_stylesheet(theme["palette"], theme_id)
+            self.assertIn("dpgrabber_check_%s.png" % theme_id, css, theme_id)
+
+
 if __name__ == "__main__":
     unittest.main()
