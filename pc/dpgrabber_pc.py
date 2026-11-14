@@ -24,6 +24,7 @@ import argparse
 import os
 import sys
 
+import accounts as accounts_mod
 import config as cfgmod
 
 
@@ -50,7 +51,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        cfg = cfgmod.load()
+        # one config file per account; the old single file is migrated once
+        accounts_mod.migrate_legacy()
+        known = accounts_mod.list_accounts()
+    except Exception:
+        known = []
+    try:
+        cfg = accounts_mod.load_account(known[0]["phone"]) if known else cfgmod.load()
     except cfgmod.ConfigError as exc:
         print("config error: %s" % exc, file=sys.stderr)
         return 2
