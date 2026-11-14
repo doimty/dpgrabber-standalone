@@ -425,6 +425,25 @@ def _outcome_label(outcome: str, palette: dict | None = None):
     return label, color
 
 
+def _prevent_sleep(enable: bool) -> None:
+    """Hold off Windows idle sleep while the listener is running.
+
+    Losing the poll loop to system sleep means not grabbing at all, so we
+    take ES_CONTINUOUS + ES_SYSTEM_REQUIRED for the duration of a listen
+    run and release it on stop/close. No-op off Windows; best effort.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ES_CONTINUOUS = 0x80000000
+        ES_SYSTEM_REQUIRED = 0x00000001
+        flags = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if enable else 0)
+        ctypes.windll.kernel32.SetThreadExecutionState(flags)
+    except Exception:
+        pass
+
 class App(QMainWindow):
     # Signals: worker threads emit these; slots run on the UI thread.
     log_signal = Signal(str, str)
@@ -768,6 +787,9 @@ class App(QMainWindow):
         self.log_text.setObjectName("logView")
         self.log_text.setReadOnly(True)
         self.log_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        # Cap retained lines: a 0.5 s poll loop otherwise grows the log
+        # without bound and every repaint gets slower.
+        self.log_text.setMaximumBlockCount(2000)
         card_layout.addWidget(self.log_text, 1)
         clear_row = QHBoxLayout()
         clear_row.addWidget(self._secondary_button("清空日志", self._clear_log))
@@ -1140,6 +1162,7 @@ class App(QMainWindow):
         self.engine = self._make_engine()
         if self.engine.start(phone, password):
             self._listening = True
+            _prevent_sleep(True)
             self.listen_state_signal.emit("正在监听")
             self._set_listen_buttons(True)
 
@@ -1153,6 +1176,7 @@ class App(QMainWindow):
             self.engine.stop()
         self.listen_state_signal.emit("已停止监听")
         self._set_listen_buttons(False)
+        _prevent_sleep(False)
 
     def _refresh_buttons(self):
         # Engine stopped on its own (e.g. grab succeeded).
@@ -1160,11 +1184,13 @@ class App(QMainWindow):
             self._listening = False
             self.listen_state_signal.emit("监听已停止")
             self._set_listen_buttons(False)
+            _prevent_sleep(False)
 
     def closeEvent(self, event):
         if self.engine is not None:
             self.engine.stop()
         self.voice.stop()
+        _prevent_sleep(False)
         event.accept()
 
 
