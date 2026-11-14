@@ -415,6 +415,11 @@ class EngineConfirmWaitTests(unittest.TestCase):
         def log(level, message):
             logs.append((level, message))
 
+        # The order carries no createTime here, so the blind wait applies and
+        # the injected rng (0.05) picks the low end of 3..5.
+        order_without_create = _order()
+        order_without_create.pop("createTime", None)
+        stub = StubApiClient(polls=[[order_without_create]], confirms=[{"code": 0}])
         engine = Engine(stub, cfg, log, rng=FakeRng(0.05))
         self.assertTrue(engine.start("13800138000", "secret"))
         self.assertTrue(_wait_stopped(engine))
@@ -901,6 +906,46 @@ class VanishedOrderTests(unittest.TestCase):
         from engine import classify_confirm
         outcome, _ = classify_confirm({"code": 1, "msg": "未满足抢单倒计时秒数，请重新抢单"})
         self.assertEqual(outcome, "retry")
+
+
+class CreateTimeWaitTests(unittest.TestCase):
+    """等待时间应从订单创建时刻算，而不是从我们发现时刻算。"""
+
+    NOW = 1_700_000_000_000
+
+    def _cfg(self, lo=3, hi=3, offset=0.0):
+        return {"confirm_wait_min": lo, "confirm_wait_max": hi, "auto_wait_offset": offset}
+
+    def test_wait_shrinks_by_the_polling_delay(self):
+        from engine import confirm_wait_for_order
+        for elapsed_ms, expected in ((0, 3.0), (500, 2.5), (1000, 2.0), (2800, 0.2)):
+            order = {"createTime": self.NOW - elapsed_ms}
+            self.assertAlmostEqual(
+                confirm_wait_for_order(self._cfg(), order, 50, None, self.NOW), expected)
+
+    def test_wait_never_negative(self):
+        from engine import confirm_wait_for_order
+        order = {"createTime": self.NOW - 9000}
+        self.assertEqual(confirm_wait_for_order(self._cfg(), order, 50, None, self.NOW), 0.0)
+
+    def test_missing_create_time_falls_back_to_the_blind_wait(self):
+        from engine import confirm_wait_for_order
+        self.assertAlmostEqual(
+            confirm_wait_for_order(self._cfg(), {"no": "1"}, 50, None, self.NOW), 3.0)
+
+    def test_offset_is_already_inside_the_target(self):
+        from engine import confirm_wait_for_order
+        order = {"createTime": self.NOW - 500}
+        # 3 - 0.2 = 2.8 target, minus 0.5 elapsed
+        self.assertAlmostEqual(
+            confirm_wait_for_order(self._cfg(offset=-0.2), order, 50, None, self.NOW), 2.3)
+
+    def test_shops_outside_the_offset_list_are_unaffected(self):
+        from engine import confirm_wait_for_order
+        order = {"createTime": self.NOW - 500}
+        self.assertAlmostEqual(
+            confirm_wait_for_order(self._cfg(lo=5, hi=5, offset=-0.5), order, 92, None, self.NOW),
+            4.5)
 
 
 if __name__ == "__main__":
