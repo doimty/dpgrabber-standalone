@@ -479,6 +479,63 @@ class ApiClient:
         extract_clerk() to find the clerk object."""
         return self.request("GET", "/s/c/clerk/get", session=session, timeout=15)
 
+    # -- clerk state (discovered 2026-11-15 from the uni-app bundle) ---------
+
+    def set_online(self, status: int, update_auto_online: bool = False,
+                   session: Session | None = None) -> dict:
+        """POST /s/c/clerk/updateStatus — the platform wants form params here."""
+        return self.request(
+            "POST", "/s/c/clerk/updateStatus", session=session,
+            body={"status": int(status),
+                  "updateAutoOnline": "true" if update_auto_online else "false"},
+            body_type="form", timeout=15,
+        )
+
+    def set_random_order_switch(self, enabled: bool,
+                                session: Session | None = None) -> dict:
+        return self.request(
+            "POST", "/s/c/clerk/updateRandomOrderSwitch", session=session,
+            body={"randomOrderSwitch": "true" if enabled else "false"},
+            body_type="form", timeout=15,
+        )
+
+    def item_switch_list(self, session: Session | None = None) -> dict:
+        """POST /s/c/clerk/getItemSwitchList — 接单类型 + which are enabled."""
+        return self.request(
+            "POST", "/s/c/clerk/getItemSwitchList", session=session,
+            body={}, body_type="json", timeout=15,
+        )
+
+    def set_item_switch(self, switch_id: int, enabled_ids,
+                        session: Session | None = None) -> dict:
+        """Toggle one 接单类型; the platform wants the new list as JSON text."""
+        return self.request(
+            "POST", "/s/c/clerk/updateItemSwitch", session=session,
+            body={"switchId": int(switch_id),
+                  "switchIds": json.dumps([int(i) for i in enabled_ids])},
+            body_type="form", timeout=15,
+        )
+
+    def order_total(self, start_dt: str, end_dt: str,
+                    session: Session | None = None) -> int:
+        """Order count in a datetime range; -1 when the platform refuses.
+
+        ``start_dt``/``end_dt`` are the platform's own format
+        ("2026-11-08 00:00:00"); milliseconds are rejected by its SQL layer.
+        """
+        path = ("/s/c/order/list?pageNo=1&pageSize=1&startTime=%s&endTime=%s"
+                % (quote(start_dt), quote(end_dt)))
+        try:
+            resp = self.request("GET", path, session=session, timeout=20)
+        except ApiError:
+            return -1
+        if not isinstance(resp, dict) or resp.get("code") != 0:
+            return -1
+        try:
+            return int(resp.get("total") or 0)
+        except (TypeError, ValueError):
+            return -1
+
     def random_list(self, page_size: int = 20, timeout: float = 15,
                     session: Session | None = None) -> list:
         """GET /s/c/order/randomList. Returns the order list (possibly empty).
