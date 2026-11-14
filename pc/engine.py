@@ -436,12 +436,26 @@ class Engine:
         return max(0.0, self._rng.uniform(rest_min, rest_max)) * 60.0
 
     def _current_shop_id(self):
-        """Shop id from the config (what session_for_account uses); None
-        when unavailable, so the auto-wait offset is ignored then."""
+        """Shop the session is actually in, not the configured preference.
+
+        The auto-wait offset is shop-specific (50/105/1391), and the config's
+        shop_id is only a *hint* that may be 0 (auto) or may have been
+        overridden by the permission check during login. Reading it here meant
+        the offset silently never applied: with shop_id=0 the value was never
+        in AUTO_WAIT_OFFSET_SHOPS. The session sid is the real answer.
+        """
+        session = getattr(self.client, "session", None)
+        sid = getattr(session, "sid", None)
+        if sid is not None:
+            try:
+                return int(sid)
+            except (TypeError, ValueError):
+                pass
         try:
-            return int(self.cfg.get("shop_id", 92))
+            configured = int(self.cfg.get("shop_id") or 0)
         except (TypeError, ValueError):
             return None
+        return configured or None
 
     def _emit_outcome(self, order: dict, outcome: str, reason: str):
         """Report one terminal confirm outcome via on_outcome, mapped to
