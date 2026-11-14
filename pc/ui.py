@@ -1043,7 +1043,9 @@ class App(QMainWindow):
         if not url.startswith(("http://", "https://")):
             self.avatar_signal.emit("")
             return
-        cache_dir = Path.home() / ".dpgrabber"
+        # ~/.dpgrabber is not creatable on this machine (PermissionError), so
+        # the avatar is cached beside the config file, which is writable.
+        cache_dir = Path(cfgmod.config_dir()) / "avatars"
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
             suffix = ".gif" if url.lower().endswith(".gif") else ".img"
@@ -1089,6 +1091,7 @@ class App(QMainWindow):
             child = holder.takeAt(0)
             widget = child.widget()
             if widget is not None:
+                widget.setParent(None)   # detach now; deleteLater is deferred
                 widget.deleteLater()
         self.item_checks = {}
         for item in items:
