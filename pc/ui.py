@@ -313,7 +313,24 @@ QPushButton#winMin, QPushButton#winMax, QPushButton#winClose {
 QPushButton#winMin:hover, QPushButton#winMax:hover { background: rgba(255,255,255,0.22); }
 QPushButton#winClose:hover { background: #D9453D; }
 QScrollArea#sidebarScroll { background: transparent; border: none; }
+QScrollArea#sidebarScroll QScrollBar:vertical {
+    background: transparent; width: 6px; margin: 0px; border: none;
+}
+QScrollArea#sidebarScroll QScrollBar::handle:vertical {
+    background: %(CARD_BORDER)s; min-height: 32px; border-radius: 3px;
+}
+QScrollArea#sidebarScroll QScrollBar::handle:vertical:hover { background: %(BLUE)s; }
+QScrollArea#sidebarScroll QScrollBar::add-line:vertical,
+QScrollArea#sidebarScroll QScrollBar::sub-line:vertical { height: 0px; border: none; }
+QScrollArea#sidebarScroll QScrollBar::add-page:vertical,
+QScrollArea#sidebarScroll QScrollBar::sub-page:vertical { background: transparent; }
 QScrollArea#sidebarScroll > QWidget > QWidget { background: transparent; }
+QLabel#dialogTitle { color: %(TEXT_DARK)s; font-size: 16px; font-weight: bold; }
+QPushButton#dialogClose {
+    background: transparent; color: %(HINT)s; border: none;
+    border-radius: 8px; font-size: 14px;
+}
+QPushButton#dialogClose:hover { background: rgba(217,69,61,0.85); color: white; }
 QLabel#avatarBadge {
     background: %(BLUE)s; color: white; font-size: 21px; font-weight: bold;
     border-radius: 22px;
@@ -2297,12 +2314,29 @@ class AdvancedDialog(QDialog):
     def __init__(self, parent: App, cfg: dict, on_saved):
         super().__init__(parent)
         self.setWindowTitle("高级设置")
-        self.setFixedSize(800, 700)
+        # the stock title bar looked out of place next to the frameless main
+        # window, so the dialog draws its own header and drags by it
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self._drag_offset = None
+        self.setFixedSize(880, 700)
         self.cfg = dict(cfg)
         self._on_saved = on_saved
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setContentsMargins(16, 10, 16, 14)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header_title = QLabel("高级设置")
+        header_title.setObjectName("dialogTitle")
+        header.addWidget(header_title)
+        header.addStretch(1)
+        close_button = QPushButton("✕")
+        close_button.setObjectName("dialogClose")
+        close_button.setFixedSize(28, 28)
+        close_button.clicked.connect(self.reject)
+        header.addWidget(close_button)
+        outer.addLayout(header)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -2311,10 +2345,6 @@ class AdvancedDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
-        title = QLabel("高级设置")
-        title.setObjectName("sectionTitle")
-        title.setStyleSheet("font-size: 15px;")
-        root.addWidget(title)
 
         form = QWidget()
         grid = QGridLayout(form)
@@ -2440,6 +2470,31 @@ class AdvancedDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(save_btn)
         root.addLayout(btns)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.position().y() <= 44:
+            child = self.childAt(event.position().toPoint())
+            if child is None or not isinstance(child, QPushButton):
+                self._drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        _apply_windows_effects(self, dark=str(self.windowTitle()) is not None)
 
     def _notify_cfg_from_widgets(self) -> dict:
         cfg = dict(self.cfg)
