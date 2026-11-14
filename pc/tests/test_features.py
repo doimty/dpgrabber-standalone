@@ -573,5 +573,56 @@ class PollJitterTests(unittest.TestCase):
         self.assertGreaterEqual(min(engine._poll_delay() for _ in range(20)), 0.1)
 
 
+class ShopSelectionTests(unittest.TestCase):
+    """优先店铺必须是「有店员权限」的那家，而不是硬编码 92。"""
+
+    SHOPS = [
+        {"accountId": "1", "shopId": 50},
+        {"accountId": "2", "shopId": 92},
+        {"accountId": "3", "shopId": 105},
+    ]
+
+    def test_no_preference_keeps_server_order(self):
+        from dpapi import _order_shops
+        ordered = _order_shops(self.SHOPS, 0)
+        self.assertEqual([s["shopId"] for s in ordered], [50, 92, 105])
+
+    def test_preference_is_only_a_hint(self):
+        from dpapi import _order_shops
+        ordered = _order_shops(self.SHOPS, 105)
+        self.assertEqual([s["shopId"] for s in ordered], [105, 50, 92])
+
+    def test_unknown_preference_falls_back_to_all(self):
+        from dpapi import _order_shops
+        ordered = _order_shops(self.SHOPS, 1391)
+        self.assertEqual([s["shopId"] for s in ordered], [50, 92, 105])
+
+    def test_auto_shop_is_allowed_in_config(self):
+        cfg = cfgmod.validate({"shop_id": 0})
+        self.assertEqual(cfg["shop_id"], 0)
+        self.assertEqual(cfgmod.validate({})["shop_id"], 0)
+
+
+class LoginBodyTests(unittest.TestCase):
+    """PROTOCOL.md 3.2: password_hash wins when present."""
+
+    def test_32_hex_goes_out_as_password_hash(self):
+        from dpapi import _login_body
+        body = _login_body("13800000000", "e0604ab3e568576d5e9e0d47b13ad1a0")
+        self.assertEqual(body["password_hash"], "e0604ab3e568576d5e9e0d47b13ad1a0")
+        self.assertNotIn("password", body)
+
+    def test_plaintext_goes_out_as_password(self):
+        from dpapi import _login_body
+        body = _login_body("13800000000", "Slov1221..")
+        self.assertEqual(body["password"], "Slov1221..")
+        self.assertNotIn("password_hash", body)
+
+    def test_hash_lookalikes_stay_password(self):
+        from dpapi import _login_body
+        for secret in ("e0604ab3e568576d5e9e0d47b13ad1a", "e0604ab3e568576d5e9e0d47b13ad1a00"):
+            self.assertIn("password", _login_body("1", secret))
+
+
 if __name__ == "__main__":
     unittest.main()
