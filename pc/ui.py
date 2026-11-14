@@ -1221,7 +1221,8 @@ class App(QMainWindow):
     def _login_worker(self, phone: str, password: str):
         try:
             session = self.client.session_for_account(
-                phone, password, int(self.cfg.get("shop_id", 92))
+                phone, password, int(self.cfg.get("shop_id", 0)),
+            on_note=lambda note: self.log("info", note)
             )
             clerk = None
             try:
@@ -1342,7 +1343,8 @@ class AdvancedDialog(QDialog):
         grid.setColumnStretch(2, 1)
         self.entries: dict[str, QLineEdit] = {}
         rows = [
-            ("shop_id", "优先店铺 ID", "登录后优先切换到的店铺"),
+            ("shop_id", "优先店铺（0=自动）",
+         "0 = 自动挑选账号有店员权限的店铺；填数字则优先该店铺，无权限时自动改选"),
             ("request_timeout_sec", "请求超时（秒）", "单次请求最长等待时间"),
         ]
         for i, (key, label, hint) in enumerate(rows):
@@ -1432,7 +1434,7 @@ class AdvancedDialog(QDialog):
             for key, edit in self.entries.items():
                 value = edit.text().strip()
                 if key == "shop_id":
-                    self.cfg[key] = int(value)
+                    self.cfg[key] = int(value or "0")
                 elif key == "request_timeout_sec":
                     self.cfg[key] = float(value)
                 else:
