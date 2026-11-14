@@ -469,21 +469,32 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME,
     check_mark = _check_png("#FFFFFF", theme_id)
     chevron_down = _chevron_png("down", p["accent"], theme_id)
     chevron_up = _chevron_png("up", p["accent"], theme_id)
+    def translucent(value: str, alpha: int) -> str:
+        colour = QColor(value)
+        return "rgba(%d, %d, %d, %d)" % (colour.red(), colour.green(),
+                                         colour.blue(), alpha)
+
     window_bg = p["window_bg"]
+    card_bg, sidebar_card_bg, entry_bg = (p["card_bg"], p["sidebar_card_bg"],
+                                          p["entry_bg"])
     if mica:
-        colour = QColor(window_bg)
-        window_bg = "rgba(%d, %d, %d, %d)" % (
-            colour.red(), colour.green(), colour.blue(), 186)  # ~73% opaque
+        # Mica only shows where we do not paint opaque pixels: the window
+        # surface, the cards and the inputs each keep a little transparency,
+        # while text colours stay untouched so contrast holds.
+        window_bg = translucent(window_bg, 186)     # ~73%
+        card_bg = translucent(card_bg, 232)
+        sidebar_card_bg = translucent(sidebar_card_bg, 224)
+        entry_bg = translucent(entry_bg, 214)
     subs = {
         "WINDOW_BG": window_bg,
-        "CARD_BG": p["card_bg"],
+        "CARD_BG": card_bg,
         "CARD_BORDER": p["card_border"],
         "BLUE": p["accent"],
         "BLUE_DARK": p["accent_dark"],
         "TEXT_DARK": p["text_dark"],
         "HINT": p["hint"],
         "SIDEBAR_BG": p["sidebar_bg"],
-        "SIDEBAR_CARD_BG": p["sidebar_card_bg"],
+        "SIDEBAR_CARD_BG": sidebar_card_bg,
         "SIDEBAR_CARD_BORDER": p["sidebar_card_border"],
         "SIDEBAR_TEXT": p["sidebar_text"],
         "SIDEBAR_HINT": p["sidebar_hint"],
@@ -497,7 +508,7 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME,
         "BTN_HOVER_BOTTOM": p["btn_hover_bottom"],
         "BTN_DISABLED_BG": p["btn_disabled_bg"],
         "BTN_DISABLED_TEXT": p["btn_disabled_text"],
-        "ENTRY_BG": p["entry_bg"],
+        "ENTRY_BG": entry_bg,
         "ENTRY_BORDER": p["entry_border"],
         "SELECTION_BG": p["selection_bg"],
         "HISTORY_REASON": p["history_reason"],
