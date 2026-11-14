@@ -80,6 +80,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -99,6 +100,7 @@ from PySide6.QtWidgets import (
 import config as cfgmod
 from dpapi import ApiClient, ApiError, amount_yuan_from_cents, extract_clerk
 from engine import Engine
+import accounts as accounts_mod
 import history as history_mod
 from themes import DEFAULT_THEME, THEMES, palette_for
 from voice import Voice
@@ -749,7 +751,12 @@ class App(QMainWindow):
         self.history_entry_signal.connect(self._on_history_entry)
         self.refresh_history_signal.connect(self._refresh_history)
 
+        try:
+            accounts_mod.migrate_legacy()
+        except Exception:
+            pass
         self._build_widgets()
+        self._reload_account_picker()
         self._load_settings_into_widgets()
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_buttons)
@@ -1101,6 +1108,19 @@ class App(QMainWindow):
     def _build_login_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "账号登录")
 
+        # --- account picker: one config file per phone ----------------------
+        picker_row = QHBoxLayout()
+        picker_row.setSpacing(6)
+        self.account_combo = QComboBox()
+        self.account_combo.setObjectName("accountCombo")
+        self.account_combo.currentIndexChanged.connect(self._on_account_picked)
+        picker_row.addWidget(self.account_combo, 1)
+        add_button = self._ghost_button("＋", self._on_add_account)
+        add_button.setFixedWidth(34)
+        add_button.setToolTip("新增账号（每个账号一份配置文件）")
+        picker_row.addWidget(add_button)
+        layout.addLayout(picker_row)
+
         # --- signed-out form ------------------------------------------------
         self.login_form = QWidget()
         form = QVBoxLayout(self.login_form)
@@ -1299,6 +1319,65 @@ class App(QMainWindow):
             hint = QLabel("登录后显示")
             hint.setObjectName("sidebarHint")
             holder.addWidget(hint)
+
+    def _reload_account_picker(self):
+        combo = getattr(self, "account_combo", None)
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        self._account_items = accounts_mod.list_accounts()
+        for meta in self._account_items:
+            combo.addItem(accounts_mod.label_for(meta), meta["phone"])
+        if not self._account_items:
+            combo.addItem("（暂无账号，点 ＋ 新建）", "")
+        current = str(self.cfg.get("phone") or "")
+        index = combo.findData(current)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _on_account_picked(self, index: int):
+        phone = self.account_combo.itemData(index)
+        if phone:
+            self._activate_account(str(phone))
+
+    def _activate_account(self, phone: str):
+        """Switch the whole app to another account's configuration file."""
+        if phone == str(self.cfg.get("phone") or ""):
+            return
+        try:
+            cfg = accounts_mod.load_account(phone)
+        except Exception as exc:
+            self.log("error", "读取账号配置失败：%s" % str(exc)[:80])
+            return
+        if self.engine is not None and self.engine.running:
+            self._on_stop_listen()
+        self.cfg = cfg
+        self.client.session = None
+        self._show_account_card(False)
+        self._load_settings_into_widgets()
+        self.phone_edit.setText(phone)
+        self.login_state_label.setText("请输入手机号和密码后登录")
+        self.log("info", "已切换到账号 %s" % cfgmod.mask_phone(phone))
+        self._reload_account_picker()
+
+    def _on_add_account(self):
+        phone, ok = QInputDialog.getText(self, "新增账号", "手机号（11 位）")
+        if not ok:
+            return
+        digits = "".join(ch for ch in str(phone) if ch.isdigit())
+        if len(digits) < 6:
+            self.log("error", "手机号无效：%s" % phone)
+            return
+        try:
+            cfg = accounts_mod.load_account(digits)
+        except Exception as exc:
+            self.log("error", "创建账号配置失败：%s" % str(exc)[:80])
+            return
+        self.log("success", "已新增账号 %s，配置：%s"
+                 % (cfgmod.mask_phone(digits), accounts_mod.path_for(digits)))
+        self._activate_account(digits)
+        self._reload_account_picker()
 
     def _set_online_text(self, online: bool):
         box = getattr(self, "online_check", None)
@@ -1786,7 +1865,7 @@ class App(QMainWindow):
         self._rebuild_log()
         self.cfg["theme"] = theme_id
         try:
-            cfgmod.save(self.cfg)
+            self._save_cfg()
         except cfgmod.ConfigError:
             pass  # theme still applies this session; the save retries later
         # Rebuild history rows so outcome chips use the new palette.
@@ -1975,7 +2054,7 @@ class App(QMainWindow):
             values.append(value)
             self.cfg[key] = values
             try:
-                cfgmod.save(self.cfg)
+                self._save_cfg()
             except Exception as exc:
                 self.log("warning", "保存配置失败：%s" % exc)
                 return
@@ -2099,7 +2178,7 @@ class App(QMainWindow):
             return
         self.cfg.update(updates)
         try:
-            cfgmod.save(self.cfg)
+            self._save_cfg()
         except cfgmod.ConfigError as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return
@@ -2235,6 +2314,7 @@ class App(QMainWindow):
         self.login_state_label.setText(text)
         if text.startswith("已登录"):
             self._show_account_card(True)
+            self._reload_account_picker()
         elif text.startswith(("未登录", "已注销", "登录失败")):
             self._show_account_card(False)
 
@@ -2243,6 +2323,16 @@ class App(QMainWindow):
         self.listen_state_sidebar_label.setText(text)
 
     # -- login --------------------------------------------------------------
+
+    def _save_cfg(self):
+        """Persist to the active account file (falls back to the legacy path)."""
+        phone = str(self.cfg.get("phone") or "")
+        try:
+            if phone:
+                return accounts_mod.save_account(self.cfg, phone)
+        except Exception:
+            pass
+        return cfgmod.save(self.cfg)
 
     def _toggle_show_password(self, checked: bool):
         self.password_edit.setEchoMode(
@@ -2280,6 +2370,12 @@ class App(QMainWindow):
             self._clerk_name = str((clerk or {}).get("name") or "")
             self._clerk_id = str((clerk or {}).get("id") or "")
             self._session_sid = str(getattr(session, "sid", "") or "")
+            self.cfg["clerk_name"] = self._clerk_name
+            self.cfg["last_shop"] = self._session_sid
+            try:
+                accounts_mod.save_account(self.cfg, phone)
+            except Exception:
+                pass
             self._fetch_avatar(clerk or {})
             self._fetch_week_orders(session)
             self._fetch_clerk_state(session, clerk or {})
@@ -2626,7 +2722,7 @@ class AdvancedDialog(QDialog):
                 if answer != QMessageBox.Yes:
                     return
             self.cfg["blacklist"] = new_blacklist
-            cfgmod.save(self.cfg)
+            self._save_cfg()
         except (cfgmod.ConfigError, ValueError) as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return
