@@ -1146,24 +1146,40 @@ class App(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def _fetch_week_orders(self, session):
-        """本周接单 straight from the platform (Monday 00:00 -> now)."""
+        """本周接单 + 续单率 from statisticsClerkOrder (Monday -> today)."""
+        stats = {}
         try:
             now = time.localtime()
             monday = time.strftime(
-                "%Y-%m-%d 00:00:00",
-                time.localtime(time.time() - now.tm_wday * 86400),
-            )
-            end = time.strftime("%Y-%m-%d %H:%M:%S")
-            total = self.client.order_total(monday, end, session=session)
+                "%Y-%m-%d", time.localtime(time.time() - now.tm_wday * 86400))
+            today = time.strftime("%Y-%m-%d")
+            stats = self.client.clerk_statistics(monday, today, session=session) or {}
         except Exception:
-            total = -1
-        self.week_orders_signal.emit(total if total >= 0 else None)
+            stats = {}
+        self.week_orders_signal.emit(stats or None)
 
-    def _on_week_orders(self, total):
-        self._week_orders = total
+    def _on_week_orders(self, stats):
         label = getattr(self, "week_count_label", None)
+        if not isinstance(stats, dict) or not stats:
+            if label is not None:
+                label.setText("—")
+            return
+        orders = int(stats.get("orderCount") or 0)
+        continued = int(stats.get("continuedCount") or 0)
         if label is not None:
-            label.setText("—" if total is None else str(total))
+            label.setText(str(orders))
+        rate_label = getattr(self, "renewal_label", None)
+        if rate_label is not None:
+            if continued and orders:
+                rate_label.setText("%d%%" % round(100.0 * continued / orders))
+                self._renewal_source = "计算：续单 %d / 订单 %d" % (continued, orders)
+            elif isinstance(self.cfg.get("last_renewal_rate"), int):
+                rate_label.setText("%d%%" % self.cfg["last_renewal_rate"])
+                self._renewal_source = "平台拒绝原话"
+            else:
+                rate_label.setText("—")
+        if rate_label is not None:
+            rate_label.setToolTip(getattr(self, "_renewal_source", "本周续单比例"))
 
     def _on_avatar(self, path: str):
         label = getattr(self, "avatar_label", None)
