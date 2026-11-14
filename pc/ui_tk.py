@@ -1,0 +1,1102 @@
+"""DPGrabber PC - CustomTkinter user interface (iOS liquid-glass theme).
+
+Own wording and layout ("DPGrabber PC"). The reference tool's UI text and
+brand are not copied; only the functional flow is aligned with it
+(PROTOCOL.md): login, listen settings, start/stop listening, run log.
+
+Style: iOS liquid glass — frosted glass cards with soft shadows and large
+radii, a luminous blue gradient hero band with a specular top edge, and
+pill buttons whose gradient, specular highlight and border are baked into
+an image. True backdrop blur is not available to tkinter, so the glass
+look is simulated with baked gradients, highlights and frosted tints;
+there is no real blur of what sits behind the window. Still plain Python
++ tkinter underneath (CustomTkinter); the gradients are drawn with Pillow
+at runtime and fall back to solid colours if Pillow is missing.
+
+Layout: four titled sections (login / order conditions / listen control /
+run log). Inside a section every field is one row: label right-aligned,
+input left-aligned with a uniform width, and a short muted-blue hint
+explaining what the field does, so no input is left unexplained.
+
+All network work runs on worker threads. Threads never touch widgets
+directly: they push ``(level, message)`` into a queue and the UI drains it
+with ``after()``.
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import threading
+import time
+import tkinter as tk
+from tkinter import messagebox
+
+import customtkinter as ctk
+
+try:
+    from PIL import Image, ImageDraw, ImageTk
+    _PIL_AVAILABLE = True
+except Exception:
+    Image = ImageDraw = ImageTk = None
+    _PIL_AVAILABLE = False
+
+import config as cfgmod
+from dpapi import ApiClient, ApiError, amount_yuan_from_cents, extract_clerk
+from engine import Engine
+import history as history_mod
+from voice import Voice
+
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("blue")
+
+APP_TITLE = "DPGrabber PC"
+WINDOW_SIZE = "1180x800"
+
+# Liquid-glass palette.
+BLUE = "#1F6AA5"
+BLUE_DARK = "#185A8A"
+BLUE_DISABLED = "#9BB3C4"
+BLUE_ACCENT = "#63A4D6"
+WINDOW_BG = "#EAF2FA"
+CARD_BG = "#F8FCFF"
+CARD_BORDER = "#CFE2F5"
+CARD_SHADOW = "#D8E6F5"
+ENTRY_BORDER = "#B9D2EC"
+TEXT_DARK = "#1F2A37"
+HINT = "#5B7A99"
+PLACEHOLDER = "#9AA8B8"
+
+# Dashboard sidebar (dark navy console).
+SIDEBAR_BG = "#10263F"
+SIDEBAR_CARD_BG = "#18344F"
+SIDEBAR_CARD_BORDER = "#24486B"
+SIDEBAR_TEXT = "#FFFFFF"
+SIDEBAR_HINT = "#8FB0CC"
+
+# Gradient stops (RGB) for the baked glass images.
+HERO_TOP = (74, 168, 240)
+HERO_BOTTOM = (23, 105, 176)
+BTN_PRIMARY_TOP = (92, 179, 242)
+BTN_PRIMARY_BOTTOM = (30, 116, 196)
+BTN_PRIMARY_HOVER_TOP = (124, 194, 247)
+BTN_PRIMARY_HOVER_BOTTOM = (42, 130, 210)
+BTN_DISABLED_TOP = (201, 216, 228)
+BTN_DISABLED_BOTTOM = (167, 188, 203)
+BTN_SECONDARY_TOP = (255, 255, 255)
+BTN_SECONDARY_BOTTOM = (233, 242, 250)
+BTN_SECONDARY_HOVER_BOTTOM = (216, 233, 248)
+BTN_SECONDARY_DISABLED_TOP = (244, 247, 250)
+BTN_SECONDARY_DISABLED_BOTTOM = (230, 236, 241)
+BTN_DISABLED_TEXT = "#8A9BA8"
+
+
+def _lerp_rgb(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _rgb_hex(rgb):
+    return "#%02x%02x%02x" % rgb
+
+
+def _vgrad_image(width, height, top, bottom):
+    """Vertical gradient, built as a 1px-wide column and stretched (fast)."""
+    col = Image.new("RGBA", (1, height))
+    px = col.load()
+    for y in range(height):
+        px[0, y] = _lerp_rgb(top, bottom, y / max(height - 1, 1)) + (255,)
+    return col.resize((width, height))
+
+
+def _spec_band(width, height, alpha):
+    """White specular band fading from `alpha` at the top to 0."""
+    col = Image.new("RGBA", (1, height))
+    px = col.load()
+    for y in range(height):
+        px[0, y] = (255, 255, 255, int(alpha * (1 - y / max(height - 1, 1))))
+    return col.resize((width, height))
+
+
+def _glass_pill_image(width, height, top, bottom, border=None, spec_alpha=90):
+    """Rounded pill: vertical gradient + specular top + optional border."""
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    grad = _vgrad_image(width, height, top, bottom)
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, width - 1, height - 1], radius=height // 2, fill=255)
+    img.paste(grad, (0, 0), mask)
+    spec_h = max(1, height // 2)
+    spec = _spec_band(width, spec_h, spec_alpha)
+    img.paste(spec, (0, 0), Image.composite(
+        spec.split()[3], Image.new("L", (width, spec_h), 0),
+        mask.crop((0, 0, width, spec_h))))
+    if border is not None:
+        ImageDraw.Draw(img).rounded_rectangle(
+            [1, 1, width - 2, height - 2], radius=height // 2 - 1,
+            outline=border + (255,), width=2)
+    return img
+
+
+def _hero_image(width, height=56):
+    """Hero band gradient with a specular top and a bright bottom edge."""
+    img = _vgrad_image(width, height, HERO_TOP, HERO_BOTTOM)
+    img.paste(_spec_band(width, 20, 70), (0, 0), _spec_band(width, 20, 70))
+    for y in range(height - 2, height):
+        for x in range(width):
+            img.putpixel((x, y), (207, 235, 251, 255))
+    return img
+
+
+def _window_scaling(widget):
+    """Display scaling factor for the widget's window (1.0 when unknown)."""
+    try:
+        from customtkinter.windows.widgets.scaling import ScalingTracker
+        return float(ScalingTracker.get_window_scaling(widget))
+    except Exception:
+        pass
+    try:
+        return float(widget.tk.call("tk", "scaling"))
+    except Exception:
+        return 1.0
+
+
+def _opaque_bg(widget):
+    """Nearest solid background colour above `widget` (for image corners)."""
+    w = widget
+    while w is not None:
+        try:
+            color = w.cget("fg_color")
+        except Exception:
+            color = None
+        if color and color != "transparent":
+            return color
+        try:
+            color = w.cget("bg")
+        except Exception:
+            color = None
+        if color:
+            return color
+        w = getattr(w, "master", None)
+    return WINDOW_BG
+
+
+# (variant, state, width, height) -> PhotoImage cache for glass buttons.
+_GLASS_PHOTO_CACHE: dict = {}
+
+
+def _glass_button_photos(variant, width, height):
+    key = (variant, width, height)
+    cached = _GLASS_PHOTO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if variant == "primary":
+        stops = {
+            "normal": (BTN_PRIMARY_TOP, BTN_PRIMARY_BOTTOM, None, 110),
+            "hover": (BTN_PRIMARY_HOVER_TOP, BTN_PRIMARY_HOVER_BOTTOM, None, 110),
+            "disabled": (BTN_DISABLED_TOP, BTN_DISABLED_BOTTOM, None, 40),
+        }
+    else:
+        stops = {
+            "normal": (BTN_SECONDARY_TOP, BTN_SECONDARY_BOTTOM, (185, 210, 236), 60),
+            "hover": (BTN_SECONDARY_TOP, BTN_SECONDARY_HOVER_BOTTOM, (185, 210, 236), 60),
+            "disabled": (BTN_SECONDARY_DISABLED_TOP, BTN_SECONDARY_DISABLED_BOTTOM,
+                         (205, 216, 228), 30),
+        }
+    photos = {}
+    for state, (top, bottom, border, spec) in stops.items():
+        pil_img = _glass_pill_image(width, height, top, bottom, border, spec)
+        photos[state] = ImageTk.PhotoImage(pil_img)
+    _GLASS_PHOTO_CACHE[key] = photos
+    return photos
+
+
+class _GlassButton(tk.Label):
+    """Liquid-glass pill button: baked gradient image + text on a label.
+
+    A plain tkinter label, so the image is shown at its exact pixel size
+    with no CustomTkinter scaling surprises. Supports the subset of the
+    CTkButton interface the app uses: pack, configure(state/fg_color/
+    hover_color), cget("state").
+    """
+
+    def __init__(self, master, text, command, variant="primary"):
+        self._variant = variant
+        self._command = command
+        self._state = "normal"
+        self._hover = False
+        scale = _window_scaling(master)
+        width = max(40, round(100 * scale))
+        height = max(16, round(32 * scale))
+        self._photos = _glass_button_photos(variant, width, height)
+        text_color = "white" if variant == "primary" else BLUE
+        super().__init__(
+            master, text=text, image=self._photos["normal"], compound="center",
+            fg=text_color, bg=_opaque_bg(master),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            borderwidth=0, highlightthickness=0,
+        )
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    def _on_release(self, event):
+        if self._state != "normal" or self._command is None:
+            return
+        if 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height():
+            self._command()
+
+    def _on_enter(self, _event):
+        self._hover = True
+        if self._state == "normal":
+            super().configure(image=self._photos["hover"], cursor="hand2")
+
+    def _on_leave(self, _event):
+        self._hover = False
+        if self._state == "normal":
+            super().configure(image=self._photos["normal"], cursor="")
+
+    def _apply_state(self):
+        if self._state == "disabled":
+            super().configure(image=self._photos["disabled"],
+                              fg=BTN_DISABLED_TEXT, cursor="")
+        else:
+            img = self._photos["hover"] if self._hover else self._photos["normal"]
+            text_color = "white" if self._variant == "primary" else BLUE
+            super().configure(image=img, fg=text_color,
+                              cursor="hand2" if self._hover else "")
+
+    def configure(self, **kwargs):
+        state = kwargs.pop("state", None)
+        kwargs.pop("fg_color", None)
+        kwargs.pop("hover_color", None)
+        if state is not None:
+            self._state = state
+            self._apply_state()
+        if kwargs:
+            super().configure(**kwargs)
+
+    def cget(self, name):
+        if name == "state":
+            return self._state
+        return super().cget(name)
+
+
+def _primary_button(master, text, command):
+    if _PIL_AVAILABLE:
+        return _GlassButton(master, text, command, variant="primary")
+    return ctk.CTkButton(
+        master, text=text, command=command, width=100, height=32,
+        fg_color=BLUE, hover_color=BLUE_DARK, text_color="white",
+        corner_radius=16,
+    )
+
+
+def _secondary_button(master, text, command):
+    if _PIL_AVAILABLE:
+        return _GlassButton(master, text, command, variant="secondary")
+    return ctk.CTkButton(
+        master, text=text, command=command, width=100, height=32,
+        fg_color="white", hover_color="#EAF2FA", border_color=BLUE,
+        border_width=1, text_color=BLUE, corner_radius=16,
+    )
+
+
+class _PlaceholderText(ctk.CTkTextbox):
+    """CTkTextbox that shows grey example text while empty.
+
+    CustomTkinter textboxes have no native placeholder, so this keeps the
+    old behaviour: the example is never part of the value — ``get_lines()``
+    returns [] while it is showing, and focus clears it automatically.
+    """
+
+    def __init__(self, master, placeholder: str, **kwargs):
+        super().__init__(
+            master, text_color=TEXT_DARK, fg_color="white",
+            border_color=ENTRY_BORDER, **kwargs
+        )
+        self._placeholder = placeholder
+        self._showing = False
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self._show()
+
+    def _show(self):
+        self.delete("1.0", tk.END)
+        self.insert("1.0", self._placeholder)
+        self.configure(text_color=PLACEHOLDER)
+        self._showing = True
+
+    def _on_focus_in(self, _event):
+        if self._showing:
+            self.delete("1.0", tk.END)
+            self.configure(text_color=TEXT_DARK)
+            self._showing = False
+
+    def _on_focus_out(self, _event):
+        if not self.get("1.0", tk.END).strip():
+            self._show()
+
+    def set_lines(self, lines):
+        lines = [ln for ln in lines if ln.strip()]
+        if lines:
+            self.delete("1.0", tk.END)
+            self.configure(text_color=TEXT_DARK)
+            self.insert("1.0", "\n".join(lines))
+            self._showing = False
+        else:
+            self._show()
+
+    def get_lines(self):
+        if self._showing:
+            return []
+        return [ln.strip() for ln in self.get("1.0", tk.END).splitlines() if ln.strip()]
+
+
+class App(ctk.CTk):
+    def __init__(self, cfg: dict):
+        super().__init__(fg_color=WINDOW_BG)
+        self.title(APP_TITLE)
+        self.geometry(WINDOW_SIZE)
+        self.cfg = cfg
+        self.log_queue: queue.Queue = queue.Queue()
+        self.client = self._make_client()
+        self.voice = Voice(enabled=bool(cfg.get("voice_enabled", True)))
+        self.engine: Engine | None = None
+        self._listening = False
+        self._login_thread: threading.Thread | None = None
+        # Live status strip (shown in the hero): listening state is
+        # created here so the hero can bind it before the control
+        # section is built; grab count ticks up on each confirmed grab.
+        self.listen_state_var = tk.StringVar(value="未开始监听")
+        self.grab_count = 0
+        self.grab_count_var = tk.StringVar(value="今日抢单 0")
+        self._build_widgets()
+        self._load_settings_into_widgets()
+        self.after(200, self._drain_logs)
+        self.after(500, self._refresh_buttons)
+        # Canary: proves on launch that the log drain is alive. If even
+        # this line never appears, the log textbox itself is not rendering.
+        self.log("info", "DPGrabber PC 已启动")
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # -- construction -----------------------------------------------------
+
+    def _make_client(self) -> ApiClient:
+        return ApiClient(
+            aes_key_hex=self.cfg["aes_key_hex"],
+            aes_iv_hex=self.cfg["aes_iv_hex"],
+            aes_key_hex_alt=self.cfg.get("aes_key_hex_alt", ""),
+            aes_iv_hex_alt=self.cfg.get("aes_iv_hex_alt", ""),
+            verify_tls=bool(self.cfg.get("verify_tls", True)),
+        )
+
+    def _build_widgets(self):
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.pack(fill=tk.BOTH, expand=True)
+
+        self._build_hero(main)
+
+        body = ctk.CTkFrame(main, fg_color="transparent")
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 10))
+
+        # Dashboard: dark sidebar (account + control) on the left,
+        # main area (conditions + log) on the right.
+        sidebar = ctk.CTkFrame(body, fg_color=SIDEBAR_BG, corner_radius=16, width=280)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
+        sidebar.pack_propagate(False)
+        self._build_login_section(sidebar)
+        self._build_control_section(sidebar)
+        self._build_advanced_button(sidebar)
+
+        main_area = ctk.CTkFrame(body, fg_color="transparent")
+        main_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._build_conditions_section(main_area)
+        self._build_log_section(main_area)
+        self._build_history_section(main_area)
+
+    def _build_hero(self, main):
+        # Liquid-glass hero band: a baked gradient image in a plain label
+        # (a label can hold children, so the title/status sit on top of
+        # the gradient). Regenerated when the window width changes.
+        # Right side carries the live status strip: login state,
+        # listening state and today's grab count.
+        self._hero_width = 0
+        self._hero_photo = None
+        self._hero_after = None
+        self.status_var = tk.StringVar(value="未登录")
+        if _PIL_AVAILABLE:
+            label_bg = _rgb_hex(_lerp_rgb(HERO_TOP, HERO_BOTTOM, 0.5))
+        else:
+            label_bg = _rgb_hex(HERO_BOTTOM)
+        self.hero_label = tk.Label(main, bg=_rgb_hex(HERO_BOTTOM))
+        self.hero_label.pack(fill=tk.X)
+        tk.Label(
+            self.hero_label, text=APP_TITLE, fg="white", bg=label_bg,
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).pack(side=tk.LEFT, padx=20)
+        stats = tk.Frame(self.hero_label, bg=label_bg)
+        stats.pack(side=tk.RIGHT, padx=20)
+        tk.Label(
+            stats, textvariable=self.grab_count_var, fg="white",
+            bg=label_bg, font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(side=tk.LEFT, padx=(0, 16))
+        tk.Label(
+            stats, textvariable=self.listen_state_var, fg="#DCEEFF",
+            bg=label_bg, font=ctk.CTkFont(size=13),
+        ).pack(side=tk.LEFT, padx=(0, 16))
+        tk.Label(
+            stats, textvariable=self.status_var, fg="#DCEEFF",
+            bg=label_bg, font=ctk.CTkFont(size=13),
+        ).pack(side=tk.LEFT)
+        self.hero_label.bind("<Configure>", self._on_hero_configure)
+        self._refresh_hero(1000)
+
+    def _on_hero_configure(self, event):
+        width = event.width
+        if abs(width - self._hero_width) > 2:
+            if self._hero_after is not None:
+                self.after_cancel(self._hero_after)
+            self._hero_after = self.after(80, lambda: self._refresh_hero(width))
+
+    def _refresh_hero(self, width):
+        if not _PIL_AVAILABLE or width < 50:
+            return
+        self._hero_width = width
+        self._hero_photo = ImageTk.PhotoImage(_hero_image(width, 56))
+        self.hero_label.configure(image=self._hero_photo)
+
+    def _section(self, parent, title):
+        """Blue section title + frosted glass card; returns the card frame."""
+        ctk.CTkLabel(
+            parent, text=title, text_color=BLUE, anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor=tk.W, pady=(0, 2))
+        shadow = ctk.CTkFrame(parent, fg_color=CARD_SHADOW, corner_radius=16)
+        shadow.pack(fill=tk.X, pady=(0, 10))
+        card = ctk.CTkFrame(
+            shadow, fg_color=CARD_BG, border_color=CARD_BORDER,
+            border_width=1, corner_radius=16,
+        )
+        card.pack(fill=tk.X, pady=(0, 2))
+        return card
+
+    def _sidebar_section(self, parent, title):
+        """Dark sidebar card: white section title + navy card."""
+        ctk.CTkLabel(
+            parent, text=title, text_color=SIDEBAR_TEXT, anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor=tk.W, padx=14, pady=(12, 2))
+        card = ctk.CTkFrame(
+            parent, fg_color=SIDEBAR_CARD_BG, border_color=SIDEBAR_CARD_BORDER,
+            border_width=1, corner_radius=14,
+        )
+        card.pack(fill=tk.X, padx=12, pady=(0, 12))
+        return card
+
+    def _hint_label(self, parent, text):
+        return ctk.CTkLabel(
+            parent, text=text, text_color=HINT,
+            font=ctk.CTkFont(size=12), anchor="w",
+        )
+
+    def _form_row(self, parent, row, label, widget, hint):
+        """One field row: label right-aligned, input left, muted hint."""
+        ctk.CTkLabel(
+            parent, text=label, width=110, anchor="e",
+            text_color=TEXT_DARK,
+        ).grid(row=row, column=0, sticky=tk.E, padx=(0, 8), pady=4)
+        widget.grid(row=row, column=1, sticky=tk.W, pady=4)
+        self._hint_label(parent, hint).grid(
+            row=row, column=2, sticky=tk.W, padx=(12, 0), pady=4
+        )
+
+    def _entry(self, parent, var, width):
+        return ctk.CTkEntry(
+            parent, textvariable=var, width=width, corner_radius=10,
+            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+        )
+
+    def _build_login_section(self, sidebar):
+        # Sidebar login: vertical stack (label above entry) — the
+        # sidebar is too narrow for the main view's grid form rows.
+        login = self._sidebar_section(sidebar, "账号登录")
+        inner = ctk.CTkFrame(login, fg_color="transparent")
+        inner.pack(fill=tk.X, padx=12, pady=10)
+
+        self.phone_var = tk.StringVar()
+        ctk.CTkLabel(inner, text="手机号", text_color=SIDEBAR_TEXT, anchor="w").pack(anchor=tk.W)
+        self._entry(inner, self.phone_var, 232).pack(fill=tk.X, pady=(2, 8))
+        ctk.CTkLabel(inner, text="登录用的手机号，11 位数字", text_color=SIDEBAR_HINT,
+                     font=ctk.CTkFont(size=12), anchor="w").pack(anchor=tk.W, pady=(0, 8))
+
+        self.password_var = tk.StringVar()
+        ctk.CTkLabel(inner, text="密码", text_color=SIDEBAR_TEXT, anchor="w").pack(anchor=tk.W)
+        self.password_entry = ctk.CTkEntry(
+            inner, textvariable=self.password_var, width=232, show="*",
+            corner_radius=10,
+            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+        )
+        self.password_entry.pack(fill=tk.X, pady=(2, 4))
+        self.show_pw_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            inner, text="显示密码", variable=self.show_pw_var,
+            command=self._toggle_show_password, text_color=SIDEBAR_TEXT,
+            fg_color=BLUE, hover_color=BLUE_DARK,
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_row.pack(fill=tk.X, pady=(12, 0))
+        _primary_button(btn_row, "登录", self._on_login).pack(side=tk.LEFT)
+        _secondary_button(btn_row, "注销", self._on_logout).pack(side=tk.LEFT, padx=(8, 0))
+
+        self.login_state_var = tk.StringVar(value="请输入手机号和密码后登录")
+        ctk.CTkLabel(inner, textvariable=self.login_state_var, text_color=SIDEBAR_HINT,
+                     wraplength=230, anchor="w", justify="left").pack(
+            anchor=tk.W, pady=(10, 0)
+        )
+
+    def _build_conditions_section(self, main):
+        settings = self._section(main, "接单条件")
+        inner = ctk.CTkFrame(settings, fg_color="transparent")
+        inner.pack(fill=tk.X, padx=12, pady=8)
+        inner.columnconfigure(2, weight=1)
+
+        self.min_amount_var = tk.StringVar()
+        self._form_row(
+            inner, 0, "最小金额（元）",
+            self._entry(inner, self.min_amount_var, 120),
+            "只抢不低于这个价的单",
+        )
+        self.max_amount_var = tk.StringVar()
+        self._form_row(
+            inner, 1, "最大金额（元）",
+            self._entry(inner, self.max_amount_var, 120),
+            "高于这个价不抢；填 0 表示不限制",
+        )
+        self.poll_interval_var = tk.StringVar()
+        self._form_row(
+            inner, 2, "轮询间隔（秒）",
+            self._entry(inner, self.poll_interval_var, 120),
+            "每隔多久刷一次订单列表",
+        )
+        self.memo_mode_var = tk.StringVar()
+        self.memo_mode_box = ctk.CTkComboBox(
+            inner, variable=self.memo_mode_var, width=150, state="readonly",
+            corner_radius=10,
+            values=["不检测备注", "有备注不抢"],
+            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+            button_color=BLUE, button_hover_color=BLUE_DARK,
+            dropdown_fg_color="white", dropdown_text_color=TEXT_DARK,
+        )
+        self._form_row(
+            inner, 3, "备注检测", self.memo_mode_box,
+            "“不检测备注”只按关键词过滤；“有备注不抢”则订单带任何备注都跳过。"
+            "备注关键词命中时本身总会跳过",
+        )
+
+        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_row.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
+        _primary_button(btn_row, "保存设置", self._on_save_settings).pack(side=tk.LEFT)
+
+    def _build_control_section(self, sidebar):
+        control = self._sidebar_section(sidebar, "监听控制")
+        inner = ctk.CTkFrame(control, fg_color="transparent")
+        inner.pack(fill=tk.X, padx=12, pady=10)
+        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_row.pack(fill=tk.X)
+        self.start_btn = _primary_button(btn_row, "开始监听", self._on_start_listen)
+        self.start_btn.pack(side=tk.LEFT)
+        self.stop_btn = _secondary_button(btn_row, "停止监听", self._on_stop_listen)
+        self.stop_btn.configure(state="disabled")
+        self.stop_btn.pack(side=tk.LEFT, padx=(8, 0))
+        ctk.CTkLabel(inner, textvariable=self.listen_state_var, text_color=SIDEBAR_HINT,
+                     anchor="w").pack(anchor=tk.W, pady=(10, 0))
+
+    def _build_advanced_button(self, sidebar):
+        # Secondary actions live at the bottom of the sidebar.
+        row = ctk.CTkFrame(sidebar, fg_color="transparent")
+        row.pack(fill=tk.X, padx=12, pady=(0, 12))
+        _secondary_button(row, "高级设置", self._open_advanced).pack(side=tk.LEFT)
+
+    def _build_log_section(self, main):
+        ctk.CTkLabel(
+            main, text="运行日志", text_color=BLUE, anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor=tk.W, pady=(0, 2))
+        log_shadow = ctk.CTkFrame(main, fg_color=CARD_SHADOW, corner_radius=16)
+        log_shadow.pack(fill=tk.BOTH, expand=True)
+        log_card = ctk.CTkFrame(
+            log_shadow, fg_color=CARD_BG, border_color=CARD_BORDER,
+            border_width=1, corner_radius=16,
+        )
+        log_card.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
+        inner = ctk.CTkFrame(log_card, fg_color="transparent")
+        inner.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
+        # The run log used to be a CTkTextbox. On Windows its text
+        # vanished when the window was maximized (and never came back on
+        # restore), while the file mirror proved the app kept generating
+        # every line — so the loss was in CTk's redraw/scrollbar
+        # machinery, not in the log data. A plain tk.Text has none of
+        # that machinery, so it cannot lose its content that way.
+        log_frame = tk.Frame(inner, bg="white")
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        self.log_text = tk.Text(
+            log_frame, state="disabled", height=10, wrap="word",
+            bg="white", fg=TEXT_DARK, relief="flat",
+            highlightthickness=0, borderwidth=0,
+            font=ctk.CTkFont(size=13),
+        )
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Styled scrollbar: the native tk.Scrollbar is the grey block
+        # Yahel called ugly. The text itself stays a plain tk.Text
+        # (the earlier content-loss bug lived in CTkTextbox, not in
+        # the scrollbar), so only the scrollbar is CustomTkinter —
+        # it just drives yview and never holds the log content.
+        log_scroll = ctk.CTkScrollbar(
+            log_frame, orientation="vertical", width=12, corner_radius=6,
+            fg_color="transparent", button_color=BLUE,
+            button_hover_color=BLUE_DARK, command=self.log_text.yview,
+        )
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        self.log_text.tag_config("info", foreground="")
+        self.log_text.tag_config("success", foreground="#1a7f37")
+        self.log_text.tag_config("warning", foreground="#9a6700")
+        self.log_text.tag_config("error", foreground="#cf222e")
+        self.log_text.tag_config("debug", foreground="#666666")
+        _secondary_button(inner, "清空日志", self._clear_log).pack(anchor=tk.W, pady=(8, 0))
+
+    def _build_history_section(self, main):
+        # 接单历史: every confirmed grab, newest first. Each row keeps
+        # the order time, amount, customer WeChat and memo — the fields
+        # the reference console shows per record.
+        header = ctk.CTkFrame(main, fg_color="transparent")
+        header.pack(fill=tk.X, pady=(10, 2))
+        ctk.CTkLabel(
+            header, text="接单历史", text_color=BLUE, anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side=tk.LEFT)
+        _secondary_button(header, "清空历史", self._on_clear_history).pack(side=tk.RIGHT)
+        hist_shadow = ctk.CTkFrame(main, fg_color=CARD_SHADOW, corner_radius=16)
+        hist_shadow.pack(fill=tk.X, pady=(0, 10))
+        hist_card = ctk.CTkFrame(
+            hist_shadow, fg_color=CARD_BG, border_color=CARD_BORDER,
+            border_width=1, corner_radius=16,
+        )
+        hist_card.pack(fill=tk.X, pady=(0, 2))
+        inner = ctk.CTkFrame(hist_card, fg_color="transparent")
+        inner.pack(fill=tk.X, padx=12, pady=10)
+        self.history_frame = ctk.CTkScrollableFrame(
+            inner, fg_color="transparent", height=180, corner_radius=10,
+            scrollbar_button_color=BLUE, scrollbar_button_hover_color=BLUE_DARK,
+        )
+        self.history_frame.pack(fill=tk.X)
+        self._refresh_history()
+
+    def _refresh_history(self):
+        """Rebuild the history rows from the stored file, newest first."""
+        for child in self.history_frame.winfo_children():
+            child.destroy()
+        entries = history_mod.load_history()
+        if not entries:
+            ctk.CTkLabel(
+                self.history_frame, text="暂无接单记录，抢到单后会自动出现在这里",
+                text_color=HINT, anchor="w",
+            ).pack(anchor=tk.W, pady=4)
+            return
+        for entry in reversed(entries):
+            self._add_history_row(entry)
+
+    def _add_history_row(self, entry: dict):
+        row = ctk.CTkFrame(self.history_frame, fg_color="transparent")
+        row.pack(fill=tk.X, pady=(0, 6))
+        grabbed = str(entry.get("grabbed_at") or "").replace("T", " ")
+        amount = float(entry.get("amount") or 0)
+        no = str(entry.get("no") or entry.get("id") or "")
+        wechat = str(entry.get("userWechatId") or "未知")
+        memo = str(entry.get("userMemo") or "")
+        ctk.CTkLabel(
+            row, text="%s   ¥%.2f   订单号 %s" % (grabbed, amount, no),
+            text_color=TEXT_DARK, anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            row, text="微信 %s   ·   备注：%s" % (wechat, memo if memo else "无备注"),
+            text_color=HINT, anchor="w", font=ctk.CTkFont(size=12),
+        ).pack(anchor=tk.W)
+        ctk.CTkFrame(row, fg_color=CARD_BORDER, height=1).pack(fill=tk.X, pady=(6, 0))
+
+    def _on_clear_history(self):
+        history_mod.clear_history()
+        self._refresh_history()
+        self.log("info", "接单历史已清空")
+
+    def _on_grab(self, order: dict, order_id: str, confirm_calls: int):
+        """Engine callback on a confirmed grab: persist + show the order."""
+        entry = {
+            "grabbed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "no": str(order.get("no") or order_id),
+            "id": str(order_id),
+            "amount": round(amount_yuan_from_cents(order.get("totalAmount")), 2),
+            "userWechatId": str(order.get("userWechatId") or ""),
+            "userMemo": str(order.get("userMemo") or ""),
+            "createTime": str(order.get("createTime") or ""),
+        }
+        history_mod.append_history(entry)
+        # The engine calls this from its worker thread; touch widgets
+        # on the UI thread like the log drain does.
+        self.after(0, self._refresh_history)
+
+    def _load_settings_into_widgets(self):
+        self.phone_var.set(self.cfg.get("phone", ""))
+        self.password_var.set(self.cfg.get("password", ""))
+        self.min_amount_var.set(str(self.cfg.get("min_amount", 10.0)))
+        self.max_amount_var.set(str(self.cfg.get("max_amount", 0.0)))
+        self.poll_interval_var.set(str(self.cfg.get("poll_interval_sec", 0.5)))
+        self.memo_mode_box.set("有备注不抢" if int(self.cfg.get("memo_mode", 0)) == 1 else "不检测备注")
+
+    # -- logging ------------------------------------------------------------
+    # Log lines go through a queue so worker threads never touch widgets.
+    # The drain loop must never die: a single bad line (or a platform
+    # quirk in the textbox) used to raise out of _drain_logs before the
+    # after() reschedule, freezing the log forever with no symptom.
+    # The reschedule now lives in a finally, and each line is guarded.
+
+    def log(self, level: str, message: str):
+        self.log_queue.put((level, message))
+
+    def _drain_logs(self):
+        try:
+            while True:
+                try:
+                    level, message = self.log_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._append_log_line(level, message)
+        finally:
+            self.after(200, self._drain_logs)
+
+    def _append_log_line(self, level: str, message: str):
+        stamp = time.strftime("%H:%M:%S")
+        text = "[%s] %s\n" % (stamp, message)
+        try:
+            self.log_text.configure(state="normal")
+            self.log_text.insert(tk.END, text, level)
+            self.log_text.see(tk.END)
+            self.log_text.configure(state="disabled")
+        except Exception:
+            # State toggling can fail on some platforms; fall back to a
+            # direct insert so the line is never silently lost.
+            try:
+                self.log_text.insert(tk.END, text, level)
+                self.log_text.see(tk.END)
+            except Exception:
+                pass
+        self._mirror_log_line(text)
+        if level == "success" and "抢单成功" in message:
+            self.grab_count += 1
+            self.grab_count_var.set("今日抢单 %d" % self.grab_count)
+        if level in ("success", "error", "warning"):
+            try:
+                self.voice.speak(message)
+            except Exception:
+                pass
+
+    def _mirror_log_line(self, text: str):
+        # Best-effort copy of the run log next to the config file, so a
+        # display problem never destroys the evidence. Never raises.
+        try:
+            path = os.path.join(cfgmod.config_dir(), "dpgrabber_pc.log")
+            if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
+                open(path, "w", encoding="utf-8").close()
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            pass
+
+    def _clear_log(self):
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", tk.END)
+        self.log_text.configure(state="disabled")
+
+    # -- settings -----------------------------------------------------------
+
+    def _read_settings_from_widgets(self) -> dict:
+        try:
+            min_amount = float(self.min_amount_var.get())
+            max_amount = float(self.max_amount_var.get())
+            poll_interval = float(self.poll_interval_var.get())
+        except ValueError:
+            raise cfgmod.ConfigError("金额和轮询间隔必须是数字")
+        if min_amount < 0 or max_amount < 0:
+            raise cfgmod.ConfigError("金额不能小于 0")
+        if max_amount > 0 and max_amount < min_amount:
+            raise cfgmod.ConfigError("最大金额不能小于最小金额；填 0 表示不限制")
+        if poll_interval <= 0:
+            raise cfgmod.ConfigError("轮询间隔必须大于 0")
+        return {
+            "phone": self.phone_var.get().strip(),
+            "password": self.password_var.get(),
+            "min_amount": min_amount,
+            "max_amount": max_amount,
+            "poll_interval_sec": poll_interval,
+            "memo_mode": 1 if self.memo_mode_var.get() == "有备注不抢" else 0,
+        }
+
+    def _on_save_settings(self):
+        try:
+            updates = self._read_settings_from_widgets()
+        except cfgmod.ConfigError as exc:
+            messagebox.showerror("设置有误", str(exc), parent=self)
+            return
+        self.cfg.update(updates)
+        try:
+            cfgmod.save(self.cfg)
+        except cfgmod.ConfigError as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self)
+            return
+        self.log("success", "设置已保存")
+
+    def _open_advanced(self):
+        AdvancedDialog(self, self.cfg, on_saved=self._on_advanced_saved)
+
+    def _on_advanced_saved(self, new_cfg: dict):
+        self.cfg = new_cfg
+        self.client = self._make_client()
+        self.voice.enabled = bool(new_cfg.get("voice_enabled", True))
+        self.log("success", "高级设置已保存")
+
+    # -- login --------------------------------------------------------------
+
+    def _toggle_show_password(self):
+        self.password_entry.configure(show="" if self.show_pw_var.get() else "*")
+
+    def _on_login(self):
+        phone = self.phone_var.get().strip()
+        password = self.password_var.get()
+        if not phone or not password:
+            messagebox.showwarning("缺少信息", "请先填写手机号和密码", parent=self)
+            return
+        if len(phone) != 11 or not phone.isdigit():
+            messagebox.showwarning("手机号格式", "手机号应为 11 位数字", parent=self)
+            return
+        if self._login_thread is not None and self._login_thread.is_alive():
+            return
+        self.login_state_var.set("正在登录，请稍后…")
+        self._login_thread = threading.Thread(
+            target=self._login_worker, args=(phone, password), daemon=True
+        )
+        self._login_thread.start()
+
+    def _login_worker(self, phone: str, password: str):
+        try:
+            session = self.client.session_for_account(
+                phone, password, int(self.cfg.get("shop_id", 92))
+            )
+            clerk = None
+            try:
+                clerk = extract_clerk(self.client.clerk_get(session))
+            except ApiError:
+                clerk = None
+            if clerk:
+                label = "已登录：%s（ID：%s），店铺 sid=%s" % (
+                    clerk.get("name") or "", clerk.get("id") or "", session.sid,
+                )
+            else:
+                label = "已登录，店铺 sid=%s" % session.sid
+            self.log_queue.put(("success", label))
+            self.after(0, lambda: self.status_var.set(label))
+            self.after(0, lambda: self.login_state_var.set(label))
+        except ApiError as exc:
+            self.log_queue.put(("error", "登录失败：%s" % exc.message))
+            self.after(0, lambda: self.status_var.set("未登录"))
+            self.after(0, lambda: self.login_state_var.set("登录失败：%s" % exc.message))
+
+    def _on_logout(self):
+        if self.engine is not None and self.engine.running:
+            self._on_stop_listen()
+        self.client.session = None
+        self.status_var.set("未登录")
+        self.login_state_var.set("已注销，请重新登录")
+        self.log("info", "已注销")
+
+    # -- listening ----------------------------------------------------------
+
+    def _on_start_listen(self):
+        if self.engine is not None and self.engine.running:
+            return
+        try:
+            updates = self._read_settings_from_widgets()
+        except cfgmod.ConfigError as exc:
+            messagebox.showerror("设置有误", str(exc), parent=self)
+            return
+        phone = updates["phone"]
+        password = updates["password"]
+        if not phone or not password:
+            messagebox.showwarning("缺少信息", "请先填写手机号和密码", parent=self)
+            return
+        self.cfg.update(updates)
+        self.engine = Engine(
+            self.client, self.cfg, log=self.log, speak=self.voice.speak,
+            on_grab=self._on_grab,
+        )
+        if self.engine.start(phone, password):
+            self._listening = True
+            self.listen_state_var.set("正在监听")
+            self._set_listen_buttons(True)
+
+    def _set_listen_buttons(self, listening: bool):
+        # _GlassButton swaps its baked gradient image per state, so the
+        # disabled look is a grey pill (a CTkButton only greys its text
+        # and still looks clickable). The fg_color/hover_color arguments
+        # are accepted by both button implementations; the fallback
+        # CTkButton uses them to grey its fill.
+        if listening:
+            self.start_btn.configure(
+                state="disabled", fg_color=BLUE_DISABLED,
+                hover_color=BLUE_DISABLED,
+            )
+            self.stop_btn.configure(state="normal")
+        else:
+            self.start_btn.configure(
+                state="normal", fg_color=BLUE, hover_color=BLUE_DARK,
+            )
+            self.stop_btn.configure(state="disabled")
+
+    def _on_stop_listen(self):
+        self._listening = False
+        if self.engine is not None:
+            self.engine.stop()
+        self.listen_state_var.set("已停止监听")
+        self._set_listen_buttons(False)
+
+    def _refresh_buttons(self):
+        # Never read a CTkButton's state with ["state"]/cget — the
+        # underlying canvas widget has no -state option and it raises
+        # TclError, which used to kill this loop the first time the
+        # engine existed but was not running. Track listening in a
+        # plain flag instead, and always reschedule.
+        try:
+            if self._listening and self.engine is not None and not self.engine.running:
+                # Engine stopped on its own (e.g. grab succeeded).
+                self._listening = False
+                self.listen_state_var.set("监听已停止")
+                self._set_listen_buttons(False)
+        finally:
+            self.after(500, self._refresh_buttons)
+
+    def _on_close(self):
+        if self.engine is not None:
+            self.engine.stop()
+        self.voice.stop()
+        self.destroy()
+
+
+class AdvancedDialog(ctk.CTkToplevel):
+    """Advanced settings: memo keywords, blacklist, shop id, timeout,
+    TLS, voice. Decryption keys are NOT shown here (customers never
+    see them); they live in the config file / code defaults only."""
+
+    def __init__(self, parent: App, cfg: dict, on_saved):
+        super().__init__(parent, fg_color=WINDOW_BG)
+        self.title("高级设置")
+        self.cfg = dict(cfg)
+        self._on_saved = on_saved
+        self.resizable(False, False)
+
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=14)
+        ctk.CTkLabel(
+            frame, text="高级设置", text_color=BLUE, anchor="w",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).pack(anchor=tk.W, pady=(0, 4))
+        rows_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        rows_frame.pack(fill=tk.X)
+        rows_frame.columnconfigure(2, weight=1)
+
+        self.entries: dict[str, tk.StringVar] = {}
+        rows = [
+            ("shop_id", "优先店铺 ID", "登录后优先切换到的店铺"),
+            ("request_timeout_sec", "请求超时（秒）", "单次请求最长等待时间"),
+        ]
+        for i, (key, label, hint) in enumerate(rows):
+            ctk.CTkLabel(
+                rows_frame, text=label, width=150, anchor="e", text_color=TEXT_DARK,
+            ).grid(row=i, column=0, sticky=tk.E, padx=(0, 8), pady=4)
+            var = tk.StringVar(value=str(self.cfg.get(key, "")))
+            self.entries[key] = var
+            width = 120
+            ctk.CTkEntry(
+                rows_frame, textvariable=var, width=width, corner_radius=10,
+                fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
+            ).grid(row=i, column=1, sticky=tk.W, pady=4)
+            ctk.CTkLabel(
+                rows_frame, text=hint, text_color=HINT,
+                font=ctk.CTkFont(size=12), anchor="w",
+            ).grid(row=i, column=2, sticky=tk.W, padx=(12, 0), pady=4)
+
+        # Memo keywords + blacklist live here now (moved off the main
+        # view so the main view only shows the essential settings).
+        lists_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        lists_frame.pack(fill=tk.X, pady=(10, 0))
+        lists_frame.columnconfigure(0, weight=1)
+        lists_frame.columnconfigure(1, weight=1)
+        kw_frame = ctk.CTkFrame(lists_frame, fg_color="transparent")
+        kw_frame.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 12))
+        ctk.CTkLabel(kw_frame, text="备注关键词（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
+        ctk.CTkLabel(kw_frame, text="命中任意一个就不抢", text_color=HINT,
+                     font=ctk.CTkFont(size=12)).pack(anchor=tk.W)
+        self.keyword_text = _PlaceholderText(
+            kw_frame, "例如：加急", width=340, height=56, corner_radius=10)
+        self.keyword_text.pack(fill=tk.X, pady=(4, 0))
+        self.keyword_text.set_lines(self.cfg.get("memo_keywords", []))
+        bl_frame = ctk.CTkFrame(lists_frame, fg_color="transparent")
+        bl_frame.grid(row=0, column=1, sticky=tk.NSEW)
+        ctk.CTkLabel(bl_frame, text="黑名单微信号（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
+        ctk.CTkLabel(bl_frame, text="每行一个微信号，命中就不抢", text_color=HINT,
+                     font=ctk.CTkFont(size=12)).pack(anchor=tk.W)
+        self.blacklist_text = _PlaceholderText(
+            bl_frame, "例如：wechat123", width=340, height=56, corner_radius=10)
+        self.blacklist_text.pack(fill=tk.X, pady=(4, 0))
+        self.blacklist_text.set_lines(self.cfg.get("blacklist", []))
+
+        self.verify_var = tk.BooleanVar(value=bool(self.cfg.get("verify_tls", True)))
+        ctk.CTkCheckBox(
+            frame, text="验证服务器 TLS 证书（推荐开启）", variable=self.verify_var,
+            text_color=TEXT_DARK, fg_color=BLUE, hover_color=BLUE_DARK,
+        ).pack(anchor=tk.W, pady=(8, 0))
+        self.voice_var = tk.BooleanVar(value=bool(self.cfg.get("voice_enabled", True)))
+        ctk.CTkCheckBox(
+            frame, text="语音播报（需要本机语音支持）", variable=self.voice_var,
+            text_color=TEXT_DARK, fg_color=BLUE, hover_color=BLUE_DARK,
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            frame, text="配置文件：%s" % cfgmod.config_path(),
+            text_color=HINT, wraplength=700, anchor="w", justify="left",
+        ).pack(anchor=tk.W, pady=(8, 0))
+
+        btns = ctk.CTkFrame(frame, fg_color="transparent")
+        btns.pack(fill=tk.X, pady=(12, 0))
+        _primary_button(btns, "保存", self._save).pack(side=tk.RIGHT, padx=(6, 0))
+        _secondary_button(btns, "取消", self.destroy).pack(side=tk.RIGHT)
+
+    def _save(self):
+        try:
+            for key, var in self.entries.items():
+                value = var.get().strip()
+                if key == "shop_id":
+                    self.cfg[key] = int(value)
+                elif key == "request_timeout_sec":
+                    self.cfg[key] = float(value)
+                else:
+                    self.cfg[key] = value
+            self.cfg["verify_tls"] = self.verify_var.get()
+            self.cfg["voice_enabled"] = self.voice_var.get()
+            self.cfg["memo_keywords"] = self.keyword_text.get_lines()
+            self.cfg["blacklist"] = self.blacklist_text.get_lines()
+            cfgmod.save(self.cfg)
+        except (cfgmod.ConfigError, ValueError) as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self)
+            return
+        self._on_saved(self.cfg)
+        self.destroy()

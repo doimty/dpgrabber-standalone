@@ -13,14 +13,32 @@ a 20 s window, retry every 0.5 s until the deadline, reconcile with
 order/get when the result is uncertain. No real account, token or
 password is shipped in code; the config file is created empty on first
 run and filled in by the user.
+
+UI: PySide6 (Qt Widgets) — see ui.py. Real Windows 11 Mica is applied
+inside the window when running on Windows; elsewhere it is a no-op.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import config as cfgmod
+
+
+def _ensure_qapp():
+    """Create (or reuse) the QApplication. Under a headless environment
+    with no DISPLAY, fall back to the offscreen platform so the smoke
+    test can still build the window."""
+    if "DISPLAY" not in os.environ and sys.platform != "win32":
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    return app
 
 
 def main(argv=None) -> int:
@@ -37,23 +55,33 @@ def main(argv=None) -> int:
         print("config error: %s" % exc, file=sys.stderr)
         return 2
 
-    from ui import App
+    from PySide6.QtCore import QTimer
+    from themes import DEFAULT_THEME, THEMES
+    from ui import App, build_stylesheet
+
+    qapp = _ensure_qapp()
+    # Apply the saved theme before showing anything.
+    theme_id = str(cfg.get("theme") or DEFAULT_THEME)
+    if theme_id not in THEMES:
+        theme_id = DEFAULT_THEME
+    qapp.setStyleSheet(build_stylesheet(THEMES[theme_id]["palette"], theme_id))
 
     if args.smoke_test:
         app = App(cfg)
-        app.update_idletasks()
-        title = app.title()  # read before destroy; wm calls fail afterwards
+        app.show()
+        title = app.windowTitle()  # read before close; widgets die with it
         assert title == "DPGrabber PC", "unexpected window title: %r" % title
-        assert app.phone_var is not None and app.log_text is not None
-        app.after(1500, app.destroy)
-        app.mainloop()
+        assert app.phone_edit is not None and app.log_text is not None
+        assert app.history_list is not None
+        QTimer.singleShot(1500, app.close)
+        qapp.exec()
         print("SMOKE OK: window opened, title=%r, config=%s" % (title, cfgmod.config_path()))
         return 0
 
     app = App(cfg)
+    app.show()
     app.log("info", "DPGrabber PC 已启动。请输入账号登录，或先在监听设置中保存配置。")
-    app.mainloop()
-    return 0
+    return qapp.exec()
 
 
 if __name__ == "__main__":

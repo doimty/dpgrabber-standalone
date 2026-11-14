@@ -22,6 +22,9 @@ import json
 import os
 import stat
 import sys
+from decimal import Decimal
+
+from themes import THEMES
 
 CONFIG_FILENAME = "dpgrabber_config.json"
 
@@ -55,6 +58,25 @@ DEFAULT_CONFIG = {
     "memo_mode": 0,            # 0 = ignore memos, 1 = drop orders that have any memo
     "memo_keywords": [],       # drop an order if its memo contains any of these (case-insensitive)
     "blacklist": [],           # WeChat ids; drop orders from these customers
+    # --- confirm wait (autoduopei shop-92 rule; /grab/start) ---
+    # Random wait before the FIRST confirm attempt of a grab (seconds).
+    # 0/0 = confirm immediately (current behavior). When max > 0, min must
+    # be >= 3 and max - min >= 2 (enforced in validate()).
+    "confirm_wait_min": 0.0,
+    "confirm_wait_max": 0.0,
+    # --- auto-wait offset (autoduopei /user/auto_wait_offset) ---
+    # Added to the confirm wait above, but ONLY for shops 50 / 105 / 1391.
+    # Range -0.5..+0.5, at most 3 decimal places; result clamped at >= 0.
+    "auto_wait_offset": 0.0,
+    # --- risk run/rest rhythm (autoduopei /grab/start risk_run/rest) ---
+    # When enabled, the poll loop runs for a random run_min..run_max
+    # minutes, then rests (no polling, no confirms) for a random
+    # rest_min..rest_max minutes, then resumes. Disabled = poll forever.
+    "run_rest_enabled": True,
+    "risk_run_min": 50,   # minutes
+    "risk_run_max": 60,   # minutes
+    "risk_rest_min": 10,  # minutes
+    "risk_rest_max": 20,  # minutes
     # --- crypto (PROTOCOL.md section 4) ---
     "aes_key_hex": DEFAULT_AES_KEY_HEX,
     "aes_iv_hex": DEFAULT_AES_IV_HEX,
@@ -65,6 +87,7 @@ DEFAULT_CONFIG = {
     "verify_tls": True,        # verify the server TLS certificate (recommended)
     "voice_enabled": True,     # spoken announcements; silently off if pyttsx3 is missing
     "seen_ttl_sec": 60,        # de-dup window for already-seen order ids (seconds)
+    "theme": "day",            # UI theme id (see themes.py); unknown values fall back to "day"
 }
 
 
@@ -95,6 +118,43 @@ def _hex_bytes(value, name):
         return bytes.fromhex(text)
     except ValueError:
         raise ConfigError("%s is not valid hex" % name)
+
+
+def confirm_wait_error(cfg: dict) -> str | None:
+    """Autoduopei shop-92 wait rule, shared by validate() and the engine.
+
+    Returns an error message when the confirm-wait config is invalid,
+    else None. Rule: min >= 0, max >= 0, max >= min; when max > 0 then
+    min >= 3 and max - min >= 2 (otherwise the wait is refused)."""
+    try:
+        min_w = float((cfg or {}).get("confirm_wait_min", 0) or 0)
+        max_w = float((cfg or {}).get("confirm_wait_max", 0) or 0)
+    except (TypeError, ValueError):
+        return "confirm_wait_min/max must be numbers"
+    if min_w < 0:
+        return "confirm_wait_min must be >= 0"
+    if max_w < 0:
+        return "confirm_wait_max must be >= 0"
+    if max_w < min_w:
+        return "confirm_wait_max must be >= confirm_wait_min"
+    if max_w > 0 and (min_w < 3 or max_w - min_w < 2):
+        return (
+            "when confirm_wait_max > 0, confirm_wait_min must be >= 3 "
+            "and confirm_wait_max - confirm_wait_min >= 2"
+        )
+    return None
+
+
+def blacklist_would_overwrite(old_list, new_list) -> bool:
+    """True when saving ``new_list`` would remove or change entries of a
+    non-empty ``old_list``: old is non-empty and new != old as sets.
+    Pure helper for the UI's "检测到可能误覆盖已有黑名单" confirmation;
+    the UI only saves on confirm. Blank/whitespace entries are ignored."""
+    old = {str(x).strip() for x in (old_list or []) if str(x).strip()}
+    if not old:
+        return False
+    new = {str(x).strip() for x in (new_list or []) if str(x).strip()}
+    return new != old
 
 
 def validate(cfg: dict) -> dict:
@@ -136,6 +196,40 @@ def validate(cfg: dict) -> dict:
     retry = float(merged["confirm_retry_delay_sec"])
     if not 0 <= retry <= 60:
         raise ConfigError("confirm_retry_delay_sec must be between 0 and 60")
+    # --- confirm wait (autoduopei shop-92 rule) ---
+    wait_error = confirm_wait_error(merged)
+    if wait_error is not None:
+        raise ConfigError(wait_error)
+    merged["confirm_wait_min"] = float(merged.get("confirm_wait_min") or 0)
+    merged["confirm_wait_max"] = float(merged.get("confirm_wait_max") or 0)
+    # --- auto-wait offset: -0.5..+0.5, at most 3 decimal places ---
+    try:
+        offset = float(merged.get("auto_wait_offset") or 0)
+    except (TypeError, ValueError):
+        raise ConfigError("auto_wait_offset must be a number")
+    if not -0.5 <= offset <= 0.5:
+        raise ConfigError("auto_wait_offset must be between -0.5 and +0.5")
+    if -Decimal(str(offset)).as_tuple().exponent > 3:
+        raise ConfigError("auto_wait_offset must have at most 3 decimal places")
+    merged["auto_wait_offset"] = offset
+    # --- risk run/rest rhythm (minutes, ints) ---
+    if not isinstance(merged.get("run_rest_enabled"), bool):
+        raise ConfigError("run_rest_enabled must be true or false")
+    for name in ("risk_run_min", "risk_run_max", "risk_rest_min", "risk_rest_max"):
+        value = merged.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError("%s must be an integer number of minutes" % name)
+        if float(value) != int(float(value)):
+            raise ConfigError("%s must be an integer number of minutes" % name)
+        merged[name] = int(value)
+    if merged["risk_run_min"] < 1:
+        raise ConfigError("risk_run_min must be >= 1")
+    if merged["risk_run_max"] < merged["risk_run_min"]:
+        raise ConfigError("risk_run_max must be >= risk_run_min")
+    if merged["risk_rest_min"] < 0:
+        raise ConfigError("risk_rest_min must be >= 0")
+    if merged["risk_rest_max"] < merged["risk_rest_min"]:
+        raise ConfigError("risk_rest_max must be >= risk_rest_min")
     if float(merged["request_timeout_sec"]) <= 0:
         raise ConfigError("request_timeout_sec must be positive")
     if not isinstance(merged["memo_keywords"], list) or not isinstance(
@@ -146,6 +240,8 @@ def validate(cfg: dict) -> dict:
     merged["blacklist"] = [str(x).strip() for x in merged["blacklist"] if str(x).strip()]
     merged["phone"] = str(merged.get("phone") or "").strip()
     merged["password"] = str(merged.get("password") or "")
+    theme = str(merged.get("theme") or "day").strip()
+    merged["theme"] = theme if theme in THEMES else "day"
     return merged
 
 

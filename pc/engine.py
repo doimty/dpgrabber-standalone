@@ -35,9 +35,11 @@ deadline math is unit-testable.
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 
+from config import confirm_wait_error
 from dpapi import ApiClient, ApiError, amount_yuan_from_cents, extract_clerk, normalize_ms
 
 
@@ -168,6 +170,66 @@ def order_id_of(order) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Confirm wait + auto-wait offset (autoduopei shop-92 / auto_wait_offset).
+# ---------------------------------------------------------------------------
+
+#: Shops the auto-wait offset applies to (autoduopei /user/auto_wait_offset).
+AUTO_WAIT_OFFSET_SHOPS = (50, 105, 1391)
+
+
+def confirm_wait_seconds(cfg: dict, shop_id=None, rng=None) -> float:
+    """Seconds to wait before the FIRST confirm attempt of a grab.
+
+    Uniform in [confirm_wait_min, confirm_wait_max] when max > 0, else 0
+    (confirm immediately). ``auto_wait_offset`` is added only when the
+    shop is 50 / 105 / 1391 (no shop id available -> offset ignored);
+    the result is clamped at >= 0. ``rng`` supplies ``uniform`` and
+    defaults to the ``random`` module (injectable for tests)."""
+    try:
+        min_w = float((cfg or {}).get("confirm_wait_min", 0) or 0)
+        max_w = float((cfg or {}).get("confirm_wait_max", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if max_w <= 0:
+        return 0.0
+    wait = (rng or random).uniform(min_w, max_w)
+    try:
+        offset = float((cfg or {}).get("auto_wait_offset", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        offset = 0.0
+    if shop_id is not None:
+        try:
+            sid = int(shop_id)
+        except (TypeError, ValueError):
+            sid = None
+        if sid in AUTO_WAIT_OFFSET_SHOPS:
+            wait += offset
+    return max(0.0, float(wait))
+
+
+#: Internal confirm-task outcomes -> autoduopei history outcomes.
+_OUTCOME_MAP = {
+    "ok": "success",
+    "fail": "failed",
+    "unknown": "unknown",
+    "pending": "skipped",
+    "auth": "unknown",
+    "ip": "risk",
+    # "cancelled" maps to nothing: the engine was asked to stop, which is
+    # not an order outcome, so no on_outcome call is made for it.
+}
+
+#: Fallback human-readable reasons when a return site has none.
+_OUTCOME_DEFAULT_REASON = {
+    "success": "",
+    "failed": "平台拒绝确认",
+    "unknown": "确认结果未知",
+    "skipped": "本轮确认未完成，订单仍待确认",
+    "risk": "IP风控",
+}
+
+
 class OrderFilter:
     """The section 7.1 filter chain. ``check(order)`` returns
     ``(passed, reason)``; reason is a short human-readable note."""
@@ -210,13 +272,26 @@ class Engine:
     """Poll loop running on a worker thread."""
 
     def __init__(self, client: ApiClient, cfg: dict, log, speak=None,
-                 now=time.time, monotonic=time.monotonic):
+                 on_grab=None, on_outcome=None, now=time.time,
+                 monotonic=time.monotonic, rng=None):
         self.client = client
         self.cfg = cfg
         self.log = log  # log(level, message); level in info/warning/error/success/debug
         self.speak = speak or (lambda text: None)
+        # on_grab(order, order_id, confirm_calls): called on a confirmed
+        # grab so the UI can record the order in 接单历史. Optional.
+        self.on_grab = on_grab
+        # on_outcome(order, outcome, reason): called exactly once per
+        # order that leaves the confirm loop with a terminal outcome —
+        # success ("success"), terminal failure ("failed"), IP control
+        # ("risk"), unknown result ("unknown") or a released/pending
+        # order ("skipped") — so the UI can record non-success outcomes
+        # in 接单历史 too. Not called when the engine is stopped
+        # mid-confirm ("cancelled" is not an order outcome). Optional.
+        self.on_outcome = on_outcome
         self.now = now  # wall clock, epoch seconds
         self._monotonic = monotonic  # monotonic clock for the confirm deadline
+        self._rng = rng if rng is not None else random  # uniform() source
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.running = False
@@ -229,6 +304,10 @@ class Engine:
 
     def start(self, phone: str, password: str) -> bool:
         if self.running:
+            return False
+        wait_error = confirm_wait_error(self.cfg)
+        if wait_error is not None:
+            self.log("error", "确认等待配置无效，无法开始监听：%s" % wait_error)
             return False
         self.stop_event.clear()
         self.running = True
@@ -327,6 +406,44 @@ class Engine:
             self.log("error", "重新登录失败：%s" % exc.message)
             return False
 
+    def _next_run_seconds(self) -> float:
+        """One random run period in seconds (risk_run_min..max minutes)."""
+        run_min = float(self.cfg.get("risk_run_min", 50))
+        run_max = float(self.cfg.get("risk_run_max", 60))
+        if run_max < run_min:
+            run_max = run_min
+        return max(0.0, self._rng.uniform(run_min, run_max)) * 60.0
+
+    def _next_rest_seconds(self) -> float:
+        """One random rest period in seconds (risk_rest_min..max minutes)."""
+        rest_min = float(self.cfg.get("risk_rest_min", 10))
+        rest_max = float(self.cfg.get("risk_rest_max", 20))
+        if rest_max < rest_min:
+            rest_max = rest_min
+        return max(0.0, self._rng.uniform(rest_min, rest_max)) * 60.0
+
+    def _current_shop_id(self):
+        """Shop id from the config (what session_for_account uses); None
+        when unavailable, so the auto-wait offset is ignored then."""
+        try:
+            return int(self.cfg.get("shop_id", 92))
+        except (TypeError, ValueError):
+            return None
+
+    def _emit_outcome(self, order: dict, outcome: str, reason: str):
+        """Report one terminal confirm outcome via on_outcome, mapped to
+        the autoduopei outcome enum. Never breaks the grab flow."""
+        if self.on_outcome is None:
+            return
+        mapped = _OUTCOME_MAP.get(outcome)
+        if mapped is None:
+            return
+        final_reason = reason or _OUTCOME_DEFAULT_REASON.get(mapped, "")
+        try:
+            self.on_outcome(order, mapped, final_reason)
+        except Exception:
+            pass  # history recording must never break the grab flow
+
     def _poll_loop(self, phone: str, password: str):
         interval = float(self.cfg.get("poll_interval_sec", 0.5))
         page_size = 20
@@ -338,8 +455,32 @@ class Engine:
             self.cfg.get("memo_keywords", []),
             self.cfg.get("blacklist", []),
         )
+        # Risk run/rest rhythm (autoduopei risk_run/rest): when enabled,
+        # poll for one random run period, rest, then resume. The rest
+        # check runs only at the top of the loop, after any confirm task
+        # has returned, so a confirm in progress when a run period ends
+        # always finishes before the engine rests.
+        run_rest_enabled = bool(self.cfg.get("run_rest_enabled", True))
+        run_deadline = None
+        if run_rest_enabled:
+            run_deadline = self._monotonic() + self._next_run_seconds()
         self.log("info", "开始监听新订单")
         while not self.stop_event.is_set():
+            if (
+                run_rest_enabled
+                and run_deadline is not None
+                and self._monotonic() >= run_deadline
+            ):
+                rest = self._next_rest_seconds()
+                if rest > 0:
+                    self.log(
+                        "info",
+                        "进入休息：暂停监听约 %.1f 分钟" % (rest / 60.0),
+                    )
+                    if not self._sleep(rest):
+                        return
+                    self.log("info", "休息结束，恢复监听")
+                run_deadline = self._monotonic() + self._next_run_seconds()
             try:
                 orders = self.client.random_list(page_size=page_size, timeout=timeout)
             except ApiError as exc:
@@ -383,8 +524,9 @@ class Engine:
                 continue  # re-poll immediately, as the reference tool does
             self._handle_order(order, order_id, phone, password)
 
-    def _grab_success(self, order: dict, order_id: str, confirm_calls: int) -> str:
-        """Success end of a confirm task: log, announce, auto-stop."""
+    def _grab_success(self, order: dict, order_id: str, confirm_calls: int):
+        """Success end of a confirm task: log, announce, auto-stop.
+        Returns ("ok", "") — the outcome tuple the confirm task uses."""
         number = str(order.get("no") or order_id)
         self.log(
             "success",
@@ -397,8 +539,13 @@ class Engine:
             % amount_yuan_from_cents(order.get("totalAmount")),
         )
         self.speak("抢单成功")
+        if self.on_grab is not None:
+            try:
+                self.on_grab(order, order_id, confirm_calls)
+            except Exception:
+                pass  # history recording must never break the grab flow
         self.stop()
-        return "ok"
+        return "ok", ""
 
     def _sleep_retry(self, deadline_mono: float) -> bool:
         """Wait one confirm retry delay (capped at the deadline).
@@ -409,10 +556,21 @@ class Engine:
 
     def _handle_order(self, order: dict, order_id: str, phone: str, password: str) -> str:
         """One confirm task (DPGConfirmationTask Init -> Loop -> Final /
-        Readback -> Done). Starts immediately; loops confirm until the
-        window deadline; returns the outcome
+        Readback -> Done). Returns the outcome
         ("ok" | "fail" | "pending" | "unknown" | "auth" | "ip" |
-        "cancelled")."""
+        "cancelled"). Every order that leaves the confirm loop with a
+        terminal outcome gets exactly one on_outcome call here (via
+        _emit_outcome); "cancelled" (engine stopped mid-confirm) is not
+        an order outcome and reports nothing."""
+        outcome, reason = self._confirm_task(order, order_id, phone, password)
+        if outcome != "cancelled":
+            self._emit_outcome(order, outcome, reason)
+        return outcome
+
+    def _confirm_task(self, order: dict, order_id: str, phone: str, password: str):
+        """The confirm loop itself. Returns (outcome, reason): outcome is
+        one of "ok" | "fail" | "pending" | "unknown" | "auth" | "ip" |
+        "cancelled"; reason is a human-readable note ("" when none)."""
         window = float(self.cfg.get("random_confirm_window_sec", 20))
         fallback = float(self.cfg.get("random_confirm_fallback_sec", 20))
         budget = confirm_budget_seconds(order, window, fallback)
@@ -421,6 +579,13 @@ class Engine:
         amount = amount_yuan_from_cents(order.get("totalAmount"))
         number = str(order.get("no") or order_id)
         self.log("info", "尝试接单 %s ￥%.2f" % (number, amount))
+        # Confirm wait (autoduopei shop-92 rule): one random wait before
+        # the FIRST confirm attempt only; 0 when not configured.
+        wait = confirm_wait_seconds(self.cfg, self._current_shop_id(), self._rng)
+        if wait > 0:
+            self.log("info", "确认前等待 %.2f 秒" % wait)
+            if not self._sleep(wait):
+                return "cancelled", ""
         confirm_calls = 0
         while not self.stop_event.is_set():
             remaining = deadline_mono - self._monotonic()
@@ -435,14 +600,14 @@ class Engine:
                     self._release_seen(order_id)
                     self.log("warning", "确认认证失败，等待账号单飞刷新: %s" % number)
                     self._refresh_session(phone, password)
-                    return "auth"
+                    return "auth", "确认认证失败"
                 if exc.kind == "ip":
                     self._release_seen(order_id)
                     self.log("warning", "确认触发IP风控，账号共享暂停60s，不重登录")
                     self._sleep(60)
-                    return "ip"
+                    return "ip", "IP风控"
                 if exc.kind == "cancelled":
-                    return "cancelled"
+                    return "cancelled", ""
                 # No response (network / undecodable): verify instead of
                 # blind retry.
                 verdict, reason = self._readback(order_id)
@@ -450,26 +615,30 @@ class Engine:
                     return self._grab_success(order, order_id, confirm_calls)
                 if verdict == "fail":
                     self.log("warning", "✗ 状态查询确认终态失败: %s" % reason)
-                    return "fail"
+                    return "fail", reason
                 if verdict == "pending":
                     if not self._sleep_retry(deadline_mono):
-                        return "cancelled"
+                        return "cancelled", ""
                     continue
                 self.log("warning", "⚠ 确认结果未知，停止盲重试: %s" % number)
-                return "unknown"
+                return "unknown", reason or "确认结果未知"
             outcome, reason = classify_confirm(result)
             if outcome == "ok":
                 return self._grab_success(order, order_id, confirm_calls)
             if outcome == "fail":
                 self.log("warning", "✗ 确认终态失败 %s: %s" % (number, reason))
-                return "fail"
+                return "fail", reason
             self.log(
                 "info",
                 "[confirm] retry %s confirm_calls=%d reason=%s"
                 % (number, confirm_calls, reason),
             )
             if not self._sleep_retry(deadline_mono):
-                return "cancelled"
+                return "cancelled", ""
+        if self.stop_event.is_set():
+            # Stopped mid-task (e.g. while a confirm was in flight): do
+            # not run the deadline readback after the stop.
+            return "cancelled", ""
         # Deadline reached: one final verification (stepFinal).
         verdict, reason = self._readback(order_id)
         if verdict == "ok":
@@ -480,7 +649,7 @@ class Engine:
                 "✗ 窗口结束，订单已不可确认: %s confirm_calls=%d"
                 % (number, confirm_calls),
             )
-            return "fail"
+            return "fail", reason or "订单已不可确认"
         if verdict == "pending":
             self._release_seen(order_id)
             self.log(
@@ -488,10 +657,10 @@ class Engine:
                 "↻ 本轮确认预算耗尽，订单仍待确认: %s confirm_calls=%d"
                 % (number, confirm_calls),
             )
-            return "pending"
+            return "pending", "本轮确认预算耗尽，订单仍待确认"
         self.log(
             "warning",
             "⚠ 窗口结束，确认结果未知: %s confirm_calls=%d"
             % (number, confirm_calls),
         )
-        return "unknown"
+        return "unknown", reason or "确认结果未知"

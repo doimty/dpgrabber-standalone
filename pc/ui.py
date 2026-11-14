@@ -1,369 +1,472 @@
-"""DPGrabber PC - CustomTkinter user interface (iOS liquid-glass theme).
+"""DPGrabber PC - PySide6 (Qt Widgets) user interface.
 
-Own wording and layout ("DPGrabber PC"). The reference tool's UI text and
-brand are not copied; only the functional flow is aligned with it
-(PROTOCOL.md): login, listen settings, start/stop listening, run log.
+Replaces the CustomTkinter UI (preserved as ``ui_tk.py`` for reference).
+Same dashboard layout and fields: light blue sidebar (#D9E8F6) with
+账号登录 + 监听控制 + 高级设置; light main area with 接单条件 + large
+运行日志 + 接单历史 below the log; top status strip with 今日抢单 N +
+listening state + login status. Blue accent #1F6AA5.
 
-Style: iOS liquid glass — frosted glass cards with soft shadows and large
-radii, a luminous blue gradient hero band with a specular top edge, and
-pill buttons whose gradient, specular highlight and border are baked into
-an image. True backdrop blur is not available to tkinter, so the glass
-look is simulated with baked gradients, highlights and frosted tints;
-there is no real blur of what sits behind the window. Still plain Python
-+ tkinter underneath (CustomTkinter); the gradients are drawn with Pillow
-at runtime and fall back to solid colours if Pillow is missing.
+Styling is custom QSS (no QFluentWidgets: it is GPLv3 and this is a
+closed-source app). Real Windows 11 Mica is applied with win32mica when
+available, with a ctypes DWM fallback; on Linux/macOS (and under Xvfb)
+both are no-ops guarded by a platform check, so the app still runs and
+screenshots fine there.
 
-Layout: four titled sections (login / order conditions / listen control /
-run log). Inside a section every field is one row: label right-aligned,
-input left-aligned with a uniform width, and a short muted-blue hint
-explaining what the field does, so no input is left unexplained.
+Threading: the engine runs on worker threads and never touches widgets
+directly. Worker threads call ``App.log`` / the grab callbacks, which
+emit Qt signals; the slots run on the UI thread. The log is a
+QPlainTextEdit (retained-mode widget: its content survives window
+maximize/restore, unlike the old CTkTextbox).
 
-All network work runs on worker threads. Threads never touch widgets
-directly: they push ``(level, message)`` into a queue and the UI drains it
-with ``after()``.
+New-feature contract (parallel work adds these to config/engine/history;
+every read below is defensive with .get() + defaults so the UI also
+works if a key is missing):
+- ``confirm_wait_min`` / ``confirm_wait_max`` (seconds, default 0):
+  抢单前等待 (秒) in the 接单条件 card; when enabled (either > 0),
+  min >= 3 and max - min >= 2.
+- ``auto_wait_offset`` (default 0.0, -0.5..+0.5): 自动等待偏移 (秒) in
+  Advanced Settings; only applies to shops 50/105/1391.
+- ``run_rest_enabled`` (default True), ``risk_run_min`` (50),
+  ``risk_run_max`` (60), ``risk_rest_min`` (10), ``risk_rest_max`` (20)
+  (minutes): visible 刷新与休息 toggle + four fields in 接单条件.
+- Engine ``on_outcome(order, outcome, reason)``: outcome is one of
+  success/failed/risk/unknown/skipped. on_grab records the confirmed
+  order (as before); on_outcome records non-success outcomes too.
+  History entries carry ``outcome`` and ``reason``; old entries without
+  them display as success / no reason.
+- Blacklist overwrite: saving a blacklist that would overwrite a
+  non-empty existing one asks first ("检测到可能误覆盖已有黑名单"),
+  using ``config.blacklist_would_overwrite`` when present.
 """
 
 from __future__ import annotations
 
+import ctypes
+import inspect
 import os
-import queue
+import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import messagebox
 
-import customtkinter as ctk
-
-try:
-    from PIL import Image, ImageDraw, ImageTk
-    _PIL_AVAILABLE = True
-except Exception:
-    Image = ImageDraw = ImageTk = None
-    _PIL_AVAILABLE = False
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 import config as cfgmod
-from dpapi import ApiClient, ApiError, extract_clerk
+from dpapi import ApiClient, ApiError, amount_yuan_from_cents, extract_clerk
 from engine import Engine
+import history as history_mod
+from themes import DEFAULT_THEME, THEMES, palette_for
 from voice import Voice
 
-ctk.set_appearance_mode("light")
-ctk.set_default_color_theme("blue")
+try:
+    from PIL import Image, ImageDraw
+    _PIL_AVAILABLE = True
+except Exception:
+    Image = ImageDraw = None
+    _PIL_AVAILABLE = False
 
 APP_TITLE = "DPGrabber PC"
-WINDOW_SIZE = "1000x960"
+WINDOW_SIZE = (1180, 800)
 
-# Liquid-glass palette.
-BLUE = "#1F6AA5"
-BLUE_DARK = "#185A8A"
-BLUE_DISABLED = "#9BB3C4"
-BLUE_ACCENT = "#63A4D6"
-WINDOW_BG = "#EAF2FA"
-CARD_BG = "#F8FCFF"
-CARD_BORDER = "#CFE2F5"
-CARD_SHADOW = "#D8E6F5"
-ENTRY_BORDER = "#B9D2EC"
-TEXT_DARK = "#1F2A37"
-HINT = "#5B7A99"
+# Day-palette aliases, kept so older references keep working. The live
+# colours come from the active theme's palette (themes.py) via
+# build_stylesheet(); these are only the day defaults.
+_DAY = THEMES["day"]["palette"]
+BLUE = _DAY["accent"]
+BLUE_DARK = _DAY["accent_dark"]
+BLUE_DISABLED = _DAY["btn_disabled_text"]
+WINDOW_BG = _DAY["window_bg"]
+CARD_BG = _DAY["card_bg"]
+CARD_BORDER = _DAY["card_border"]
+TEXT_DARK = _DAY["text_dark"]
+HINT = _DAY["hint"]
 PLACEHOLDER = "#9AA8B8"
+SIDEBAR_BG = _DAY["sidebar_bg"]
+SIDEBAR_CARD_BG = _DAY["sidebar_card_bg"]
+SIDEBAR_CARD_BORDER = _DAY["sidebar_card_border"]
+SIDEBAR_TEXT = _DAY["sidebar_text"]
+SIDEBAR_HINT = _DAY["sidebar_hint"]
 
-# Gradient stops (RGB) for the baked glass images.
-HERO_TOP = (74, 168, 240)
-HERO_BOTTOM = (23, 105, 176)
-BTN_PRIMARY_TOP = (92, 179, 242)
-BTN_PRIMARY_BOTTOM = (30, 116, 196)
-BTN_PRIMARY_HOVER_TOP = (124, 194, 247)
-BTN_PRIMARY_HOVER_BOTTOM = (42, 130, 210)
-BTN_DISABLED_TOP = (201, 216, 228)
-BTN_DISABLED_BOTTOM = (167, 188, 203)
-BTN_SECONDARY_TOP = (255, 255, 255)
-BTN_SECONDARY_BOTTOM = (233, 242, 250)
-BTN_SECONDARY_HOVER_BOTTOM = (216, 233, 248)
-BTN_SECONDARY_DISABLED_TOP = (244, 247, 250)
-BTN_SECONDARY_DISABLED_BOTTOM = (230, 236, 241)
-BTN_DISABLED_TEXT = "#8A9BA8"
+OUTCOME_LABELS = {
+    "success": ("成功", _DAY["outcome_success"]),
+    "failed": ("失败", _DAY["outcome_failed"]),
+    "risk": ("风控", _DAY["outcome_risk"]),
+    "unknown": ("未知", _DAY["outcome_unknown"]),
+    "skipped": ("跳过", _DAY["outcome_skipped"]),
+}
 
 
-def _lerp_rgb(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+def _chevron_png(direction: str, color_hex: str, theme_id: str = DEFAULT_THEME) -> str:
+    """Draw a small chevron (up/down) in the theme's accent colour and
+    save it as a PNG.
 
+    Used as the custom arrow for QComboBox / QSpinBox so they don't show
+    Qt's default grey triangle — the arrow always matches the active
+    theme's material. One file per (direction, theme), cached in a
+    module dict; the file is only rewritten when the colour for that
+    theme changes. Returns the absolute file path, or "" when Pillow is
+    unavailable (then the QSS falls back to the default arrow).
+    """
+    if not _PIL_AVAILABLE:
+        return ""
+    import tempfile
 
-def _rgb_hex(rgb):
-    return "#%02x%02x%02x" % rgb
+    key = (direction, theme_id)
+    if _CHEVRON_CACHE.get(key) == color_hex:
+        path = os.path.join(tempfile.gettempdir(),
+                            "dpgrabber_chevron_%s_%s.png" % (direction, theme_id))
+        if os.path.exists(path):
+            return path.replace("\\", "/")
 
-
-def _vgrad_image(width, height, top, bottom):
-    """Vertical gradient, built as a 1px-wide column and stretched (fast)."""
-    col = Image.new("RGBA", (1, height))
-    px = col.load()
-    for y in range(height):
-        px[0, y] = _lerp_rgb(top, bottom, y / max(height - 1, 1)) + (255,)
-    return col.resize((width, height))
-
-
-def _spec_band(width, height, alpha):
-    """White specular band fading from `alpha` at the top to 0."""
-    col = Image.new("RGBA", (1, height))
-    px = col.load()
-    for y in range(height):
-        px[0, y] = (255, 255, 255, int(alpha * (1 - y / max(height - 1, 1))))
-    return col.resize((width, height))
-
-
-def _glass_pill_image(width, height, top, bottom, border=None, spec_alpha=90):
-    """Rounded pill: vertical gradient + specular top + optional border."""
-    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    grad = _vgrad_image(width, height, top, bottom)
-    mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [0, 0, width - 1, height - 1], radius=height // 2, fill=255)
-    img.paste(grad, (0, 0), mask)
-    spec_h = max(1, height // 2)
-    spec = _spec_band(width, spec_h, spec_alpha)
-    img.paste(spec, (0, 0), Image.composite(
-        spec.split()[3], Image.new("L", (width, spec_h), 0),
-        mask.crop((0, 0, width, spec_h))))
-    if border is not None:
-        ImageDraw.Draw(img).rounded_rectangle(
-            [1, 1, width - 2, height - 2], radius=height // 2 - 1,
-            outline=border + (255,), width=2)
-    return img
-
-
-def _hero_image(width, height=56):
-    """Hero band gradient with a specular top and a bright bottom edge."""
-    img = _vgrad_image(width, height, HERO_TOP, HERO_BOTTOM)
-    img.paste(_spec_band(width, 20, 70), (0, 0), _spec_band(width, 20, 70))
-    for y in range(height - 2, height):
-        for x in range(width):
-            img.putpixel((x, y), (207, 235, 251, 255))
-    return img
-
-
-def _window_scaling(widget):
-    """Display scaling factor for the widget's window (1.0 when unknown)."""
+    w, h = 14, 10
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    if direction == "down":
+        draw.line([(2, 2), (w // 2, h - 2), (w - 2, 2)],
+                  fill=(r, g, b, 255), width=2, joint="curve")
+    else:
+        draw.line([(2, h - 2), (w // 2, 2), (w - 2, h - 2)],
+                  fill=(r, g, b, 255), width=2, joint="curve")
+    path = os.path.join(tempfile.gettempdir(),
+                        "dpgrabber_chevron_%s_%s.png" % (direction, theme_id))
     try:
-        from customtkinter.windows.widgets.scaling import ScalingTracker
-        return float(ScalingTracker.get_window_scaling(widget))
+        img.save(path, "PNG")
+    except OSError:
+        return ""
+    _CHEVRON_CACHE[key] = color_hex
+    # Forward slashes so the path works inside a QSS url() on Windows too.
+    return path.replace("\\", "/")
+
+
+# (direction, theme_id) -> colour the cached PNG was drawn with.
+_CHEVRON_CACHE: dict = {}
+
+_STYLESHEET_TEMPLATE = """
+QMainWindow, QWidget#central { background: %(WINDOW_BG)s; }
+QDialog { background: %(WINDOW_BG)s; }
+QFrame#card {
+    background: %(CARD_BG)s;
+    border: 1px solid %(CARD_BORDER)s;
+    border-radius: 14px;
+}
+QFrame#sidebar {
+    background: %(SIDEBAR_BG)s;
+    border-radius: 14px;
+}
+QFrame#sidebarCard {
+    background: %(SIDEBAR_CARD_BG)s;
+    border: 1px solid %(SIDEBAR_CARD_BORDER)s;
+    border-radius: 12px;
+}
+QFrame#hero {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 %(HERO_TOP)s, stop:1 %(HERO_BOTTOM)s);
+    border-bottom: 2px solid %(HERO_BORDER)s;
+}
+QLabel#heroTitle { color: white; font-size: 20px; font-weight: bold; }
+QLabel#heroStat { color: white; font-size: 13px; font-weight: bold; }
+QLabel#heroStatDim { color: %(HERO_STAT_DIM)s; font-size: 13px; }
+QLabel#sectionTitle { color: %(BLUE)s; font-size: 14px; font-weight: bold; }
+QLabel#sidebarTitle { color: %(SIDEBAR_TEXT)s; font-size: 14px; font-weight: bold; }
+QLabel#fieldLabel { color: %(TEXT_DARK)s; font-size: 13px; }
+QLabel#hint { color: %(HINT)s; font-size: 12px; }
+QLabel#sidebarHint { color: %(SIDEBAR_HINT)s; font-size: 12px; }
+QLabel#sidebarLabel { color: %(SIDEBAR_TEXT)s; font-size: 13px; }
+QLabel#sidebarState { color: %(SIDEBAR_HINT)s; font-size: 12px; }
+QLabel#historyLine1 { color: %(TEXT_DARK)s; font-size: 13px; font-weight: bold; }
+QLabel#historyLine2 { color: %(HINT)s; font-size: 12px; }
+QLabel#historyReason { color: %(HISTORY_REASON)s; font-size: 12px; }
+QLineEdit {
+    background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+}
+QLineEdit:focus { border: 1px solid %(BLUE)s; }
+QComboBox {
+    background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+}
+QComboBox:focus { border: 1px solid %(BLUE)s; }
+QComboBox::drop-down {
+    subcontrol-origin: padding; subcontrol-position: top right;
+    width: 30px; border: none; background: transparent;
+}
+QComboBox::down-arrow {
+    %(CHEVRON_DOWN_CSS)s width: 14px; height: 10px;
+}
+QComboBox QAbstractItemView {
+    background: %(ENTRY_BG)s; border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px;
+    selection-background-color: %(SELECTION_BG)s; selection-color: %(TEXT_DARK)s;
+    outline: none; padding: 4px;
+}
+QComboBox QAbstractItemView::item { padding: 7px 10px; border-radius: 6px; }
+QComboBox QAbstractItemView::item:selected { background: %(SELECTION_BG)s; }
+QSpinBox, QDoubleSpinBox {
+    background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid %(BLUE)s; }
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border; subcontrol-position: top right;
+    width: 26px; border: none; background: transparent;
+    border-top-right-radius: 10px;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border; subcontrol-position: bottom right;
+    width: 26px; border: none; background: transparent;
+    border-bottom-right-radius: 10px;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background: %(SELECTION_BG)s;
+}
+QSpinBox::up-arrow { %(CHEVRON_UP_CSS)s width: 14px; height: 10px; }
+QSpinBox::down-arrow { %(CHEVRON_DOWN_CSS)s width: 14px; height: 10px; }
+QPlainTextEdit {
+    background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 6px;
+}
+QPlainTextEdit#logView { border: none; border-radius: 0px; padding: 2px; }
+QPlainTextEdit#listEdit { border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; }
+QPushButton#primary {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 %(BTN_TOP)s, stop:1 %(BTN_BOTTOM)s);
+    color: white; font-size: 13px; font-weight: bold;
+    border: none; border-radius: 16px; padding: 7px 18px;
+}
+QPushButton#primary:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 %(BTN_HOVER_TOP)s, stop:1 %(BTN_HOVER_BOTTOM)s);
+}
+QPushButton#primary:disabled {
+    background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s;
+}
+QPushButton#secondary {
+    background: %(ENTRY_BG)s; color: %(BLUE)s; font-size: 13px; font-weight: bold;
+    border: 1px solid %(BLUE)s; border-radius: 16px; padding: 7px 18px;
+}
+QPushButton#secondary:hover { background: %(SELECTION_BG)s; }
+QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
+QCheckBox { color: %(TEXT_DARK)s; font-size: 13px; spacing: 6px; }
+QCheckBox#sidebarCheck { color: %(SIDEBAR_TEXT)s; }
+QCheckBox::indicator { width: 16px; height: 16px; }
+QCheckBox::indicator:unchecked {
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 4px; background: %(ENTRY_BG)s;
+}
+QCheckBox::indicator:checked {
+    border: 1px solid %(BLUE)s; border-radius: 4px;
+    background: %(BLUE)s;
+}
+QListWidget { background: transparent; border: none; outline: none; }
+QListWidget::item { border: none; }
+QListWidget::item:selected { background: %(SELECTION_BG)s; }
+QScrollBar:vertical {
+    background: transparent; width: 12px; margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: %(BLUE)s; min-height: 20px; border-radius: 6px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QGroupBox {
+    color: %(BLUE)s; font-size: 13px; font-weight: bold;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 10px;
+    margin-top: 10px; padding-top: 8px;
+}
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
+"""
+
+
+def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
+    """Build the full QSS for a palette.
+
+    Every colour comes from the palette — nothing is hardcoded in the
+    template. The combo/spin chevron arrows are (re)generated in the
+    palette's accent colour, so they always match the active theme's
+    material. Unknown/missing palette keys fall back to the day theme.
+    """
+    p = dict(THEMES[DEFAULT_THEME]["palette"])
+    p.update(palette or {})
+    chevron_down = _chevron_png("down", p["accent"], theme_id)
+    chevron_up = _chevron_png("up", p["accent"], theme_id)
+    subs = {
+        "WINDOW_BG": p["window_bg"],
+        "CARD_BG": p["card_bg"],
+        "CARD_BORDER": p["card_border"],
+        "BLUE": p["accent"],
+        "BLUE_DARK": p["accent_dark"],
+        "TEXT_DARK": p["text_dark"],
+        "HINT": p["hint"],
+        "SIDEBAR_BG": p["sidebar_bg"],
+        "SIDEBAR_CARD_BG": p["sidebar_card_bg"],
+        "SIDEBAR_CARD_BORDER": p["sidebar_card_border"],
+        "SIDEBAR_TEXT": p["sidebar_text"],
+        "SIDEBAR_HINT": p["sidebar_hint"],
+        "HERO_TOP": p["hero_top"],
+        "HERO_BOTTOM": p["hero_bottom"],
+        "HERO_BORDER": p["hero_border"],
+        "HERO_STAT_DIM": p["hero_stat_dim"],
+        "BTN_TOP": p["btn_top"],
+        "BTN_BOTTOM": p["btn_bottom"],
+        "BTN_HOVER_TOP": p["btn_hover_top"],
+        "BTN_HOVER_BOTTOM": p["btn_hover_bottom"],
+        "BTN_DISABLED_BG": p["btn_disabled_bg"],
+        "BTN_DISABLED_TEXT": p["btn_disabled_text"],
+        "ENTRY_BG": p["entry_bg"],
+        "ENTRY_BORDER": p["entry_border"],
+        "SELECTION_BG": p["selection_bg"],
+        "HISTORY_REASON": p["history_reason"],
+        "CHEVRON_DOWN_CSS": ('image: url(%s);' % chevron_down) if chevron_down else "",
+        "CHEVRON_UP_CSS": ('image: url(%s);' % chevron_up) if chevron_up else "",
+    }
+    return _STYLESHEET_TEMPLATE % subs
+
+
+# Default stylesheet (day theme) so existing imports keep working.
+STYLESHEET = build_stylesheet(_DAY, DEFAULT_THEME)
+
+
+def _apply_mica(window: QMainWindow) -> bool:
+    """Apply real Windows 11 Mica to the window.
+
+    Returns True when Mica was applied. On non-Windows platforms (Linux
+    under Xvfb included) this is a no-op returning False; every Windows
+    call is guarded so a failure never stops the app from launching.
+    win32mica itself imports ``winreg`` at module level, so it can only
+    be imported on Windows at all — import it lazily inside the check.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        hwnd = int(window.winId())
+    except Exception:
+        return False
+    # Preferred route: win32mica (thin DWM wrapper).
+    try:
+        from win32mica import ApplyMica, MicaTheme
+
+        ApplyMica(hwnd, MicaTheme.AUTO)
+        return True
     except Exception:
         pass
+    # Fallback: direct DWM call via ctypes
+    # (DWMWA_SYSTEMBACKDROP_TYPE = 38, DWMSBT_MAINWINDOW / Mica = 2).
     try:
-        return float(widget.tk.call("tk", "scaling"))
+        dwm = ctypes.windll.dwmapi
+        value = ctypes.c_int(2)
+        hr = dwm.DwmSetWindowAttribute(
+            ctypes.c_void_p(hwnd), 38,
+            ctypes.byref(value), ctypes.sizeof(value),
+        )
+        return hr == 0
     except Exception:
-        return 1.0
+        return False
 
 
-def _opaque_bg(widget):
-    """Nearest solid background colour above `widget` (for image corners)."""
-    w = widget
-    while w is not None:
-        try:
-            color = w.cget("fg_color")
-        except Exception:
-            color = None
-        if color and color != "transparent":
-            return color
-        try:
-            color = w.cget("bg")
-        except Exception:
-            color = None
-        if color:
-            return color
-        w = getattr(w, "master", None)
-    return WINDOW_BG
+def _lines(edit: QPlainTextEdit) -> list[str]:
+    return [ln.strip() for ln in edit.toPlainText().splitlines() if ln.strip()]
 
 
-# (variant, state, width, height) -> PhotoImage cache for glass buttons.
-_GLASS_PHOTO_CACHE: dict = {}
+def _set_lines(edit: QPlainTextEdit, lines):
+    edit.setPlainText("\n".join(ln for ln in lines if str(ln).strip()))
 
 
-def _glass_button_photos(variant, width, height):
-    key = (variant, width, height)
-    cached = _GLASS_PHOTO_CACHE.get(key)
-    if cached is not None:
-        return cached
-    if variant == "primary":
-        stops = {
-            "normal": (BTN_PRIMARY_TOP, BTN_PRIMARY_BOTTOM, None, 110),
-            "hover": (BTN_PRIMARY_HOVER_TOP, BTN_PRIMARY_HOVER_BOTTOM, None, 110),
-            "disabled": (BTN_DISABLED_TOP, BTN_DISABLED_BOTTOM, None, 40),
-        }
-    else:
-        stops = {
-            "normal": (BTN_SECONDARY_TOP, BTN_SECONDARY_BOTTOM, (185, 210, 236), 60),
-            "hover": (BTN_SECONDARY_TOP, BTN_SECONDARY_HOVER_BOTTOM, (185, 210, 236), 60),
-            "disabled": (BTN_SECONDARY_DISABLED_TOP, BTN_SECONDARY_DISABLED_BOTTOM,
-                         (205, 216, 228), 30),
-        }
-    photos = {}
-    for state, (top, bottom, border, spec) in stops.items():
-        pil_img = _glass_pill_image(width, height, top, bottom, border, spec)
-        photos[state] = ImageTk.PhotoImage(pil_img)
-    _GLASS_PHOTO_CACHE[key] = photos
-    return photos
+def _blacklist_would_overwrite(old_list, new_list) -> bool:
+    """True when saving `new_list` would clobber a non-empty `old_list`.
 
-
-class _GlassButton(tk.Label):
-    """Liquid-glass pill button: baked gradient image + text on a label.
-
-    A plain tkinter label, so the image is shown at its exact pixel size
-    with no CustomTkinter scaling surprises. Supports the subset of the
-    CTkButton interface the app uses: pack, configure(state/fg_color/
-    hover_color), cget("state").
+    Prefers config.blacklist_would_overwrite when the parallel feature
+    work has landed it; otherwise the same check inline.
     """
-
-    def __init__(self, master, text, command, variant="primary"):
-        self._variant = variant
-        self._command = command
-        self._state = "normal"
-        self._hover = False
-        scale = _window_scaling(master)
-        width = max(40, round(100 * scale))
-        height = max(16, round(32 * scale))
-        self._photos = _glass_button_photos(variant, width, height)
-        text_color = "white" if variant == "primary" else BLUE
-        super().__init__(
-            master, text=text, image=self._photos["normal"], compound="center",
-            fg=text_color, bg=_opaque_bg(master),
-            font=ctk.CTkFont(size=13, weight="bold"),
-            borderwidth=0, highlightthickness=0,
-        )
-        self.bind("<ButtonRelease-1>", self._on_release)
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-
-    def _on_release(self, event):
-        if self._state != "normal" or self._command is None:
-            return
-        if 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height():
-            self._command()
-
-    def _on_enter(self, _event):
-        self._hover = True
-        if self._state == "normal":
-            super().configure(image=self._photos["hover"], cursor="hand2")
-
-    def _on_leave(self, _event):
-        self._hover = False
-        if self._state == "normal":
-            super().configure(image=self._photos["normal"], cursor="")
-
-    def _apply_state(self):
-        if self._state == "disabled":
-            super().configure(image=self._photos["disabled"],
-                              fg=BTN_DISABLED_TEXT, cursor="")
-        else:
-            img = self._photos["hover"] if self._hover else self._photos["normal"]
-            text_color = "white" if self._variant == "primary" else BLUE
-            super().configure(image=img, fg=text_color,
-                              cursor="hand2" if self._hover else "")
-
-    def configure(self, **kwargs):
-        state = kwargs.pop("state", None)
-        kwargs.pop("fg_color", None)
-        kwargs.pop("hover_color", None)
-        if state is not None:
-            self._state = state
-            self._apply_state()
-        if kwargs:
-            super().configure(**kwargs)
-
-    def cget(self, name):
-        if name == "state":
-            return self._state
-        return super().cget(name)
+    helper = getattr(cfgmod, "blacklist_would_overwrite", None)
+    if callable(helper):
+        try:
+            return bool(helper(old_list, new_list))
+        except Exception:
+            pass
+    old = [str(x).strip() for x in (old_list or []) if str(x).strip()]
+    new = [str(x).strip() for x in (new_list or []) if str(x).strip()]
+    return bool(old) and set(new) != set(old)
 
 
-def _primary_button(master, text, command):
-    if _PIL_AVAILABLE:
-        return _GlassButton(master, text, command, variant="primary")
-    return ctk.CTkButton(
-        master, text=text, command=command, width=100, height=32,
-        fg_color=BLUE, hover_color=BLUE_DARK, text_color="white",
-        corner_radius=16,
-    )
+def _outcome_label(outcome: str, palette: dict | None = None):
+    """(label, colour) for an outcome, coloured from the given palette
+    (day palette when none is given) so the chip matches the theme."""
+    key = str(outcome or "unknown")
+    label = {
+        "success": "成功", "failed": "失败", "risk": "风控",
+        "unknown": "未知", "skipped": "跳过",
+    }.get(key, "未知")
+    p = palette or _DAY
+    color = p.get("outcome_" + key, p.get("outcome_unknown", "#666666"))
+    return label, color
 
 
-def _secondary_button(master, text, command):
-    if _PIL_AVAILABLE:
-        return _GlassButton(master, text, command, variant="secondary")
-    return ctk.CTkButton(
-        master, text=text, command=command, width=100, height=32,
-        fg_color="white", hover_color="#EAF2FA", border_color=BLUE,
-        border_width=1, text_color=BLUE, corner_radius=16,
-    )
+class App(QMainWindow):
+    # Signals: worker threads emit these; slots run on the UI thread.
+    log_signal = Signal(str, str)
+    status_signal = Signal(str)
+    login_state_signal = Signal(str)
+    listen_state_signal = Signal(str)
+    history_entry_signal = Signal(dict)
+    refresh_history_signal = Signal()
 
-
-class _PlaceholderText(ctk.CTkTextbox):
-    """CTkTextbox that shows grey example text while empty.
-
-    CustomTkinter textboxes have no native placeholder, so this keeps the
-    old behaviour: the example is never part of the value — ``get_lines()``
-    returns [] while it is showing, and focus clears it automatically.
-    """
-
-    def __init__(self, master, placeholder: str, **kwargs):
-        super().__init__(
-            master, text_color=TEXT_DARK, fg_color="white",
-            border_color=ENTRY_BORDER, **kwargs
-        )
-        self._placeholder = placeholder
-        self._showing = False
-        self.bind("<FocusIn>", self._on_focus_in)
-        self.bind("<FocusOut>", self._on_focus_out)
-        self._show()
-
-    def _show(self):
-        self.delete("1.0", tk.END)
-        self.insert("1.0", self._placeholder)
-        self.configure(text_color=PLACEHOLDER)
-        self._showing = True
-
-    def _on_focus_in(self, _event):
-        if self._showing:
-            self.delete("1.0", tk.END)
-            self.configure(text_color=TEXT_DARK)
-            self._showing = False
-
-    def _on_focus_out(self, _event):
-        if not self.get("1.0", tk.END).strip():
-            self._show()
-
-    def set_lines(self, lines):
-        lines = [ln for ln in lines if ln.strip()]
-        if lines:
-            self.delete("1.0", tk.END)
-            self.configure(text_color=TEXT_DARK)
-            self.insert("1.0", "\n".join(lines))
-            self._showing = False
-        else:
-            self._show()
-
-    def get_lines(self):
-        if self._showing:
-            return []
-        return [ln.strip() for ln in self.get("1.0", tk.END).splitlines() if ln.strip()]
-
-
-class App(ctk.CTk):
     def __init__(self, cfg: dict):
-        super().__init__(fg_color=WINDOW_BG)
-        self.title(APP_TITLE)
-        self.geometry(WINDOW_SIZE)
+        super().__init__()
+        self.setWindowTitle(APP_TITLE)
+        self.resize(*WINDOW_SIZE)
         self.cfg = cfg
-        self.log_queue: queue.Queue = queue.Queue()
+        # Active theme: palette + id, kept in sync by _on_theme_changed.
+        self._theme_id = str(cfg.get("theme") or DEFAULT_THEME)
+        if self._theme_id not in THEMES:
+            self._theme_id = DEFAULT_THEME
+        self._palette = palette_for(self._theme_id)
         self.client = self._make_client()
         self.voice = Voice(enabled=bool(cfg.get("voice_enabled", True)))
         self.engine: Engine | None = None
         self._listening = False
         self._login_thread: threading.Thread | None = None
+        self.grab_count = 0
+        self._recorded_order_keys: set = set()
+        self._mica_applied = False
+
+        self.log_signal.connect(self._on_log_line)
+        self.status_signal.connect(self._on_status)
+        self.login_state_signal.connect(self._on_login_state)
+        self.listen_state_signal.connect(self._on_listen_state)
+        self.history_entry_signal.connect(self._on_history_entry)
+        self.refresh_history_signal.connect(self._refresh_history)
+
         self._build_widgets()
         self._load_settings_into_widgets()
-        self.after(200, self._drain_logs)
-        self.after(500, self._refresh_buttons)
-        # Canary: proves on launch that the log drain is alive. If even
-        # this line never appears, the log textbox itself is not rendering.
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._refresh_buttons)
+        self._refresh_timer.start(500)
+        # Canary: proves on launch that the log path is alive.
         self.log("info", "DPGrabber PC 已启动")
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # -- construction -----------------------------------------------------
 
@@ -376,302 +479,546 @@ class App(ctk.CTk):
             verify_tls=bool(self.cfg.get("verify_tls", True)),
         )
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._mica_applied:
+            self._mica_applied = True
+            _apply_mica(self)
+
+    def _primary_button(self, text, slot):
+        btn = QPushButton(text)
+        btn.setObjectName("primary")
+        btn.clicked.connect(slot)
+        return btn
+
+    def _secondary_button(self, text, slot):
+        btn = QPushButton(text)
+        btn.setObjectName("secondary")
+        btn.clicked.connect(slot)
+        return btn
+
+    def _section_title(self, text):
+        label = QLabel(text)
+        label.setObjectName("sectionTitle")
+        return label
+
+    def _card(self):
+        frame = QFrame()
+        frame.setObjectName("card")
+        return frame
+
+    def _hint(self, text):
+        label = QLabel(text)
+        label.setObjectName("hint")
+        label.setWordWrap(True)
+        return label
+
     def _build_widgets(self):
-        main = ctk.CTkFrame(self, fg_color="transparent")
-        main.pack(fill=tk.BOTH, expand=True)
+        central = QWidget()
+        central.setObjectName("central")
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._build_hero(main)
+        self._build_hero(root)
 
-        body = ctk.CTkFrame(main, fg_color="transparent")
-        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 10))
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(14, 10, 14, 10)
+        body_layout.setSpacing(12)
+        root.addWidget(body, 1)
 
-        self._build_login_section(body)
-        self._build_conditions_section(body)
-        self._build_control_section(body)
-        self._build_log_section(body)
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(280)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+        self._build_login_section(sidebar_layout)
+        self._build_control_section(sidebar_layout)
+        self._build_theme_section(sidebar_layout)
+        self._build_advanced_button(sidebar_layout)
+        sidebar_layout.addStretch(1)
+        body_layout.addWidget(sidebar)
 
-    def _build_hero(self, main):
-        # Liquid-glass hero band: a baked gradient image in a plain label
-        # (a label can hold children, so the title/status sit on top of
-        # the gradient). Regenerated when the window width changes.
-        self._hero_width = 0
-        self._hero_photo = None
-        self._hero_after = None
-        self.status_var = tk.StringVar(value="未登录")
-        if _PIL_AVAILABLE:
-            label_bg = _rgb_hex(_lerp_rgb(HERO_TOP, HERO_BOTTOM, 0.5))
-        else:
-            label_bg = _rgb_hex(HERO_BOTTOM)
-        self.hero_label = tk.Label(main, bg=_rgb_hex(HERO_BOTTOM))
-        self.hero_label.pack(fill=tk.X)
-        tk.Label(
-            self.hero_label, text=APP_TITLE, fg="white", bg=label_bg,
-            font=ctk.CTkFont(size=20, weight="bold"),
-        ).pack(side=tk.LEFT, padx=20)
-        tk.Label(
-            self.hero_label, textvariable=self.status_var, fg="#DCEEFF",
-            bg=label_bg, font=ctk.CTkFont(size=13),
-        ).pack(side=tk.RIGHT, padx=20)
-        self.hero_label.bind("<Configure>", self._on_hero_configure)
-        self._refresh_hero(1000)
+        main_area = QWidget()
+        main_layout = QVBoxLayout(main_area)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        self._build_conditions_section(main_layout)
+        self._build_log_section(main_layout)
+        self._build_history_section(main_layout)
+        body_layout.addWidget(main_area, 1)
 
-    def _on_hero_configure(self, event):
-        width = event.width
-        if abs(width - self._hero_width) > 2:
-            if self._hero_after is not None:
-                self.after_cancel(self._hero_after)
-            self._hero_after = self.after(80, lambda: self._refresh_hero(width))
+    def _build_hero(self, root):
+        hero = QFrame()
+        hero.setObjectName("hero")
+        hero.setFixedHeight(56)
+        layout = QHBoxLayout(hero)
+        layout.setContentsMargins(20, 0, 20, 0)
+        title = QLabel(APP_TITLE)
+        title.setObjectName("heroTitle")
+        layout.addWidget(title)
+        layout.addStretch(1)
+        self.grab_count_label = QLabel("今日抢单 0")
+        self.grab_count_label.setObjectName("heroStat")
+        layout.addWidget(self.grab_count_label)
+        self.listen_state_label = QLabel("未开始监听")
+        self.listen_state_label.setObjectName("heroStatDim")
+        layout.addWidget(self.listen_state_label)
+        self.status_label = QLabel("未登录")
+        self.status_label.setObjectName("heroStatDim")
+        layout.addWidget(self.status_label)
+        root.addWidget(hero)
 
-    def _refresh_hero(self, width):
-        if not _PIL_AVAILABLE or width < 50:
+    def _sidebar_card(self, parent_layout, title):
+        title_label = QLabel(title)
+        title_label.setObjectName("sidebarTitle")
+        parent_layout.addWidget(title_label)
+        # Indent the title like the old UI (padx=14).
+        title_label.setContentsMargins(14, 12, 14, 2)
+        card = QFrame()
+        card.setObjectName("sidebarCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setSpacing(4)
+        wrapper = QVBoxLayout()
+        wrapper.setContentsMargins(12, 0, 12, 12)
+        wrapper.addWidget(card)
+        parent_layout.addLayout(wrapper)
+        return card, card_layout
+
+    def _build_login_section(self, sidebar_layout):
+        card, layout = self._sidebar_card(sidebar_layout, "账号登录")
+        phone_label = QLabel("手机号")
+        phone_label.setObjectName("sidebarLabel")
+        layout.addWidget(phone_label)
+        self.phone_edit = QLineEdit()
+        self.phone_edit.setPlaceholderText("11 位手机号")
+        layout.addWidget(self.phone_edit)
+        hint = QLabel("登录用的手机号，11 位数字")
+        hint.setObjectName("sidebarHint")
+        layout.addWidget(hint)
+        layout.addSpacing(4)
+        pw_label = QLabel("密码")
+        pw_label.setObjectName("sidebarLabel")
+        layout.addWidget(pw_label)
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.Password)
+        layout.addWidget(self.password_edit)
+        self.show_pw_check = QCheckBox("显示密码")
+        self.show_pw_check.setObjectName("sidebarCheck")
+        self.show_pw_check.toggled.connect(self._toggle_show_password)
+        layout.addWidget(self.show_pw_check)
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(self._primary_button("登录", self._on_login))
+        btn_row.addWidget(self._secondary_button("注销", self._on_logout))
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+        self.login_state_label = QLabel("请输入手机号和密码后登录")
+        self.login_state_label.setObjectName("sidebarState")
+        self.login_state_label.setWordWrap(True)
+        layout.addWidget(self.login_state_label)
+
+    def _form_row(self, grid, row, label, widget, hint):
+        lab = QLabel(label)
+        lab.setObjectName("fieldLabel")
+        lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(lab, row, 0)
+        grid.addWidget(widget, row, 1)
+        grid.addWidget(self._hint(hint), row, 2)
+
+    def _build_conditions_section(self, main_layout):
+        main_layout.addWidget(self._section_title("接单条件"))
+        card = self._card()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 8, 12, 8)
+        inner = QWidget()
+        grid = QGridLayout(inner)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setColumnStretch(2, 1)
+        self.min_amount_edit = QLineEdit()
+        self._form_row(grid, 0, "最小金额（元）", self.min_amount_edit,
+                       "只抢不低于这个价的单")
+        self.max_amount_edit = QLineEdit()
+        self._form_row(grid, 1, "最大金额（元）", self.max_amount_edit,
+                       "高于这个价不抢；填 0 表示不限制")
+        self.poll_interval_edit = QLineEdit()
+        self._form_row(grid, 2, "轮询间隔（秒）", self.poll_interval_edit,
+                       "每隔多久刷一次订单列表")
+        self.memo_mode_box = QComboBox()
+        self.memo_mode_box.addItems(["不检测备注", "有备注不抢"])
+        self._form_row(grid, 3, "备注检测", self.memo_mode_box,
+                       "“不检测备注”只按关键词过滤；“有备注不抢”则订单带任何备注都跳过。"
+                       "备注关键词命中时本身总会跳过")
+        self.confirm_wait_min_spin = QSpinBox()
+        self.confirm_wait_min_spin.setRange(0, 120)
+        self.confirm_wait_min_spin.setSuffix(" 秒")
+        self._form_row(grid, 4, "抢单前等待最小（秒）", self.confirm_wait_min_spin,
+                       "0 表示不等待；启用时最小值 ≥ 3 秒")
+        self.confirm_wait_max_spin = QSpinBox()
+        self.confirm_wait_max_spin.setRange(0, 120)
+        self.confirm_wait_max_spin.setSuffix(" 秒")
+        self._form_row(grid, 5, "抢单前等待最大（秒）", self.confirm_wait_max_spin,
+                       "0 表示不等待；启用时最大值 - 最小值 ≥ 2 秒")
+        card_layout.addWidget(inner)
+
+        # 刷新与休息 (run/rest): visible toggle + four minute fields.
+        rest_group = QGroupBox("刷新与休息")
+        rest_grid = QGridLayout(rest_group)
+        self.run_rest_check = QCheckBox("开启刷新与休息（风控店铺轮换休息）")
+        self.run_rest_check.setChecked(True)
+        rest_grid.addWidget(self.run_rest_check, 0, 0, 1, 4)
+        self.risk_run_min_spin = QSpinBox()
+        self.risk_run_min_spin.setRange(1, 600)
+        self.risk_run_min_spin.setSuffix(" 分钟")
+        self.risk_run_max_spin = QSpinBox()
+        self.risk_run_max_spin.setRange(1, 600)
+        self.risk_run_max_spin.setSuffix(" 分钟")
+        self.risk_rest_min_spin = QSpinBox()
+        self.risk_rest_min_spin.setRange(0, 600)
+        self.risk_rest_min_spin.setSuffix(" 分钟")
+        self.risk_rest_max_spin = QSpinBox()
+        self.risk_rest_max_spin.setRange(0, 600)
+        self.risk_rest_max_spin.setSuffix(" 分钟")
+        for col, (lab_text, spin) in enumerate([
+            ("刷新最短", self.risk_run_min_spin),
+            ("刷新最长", self.risk_run_max_spin),
+            ("休息最短", self.risk_rest_min_spin),
+            ("休息最长", self.risk_rest_max_spin),
+        ]):
+            lab = QLabel(lab_text)
+            lab.setObjectName("fieldLabel")
+            rest_grid.addWidget(lab, 1, col * 2)
+            rest_grid.addWidget(spin, 1, col * 2 + 1)
+        hint = self._hint("每轮刷新持续随机时长后休息随机时长，再继续监听。")
+        rest_grid.addWidget(hint, 2, 0, 1, 8)
+        card_layout.addWidget(rest_group)
+
+        save_row = QHBoxLayout()
+        save_row.addWidget(self._primary_button("保存设置", self._on_save_settings))
+        save_row.addStretch(1)
+        card_layout.addLayout(save_row)
+        main_layout.addWidget(card)
+        main_layout.addSpacing(10)
+
+    def _build_control_section(self, sidebar_layout):
+        card, layout = self._sidebar_card(sidebar_layout, "监听控制")
+        btn_row = QHBoxLayout()
+        self.start_btn = self._primary_button("开始监听", self._on_start_listen)
+        self.stop_btn = self._secondary_button("停止监听", self._on_stop_listen)
+        self.stop_btn.setEnabled(False)
+        btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.stop_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+        self.listen_state_sidebar_label = QLabel("未开始监听")
+        self.listen_state_sidebar_label.setObjectName("sidebarState")
+        self.listen_state_sidebar_label.setWordWrap(True)
+        layout.addWidget(self.listen_state_sidebar_label)
+
+    def _build_theme_section(self, sidebar_layout):
+        card, layout = self._sidebar_card(sidebar_layout, "主题")
+        self.theme_box = QComboBox()
+        for theme_id, theme in THEMES.items():
+            self.theme_box.addItem(theme["name"], theme_id)
+        idx = list(THEMES.keys()).index(self._theme_id)
+        self.theme_box.setCurrentIndex(idx)
+        self.theme_box.currentIndexChanged.connect(self._on_theme_changed)
+        layout.addWidget(self.theme_box)
+        hint = QLabel("切换后立即生效，并记住选择")
+        hint.setObjectName("sidebarHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+    def _on_theme_changed(self, index: int):
+        theme_id = str(self.theme_box.itemData(index) or DEFAULT_THEME)
+        if theme_id not in THEMES or theme_id == self._theme_id:
             return
-        self._hero_width = width
-        self._hero_photo = ImageTk.PhotoImage(_hero_image(width, 56))
-        self.hero_label.configure(image=self._hero_photo)
+        self._theme_id = theme_id
+        self._palette = palette_for(theme_id)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_stylesheet(self._palette, theme_id))
+        self.cfg["theme"] = theme_id
+        try:
+            cfgmod.save(self.cfg)
+        except cfgmod.ConfigError:
+            pass  # theme still applies this session; the save retries later
+        # Rebuild history rows so outcome chips use the new palette.
+        self._refresh_history()
+        self.log("info", "主题已切换为%s" % THEMES[theme_id]["name"])
 
-    def _section(self, parent, title):
-        """Blue section title + frosted glass card; returns the card frame."""
-        ctk.CTkLabel(
-            parent, text=title, text_color=BLUE, anchor="w",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(anchor=tk.W, pady=(0, 2))
-        shadow = ctk.CTkFrame(parent, fg_color=CARD_SHADOW, corner_radius=16)
-        shadow.pack(fill=tk.X, pady=(0, 10))
-        card = ctk.CTkFrame(
-            shadow, fg_color=CARD_BG, border_color=CARD_BORDER,
-            border_width=1, corner_radius=16,
+    def _build_advanced_button(self, sidebar_layout):
+        row = QHBoxLayout()
+        row.setContentsMargins(12, 0, 12, 0)
+        row.addWidget(self._secondary_button("高级设置", self._open_advanced))
+        row.addStretch(1)
+        sidebar_layout.addLayout(row)
+
+    def _build_log_section(self, main_layout):
+        main_layout.addWidget(self._section_title("运行日志"))
+        card = self._card()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        # QPlainTextEdit: retained-mode, so the log survives maximize /
+        # restore (the old CTkTextbox lost its content on maximize).
+        self.log_text = QPlainTextEdit()
+        self.log_text.setObjectName("logView")
+        self.log_text.setReadOnly(True)
+        self.log_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        card_layout.addWidget(self.log_text, 1)
+        clear_row = QHBoxLayout()
+        clear_row.addWidget(self._secondary_button("清空日志", self._clear_log))
+        clear_row.addStretch(1)
+        card_layout.addLayout(clear_row)
+        main_layout.addWidget(card, 1)
+        main_layout.addSpacing(10)
+
+    def _build_history_section(self, main_layout):
+        header = QHBoxLayout()
+        header.addWidget(self._section_title("接单历史"))
+        header.addStretch(1)
+        header.addWidget(self._secondary_button("清空历史", self._on_clear_history))
+        main_layout.addLayout(header)
+        card = self._card()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        self.history_list = QListWidget()
+        self.history_list.setFixedHeight(180)
+        card_layout.addWidget(self.history_list)
+        main_layout.addWidget(card)
+        self._refresh_history()
+
+    # -- history ------------------------------------------------------------
+
+    def _history_entry_for_order(self, order: dict, order_id: str,
+                                 outcome: str, reason: str) -> dict:
+        return {
+            "grabbed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "no": str(order.get("no") or order_id),
+            "id": str(order_id),
+            "amount": round(amount_yuan_from_cents(order.get("totalAmount")), 2),
+            "userWechatId": str(order.get("userWechatId") or ""),
+            "userMemo": str(order.get("userMemo") or ""),
+            "createTime": str(order.get("createTime") or ""),
+            "outcome": outcome,
+            "reason": reason or "",
+        }
+
+    def _on_history_entry(self, entry: dict):
+        """UI-thread slot: persist one history entry and refresh the list."""
+        try:
+            history_mod.append_history(entry)
+        except Exception:
+            pass
+        self._refresh_history()
+
+    def _refresh_history(self):
+        """Rebuild the history rows from the stored file, newest first."""
+        self.history_list.clear()
+        entries = history_mod.load_history()
+        if not entries:
+            item = QListWidgetItem("暂无接单记录，抢到单后会自动出现在这里")
+            item.setForeground(QColor(HINT))
+            self.history_list.addItem(item)
+            return
+        for entry in reversed(entries):
+            self._add_history_row(entry)
+
+    def _add_history_row(self, entry: dict):
+        grabbed = str(entry.get("grabbed_at") or "").replace("T", " ")
+        try:
+            amount = float(entry.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        no = str(entry.get("no") or entry.get("id") or "")
+        wechat = str(entry.get("userWechatId") or "未知")
+        memo = str(entry.get("userMemo") or "")
+        # Old entries have no outcome/reason: display as success / no reason.
+        outcome = str(entry.get("outcome") or "success")
+        reason = str(entry.get("reason") or "")
+        label, color = _outcome_label(outcome, self._palette)
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(1)
+        line1 = QLabel("%s   ¥%.2f   订单号 %s   [%s]" % (grabbed, amount, no, label))
+        line1.setObjectName("historyLine1")
+        layout.addWidget(line1)
+        line2 = QLabel("微信 %s   ·   备注：%s" % (wechat, memo if memo else "无备注"))
+        line2.setObjectName("historyLine2")
+        layout.addWidget(line2)
+        if outcome != "success" and reason:
+            line3 = QLabel("原因：%s" % reason)
+            line3.setObjectName("historyReason")
+            layout.addWidget(line3)
+        elif outcome != "success":
+            line3 = QLabel("结果：%s" % label)
+            line3.setObjectName("historyReason")
+            layout.addWidget(line3)
+        # Outcome colour chip on line 1 via a coloured status word.
+        line1.setText(
+            "%s   ¥%.2f   订单号 %s   " % (grabbed, amount, no)
+            + "<span style='color:%s'>[%s]</span>" % (color, label)
         )
-        card.pack(fill=tk.X, pady=(0, 2))
-        return card
+        line1.setTextFormat(Qt.RichText)
+        item = QListWidgetItem()
+        item.setSizeHint(widget.sizeHint())
+        self.history_list.addItem(item)
+        self.history_list.setItemWidget(item, widget)
 
-    def _hint_label(self, parent, text):
-        return ctk.CTkLabel(
-            parent, text=text, text_color=HINT,
-            font=ctk.CTkFont(size=12), anchor="w",
-        )
+    def _on_clear_history(self):
+        history_mod.clear_history()
+        self._refresh_history()
+        self.log("info", "接单历史已清空")
 
-    def _form_row(self, parent, row, label, widget, hint):
-        """One field row: label right-aligned, input left, muted hint."""
-        ctk.CTkLabel(
-            parent, text=label, width=110, anchor="e",
-            text_color=TEXT_DARK,
-        ).grid(row=row, column=0, sticky=tk.E, padx=(0, 8), pady=4)
-        widget.grid(row=row, column=1, sticky=tk.W, pady=4)
-        self._hint_label(parent, hint).grid(
-            row=row, column=2, sticky=tk.W, padx=(12, 0), pady=4
-        )
+    def _on_grab(self, order: dict, order_id: str, confirm_calls: int):
+        """Engine callback on a confirmed grab (worker thread): record it."""
+        entry = self._history_entry_for_order(order, order_id, "success", "")
+        self._recorded_order_keys.add((entry["no"], entry["id"]))
+        self.history_entry_signal.emit(entry)
 
-    def _entry(self, parent, var, width):
-        return ctk.CTkEntry(
-            parent, textvariable=var, width=width, corner_radius=10,
-            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
-        )
+    def _on_outcome(self, order: dict, outcome: str, reason: str):
+        """Engine callback once per order leaving the confirm loop.
 
-    def _build_login_section(self, main):
-        login = self._section(main, "账号登录")
-        inner = ctk.CTkFrame(login, fg_color="transparent")
-        inner.pack(fill=tk.X, padx=12, pady=8)
-        inner.columnconfigure(2, weight=1)
+        Success is already recorded by on_grab, so skip it here (unless
+        on_grab never fired for this order). Non-success outcomes are
+        recorded so 接单历史 shows failed / risk / unknown / skipped too.
+        """
+        outcome = str(outcome or "unknown")
+        order_id = str(order.get("id") or order.get("no") or "")
+        no = str(order.get("no") or order_id)
+        if outcome == "success" and (no, order_id) in self._recorded_order_keys:
+            return
+        entry = self._history_entry_for_order(order, order_id, outcome, reason or "")
+        self._recorded_order_keys.add((entry["no"], entry["id"]))
+        self.history_entry_signal.emit(entry)
 
-        self.phone_var = tk.StringVar()
-        phone_entry = self._entry(inner, self.phone_var, 220)
-        self._form_row(inner, 0, "手机号", phone_entry, "登录用的手机号，11 位数字")
-
-        pw_frame = ctk.CTkFrame(inner, fg_color="transparent")
-        self.password_var = tk.StringVar()
-        self.password_entry = ctk.CTkEntry(
-            pw_frame, textvariable=self.password_var, width=220, show="*",
-            corner_radius=10,
-            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
-        )
-        self.password_entry.pack(side=tk.LEFT)
-        self.show_pw_var = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            pw_frame, text="显示密码", variable=self.show_pw_var,
-            command=self._toggle_show_password, text_color=TEXT_DARK,
-            fg_color=BLUE, hover_color=BLUE_DARK,
-        ).pack(side=tk.LEFT, padx=(10, 0))
-        self._form_row(inner, 1, "密码", pw_frame, "登录密码；勾选“显示密码”后明文可见")
-
-        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
-        btn_row.grid(row=2, column=1, sticky=tk.W, pady=(6, 0))
-        _primary_button(btn_row, "登录", self._on_login).pack(side=tk.LEFT)
-        _secondary_button(btn_row, "注销", self._on_logout).pack(side=tk.LEFT, padx=(8, 0))
-
-        self.login_state_var = tk.StringVar(value="请输入手机号和密码后登录")
-        ctk.CTkLabel(inner, textvariable=self.login_state_var, text_color=HINT).grid(
-            row=3, column=0, columnspan=3, sticky=tk.W, pady=(8, 0)
-        )
-
-    def _build_conditions_section(self, main):
-        settings = self._section(main, "接单条件")
-        inner = ctk.CTkFrame(settings, fg_color="transparent")
-        inner.pack(fill=tk.X, padx=12, pady=8)
-        inner.columnconfigure(2, weight=1)
-
-        self.min_amount_var = tk.StringVar()
-        self._form_row(
-            inner, 0, "最小金额（元）",
-            self._entry(inner, self.min_amount_var, 120),
-            "只抢不低于这个价的单",
-        )
-        self.max_amount_var = tk.StringVar()
-        self._form_row(
-            inner, 1, "最大金额（元）",
-            self._entry(inner, self.max_amount_var, 120),
-            "高于这个价不抢；填 0 表示不限制",
-        )
-        self.poll_interval_var = tk.StringVar()
-        self._form_row(
-            inner, 2, "轮询间隔（秒）",
-            self._entry(inner, self.poll_interval_var, 120),
-            "每隔多久刷一次订单列表",
-        )
-        self.memo_mode_var = tk.StringVar()
-        self.memo_mode_box = ctk.CTkComboBox(
-            inner, variable=self.memo_mode_var, width=150, state="readonly",
-            corner_radius=10,
-            values=["不检测备注", "有备注不抢"],
-            fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
-            button_color=BLUE, button_hover_color=BLUE_DARK,
-            dropdown_fg_color="white", dropdown_text_color=TEXT_DARK,
-        )
-        self._form_row(
-            inner, 3, "备注检测", self.memo_mode_box,
-            "“不检测备注”只按关键词过滤；“有备注不抢”则订单带任何备注都跳过。"
-            "备注关键词命中时本身总会跳过",
-        )
-
-        # Two large text boxes, side by side.
-        boxes = ctk.CTkFrame(inner, fg_color="transparent")
-        boxes.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=(8, 0))
-        boxes.columnconfigure(0, weight=1)
-        boxes.columnconfigure(1, weight=1)
-
-        kw_frame = ctk.CTkFrame(boxes, fg_color="transparent")
-        kw_frame.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 12))
-        ctk.CTkLabel(kw_frame, text="备注关键词（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
-        self._hint_label(kw_frame, "命中任意一个就不抢").pack(anchor=tk.W)
-        self.keyword_text = _PlaceholderText(
-            kw_frame, "例如：加急", width=340, height=56, corner_radius=10)
-        self.keyword_text.pack(fill=tk.X, pady=(4, 0))
-
-        bl_frame = ctk.CTkFrame(boxes, fg_color="transparent")
-        bl_frame.grid(row=0, column=1, sticky=tk.NSEW)
-        ctk.CTkLabel(bl_frame, text="黑名单微信号（一行一个）", text_color=TEXT_DARK).pack(anchor=tk.W)
-        self._hint_label(bl_frame, "每行一个微信号，命中就不抢").pack(anchor=tk.W)
-        self.blacklist_text = _PlaceholderText(
-            bl_frame, "例如：wechat123", width=340, height=56, corner_radius=10)
-        self.blacklist_text.pack(fill=tk.X, pady=(4, 0))
-
-        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
-        btn_row.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
-        _primary_button(btn_row, "保存设置", self._on_save_settings).pack(side=tk.LEFT)
-        _secondary_button(btn_row, "高级设置", self._open_advanced).pack(side=tk.LEFT, padx=(8, 0))
-
-    def _build_control_section(self, main):
-        control = self._section(main, "监听控制")
-        inner = ctk.CTkFrame(control, fg_color="transparent")
-        inner.pack(fill=tk.X, padx=12, pady=8)
-        self.start_btn = _primary_button(inner, "开始监听", self._on_start_listen)
-        self.start_btn.pack(side=tk.LEFT)
-        self.stop_btn = _secondary_button(inner, "停止监听", self._on_stop_listen)
-        self.stop_btn.configure(state="disabled")
-        self.stop_btn.pack(side=tk.LEFT, padx=(8, 0))
-        self.listen_state_var = tk.StringVar(value="未开始监听")
-        ctk.CTkLabel(inner, textvariable=self.listen_state_var, text_color=HINT).pack(
-            side=tk.LEFT, padx=(16, 0)
-        )
-
-    def _build_log_section(self, main):
-        ctk.CTkLabel(
-            main, text="运行日志", text_color=BLUE, anchor="w",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(anchor=tk.W, pady=(0, 2))
-        log_shadow = ctk.CTkFrame(main, fg_color=CARD_SHADOW, corner_radius=16)
-        log_shadow.pack(fill=tk.BOTH, expand=True)
-        log_card = ctk.CTkFrame(
-            log_shadow, fg_color=CARD_BG, border_color=CARD_BORDER,
-            border_width=1, corner_radius=16,
-        )
-        log_card.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
-        inner = ctk.CTkFrame(log_card, fg_color="transparent")
-        inner.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
-        # The run log used to be a CTkTextbox. On Windows its text
-        # vanished when the window was maximized (and never came back on
-        # restore), while the file mirror proved the app kept generating
-        # every line — so the loss was in CTk's redraw/scrollbar
-        # machinery, not in the log data. A plain tk.Text has none of
-        # that machinery, so it cannot lose its content that way.
-        log_frame = tk.Frame(inner, bg="white")
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        self.log_text = tk.Text(
-            log_frame, state="disabled", height=10, wrap="word",
-            bg="white", fg=TEXT_DARK, relief="flat",
-            highlightthickness=0, borderwidth=0,
-            font=ctk.CTkFont(size=13),
-        )
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        log_scroll = tk.Scrollbar(
-            log_frame, orient="vertical", command=self.log_text.yview,
-        )
-        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_text.configure(yscrollcommand=log_scroll.set)
-        self.log_text.tag_config("info", foreground="")
-        self.log_text.tag_config("success", foreground="#1a7f37")
-        self.log_text.tag_config("warning", foreground="#9a6700")
-        self.log_text.tag_config("error", foreground="#cf222e")
-        self.log_text.tag_config("debug", foreground="#666666")
-        _secondary_button(inner, "清空日志", self._clear_log).pack(anchor=tk.W, pady=(8, 0))
+    # -- settings -----------------------------------------------------------
 
     def _load_settings_into_widgets(self):
-        self.phone_var.set(self.cfg.get("phone", ""))
-        self.password_var.set(self.cfg.get("password", ""))
-        self.min_amount_var.set(str(self.cfg.get("min_amount", 10.0)))
-        self.max_amount_var.set(str(self.cfg.get("max_amount", 0.0)))
-        self.poll_interval_var.set(str(self.cfg.get("poll_interval_sec", 0.5)))
-        self.memo_mode_box.set("有备注不抢" if int(self.cfg.get("memo_mode", 0)) == 1 else "不检测备注")
-        self.keyword_text.set_lines(self.cfg.get("memo_keywords", []))
-        self.blacklist_text.set_lines(self.cfg.get("blacklist", []))
+        self.phone_edit.setText(self.cfg.get("phone", ""))
+        self.password_edit.setText(self.cfg.get("password", ""))
+        self.min_amount_edit.setText(str(self.cfg.get("min_amount", 10.0)))
+        self.max_amount_edit.setText(str(self.cfg.get("max_amount", 0.0)))
+        self.poll_interval_edit.setText(str(self.cfg.get("poll_interval_sec", 0.5)))
+        self.memo_mode_box.setCurrentIndex(1 if int(self.cfg.get("memo_mode", 0)) == 1 else 0)
+        self.confirm_wait_min_spin.setValue(int(self.cfg.get("confirm_wait_min", 0) or 0))
+        self.confirm_wait_max_spin.setValue(int(self.cfg.get("confirm_wait_max", 0) or 0))
+        self.run_rest_check.setChecked(bool(self.cfg.get("run_rest_enabled", True)))
+        self.risk_run_min_spin.setValue(int(self.cfg.get("risk_run_min", 50) or 50))
+        self.risk_run_max_spin.setValue(int(self.cfg.get("risk_run_max", 60) or 60))
+        self.risk_rest_min_spin.setValue(int(self.cfg.get("risk_rest_min", 10)))
+        self.risk_rest_max_spin.setValue(int(self.cfg.get("risk_rest_max", 20)))
 
-    # -- logging ------------------------------------------------------------
-    # Log lines go through a queue so worker threads never touch widgets.
-    # The drain loop must never die: a single bad line (or a platform
-    # quirk in the textbox) used to raise out of _drain_logs before the
-    # after() reschedule, freezing the log forever with no symptom.
-    # The reschedule now lives in a finally, and each line is guarded.
+    def _read_settings_from_widgets(self) -> dict:
+        try:
+            min_amount = float(self.min_amount_edit.text())
+            max_amount = float(self.max_amount_edit.text())
+            poll_interval = float(self.poll_interval_edit.text())
+        except ValueError:
+            raise cfgmod.ConfigError("金额和轮询间隔必须是数字")
+        if min_amount < 0 or max_amount < 0:
+            raise cfgmod.ConfigError("金额不能小于 0")
+        if max_amount > 0 and max_amount < min_amount:
+            raise cfgmod.ConfigError("最大金额不能小于最小金额；填 0 表示不限制")
+        if poll_interval <= 0:
+            raise cfgmod.ConfigError("轮询间隔必须大于 0")
+        confirm_min = int(self.confirm_wait_min_spin.value())
+        confirm_max = int(self.confirm_wait_max_spin.value())
+        if confirm_min > 0 or confirm_max > 0:
+            if confirm_min < 3:
+                raise cfgmod.ConfigError("抢单前等待最小时长应 ≥ 3 秒（或都填 0 表示不等待）")
+            if confirm_max - confirm_min < 2:
+                raise cfgmod.ConfigError("抢单前等待最大值应比最小值大至少 2 秒")
+        run_enabled = self.run_rest_check.isChecked()
+        run_min = int(self.risk_run_min_spin.value())
+        run_max = int(self.risk_run_max_spin.value())
+        rest_min = int(self.risk_rest_min_spin.value())
+        rest_max = int(self.risk_rest_max_spin.value())
+        if run_enabled:
+            if run_max < run_min:
+                raise cfgmod.ConfigError("刷新最长分钟数不能小于刷新最短")
+            if rest_max < rest_min:
+                raise cfgmod.ConfigError("休息最长分钟数不能小于休息最短")
+        return {
+            "phone": self.phone_edit.text().strip(),
+            "password": self.password_edit.text(),
+            "min_amount": min_amount,
+            "max_amount": max_amount,
+            "poll_interval_sec": poll_interval,
+            "memo_mode": 1 if self.memo_mode_box.currentIndex() == 1 else 0,
+            "confirm_wait_min": confirm_min,
+            "confirm_wait_max": confirm_max,
+            "run_rest_enabled": run_enabled,
+            "risk_run_min": run_min,
+            "risk_run_max": run_max,
+            "risk_rest_min": rest_min,
+            "risk_rest_max": rest_max,
+        }
+
+    def _on_save_settings(self):
+        try:
+            updates = self._read_settings_from_widgets()
+        except cfgmod.ConfigError as exc:
+            QMessageBox.critical(self, "设置有误", str(exc))
+            return
+        self.cfg.update(updates)
+        try:
+            cfgmod.save(self.cfg)
+        except cfgmod.ConfigError as exc:
+            QMessageBox.critical(self, "保存失败", str(exc))
+            return
+        self.log("success", "设置已保存")
+
+    def _open_advanced(self):
+        dialog = AdvancedDialog(self, self.cfg, on_saved=self._on_advanced_saved)
+        dialog.exec()
+
+    def _on_advanced_saved(self, new_cfg: dict):
+        self.cfg = new_cfg
+        self.client = self._make_client()
+        self.voice.enabled = bool(new_cfg.get("voice_enabled", True))
+        self.log("success", "高级设置已保存")
+
+    # -- logging (signal-driven; worker threads only emit) ------------------
 
     def log(self, level: str, message: str):
-        self.log_queue.put((level, message))
+        self.log_signal.emit(level, message)
 
-    def _drain_logs(self):
-        try:
-            while True:
-                try:
-                    level, message = self.log_queue.get_nowait()
-                except queue.Empty:
-                    break
-                self._append_log_line(level, message)
-        finally:
-            self.after(200, self._drain_logs)
-
-    def _append_log_line(self, level: str, message: str):
+    def _on_log_line(self, level: str, message: str):
         stamp = time.strftime("%H:%M:%S")
-        text = "[%s] %s\n" % (stamp, message)
+        text = "[%s] %s" % (stamp, message)
+        # Colours come from the active theme's palette so the log stays
+        # readable on dark and light themes alike.
+        p = self._palette
+        colors = {
+            "info": p.get("log_info", TEXT_DARK),
+            "success": p.get("log_success", "#1A7F37"),
+            "warning": p.get("log_warning", "#9A6700"),
+            "error": p.get("log_error", "#CF222E"),
+            "debug": p.get("log_debug", "#666666"),
+        }
         try:
-            self.log_text.configure(state="normal")
-            self.log_text.insert(tk.END, text, level)
-            self.log_text.see(tk.END)
-            self.log_text.configure(state="disabled")
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(colors.get(level, TEXT_DARK)))
+            cursor.setCharFormat(fmt)
+            cursor.insertText(text + "\n")
+            self.log_text.setTextCursor(cursor)
+            self.log_text.ensureCursorVisible()
         except Exception:
-            # State toggling can fail on some platforms; fall back to a
-            # direct insert so the line is never silently lost.
             try:
-                self.log_text.insert(tk.END, text, level)
-                self.log_text.see(tk.END)
+                self.log_text.appendPlainText(text)
             except Exception:
                 pass
-        self._mirror_log_line(text)
+        self._mirror_log_line(text + "\n")
+        if level == "success" and "抢单成功" in message:
+            self.grab_count += 1
+            self.grab_count_label.setText("今日抢单 %d" % self.grab_count)
         if level in ("success", "error", "warning"):
             try:
                 self.voice.speak(message)
@@ -691,76 +1038,37 @@ class App(ctk.CTk):
             pass
 
     def _clear_log(self):
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", tk.END)
-        self.log_text.configure(state="disabled")
+        self.log_text.clear()
 
-    # -- settings -----------------------------------------------------------
+    def _on_status(self, text: str):
+        self.status_label.setText(text)
 
-    def _read_settings_from_widgets(self) -> dict:
-        try:
-            min_amount = float(self.min_amount_var.get())
-            max_amount = float(self.max_amount_var.get())
-            poll_interval = float(self.poll_interval_var.get())
-        except ValueError:
-            raise cfgmod.ConfigError("金额和轮询间隔必须是数字")
-        if min_amount < 0 or max_amount < 0:
-            raise cfgmod.ConfigError("金额不能小于 0")
-        if max_amount > 0 and max_amount < min_amount:
-            raise cfgmod.ConfigError("最大金额不能小于最小金额；填 0 表示不限制")
-        if poll_interval <= 0:
-            raise cfgmod.ConfigError("轮询间隔必须大于 0")
-        return {
-            "phone": self.phone_var.get().strip(),
-            "password": self.password_var.get(),
-            "min_amount": min_amount,
-            "max_amount": max_amount,
-            "poll_interval_sec": poll_interval,
-            "memo_mode": 1 if self.memo_mode_var.get() == "有备注不抢" else 0,
-            "memo_keywords": self.keyword_text.get_lines(),
-            "blacklist": self.blacklist_text.get_lines(),
-        }
+    def _on_login_state(self, text: str):
+        self.login_state_label.setText(text)
 
-    def _on_save_settings(self):
-        try:
-            updates = self._read_settings_from_widgets()
-        except cfgmod.ConfigError as exc:
-            messagebox.showerror("设置有误", str(exc), parent=self)
-            return
-        self.cfg.update(updates)
-        try:
-            cfgmod.save(self.cfg)
-        except cfgmod.ConfigError as exc:
-            messagebox.showerror("保存失败", str(exc), parent=self)
-            return
-        self.log("success", "设置已保存")
-
-    def _open_advanced(self):
-        AdvancedDialog(self, self.cfg, on_saved=self._on_advanced_saved)
-
-    def _on_advanced_saved(self, new_cfg: dict):
-        self.cfg = new_cfg
-        self.client = self._make_client()
-        self.voice.enabled = bool(new_cfg.get("voice_enabled", True))
-        self.log("success", "高级设置已保存")
+    def _on_listen_state(self, text: str):
+        self.listen_state_label.setText(text)
+        self.listen_state_sidebar_label.setText(text)
 
     # -- login --------------------------------------------------------------
 
-    def _toggle_show_password(self):
-        self.password_entry.configure(show="" if self.show_pw_var.get() else "*")
+    def _toggle_show_password(self, checked: bool):
+        self.password_edit.setEchoMode(
+            QLineEdit.Normal if checked else QLineEdit.Password
+        )
 
     def _on_login(self):
-        phone = self.phone_var.get().strip()
-        password = self.password_var.get()
+        phone = self.phone_edit.text().strip()
+        password = self.password_edit.text()
         if not phone or not password:
-            messagebox.showwarning("缺少信息", "请先填写手机号和密码", parent=self)
+            QMessageBox.warning(self, "缺少信息", "请先填写手机号和密码")
             return
         if len(phone) != 11 or not phone.isdigit():
-            messagebox.showwarning("手机号格式", "手机号应为 11 位数字", parent=self)
+            QMessageBox.warning(self, "手机号格式", "手机号应为 11 位数字")
             return
         if self._login_thread is not None and self._login_thread.is_alive():
             return
-        self.login_state_var.set("正在登录，请稍后…")
+        self.login_state_signal.emit("正在登录，请稍后…")
         self._login_thread = threading.Thread(
             target=self._login_worker, args=(phone, password), daemon=True
         )
@@ -782,23 +1090,38 @@ class App(ctk.CTk):
                 )
             else:
                 label = "已登录，店铺 sid=%s" % session.sid
-            self.log_queue.put(("success", label))
-            self.after(0, lambda: self.status_var.set(label))
-            self.after(0, lambda: self.login_state_var.set(label))
+            self.log("success", label)
+            self.status_signal.emit(label)
+            self.login_state_signal.emit(label)
         except ApiError as exc:
-            self.log_queue.put(("error", "登录失败：%s" % exc.message))
-            self.after(0, lambda: self.status_var.set("未登录"))
-            self.after(0, lambda: self.login_state_var.set("登录失败：%s" % exc.message))
+            self.log("error", "登录失败：%s" % exc.message)
+            self.status_signal.emit("未登录")
+            self.login_state_signal.emit("登录失败：%s" % exc.message)
 
     def _on_logout(self):
         if self.engine is not None and self.engine.running:
             self._on_stop_listen()
         self.client.session = None
-        self.status_var.set("未登录")
-        self.login_state_var.set("已注销，请重新登录")
+        self.status_signal.emit("未登录")
+        self.login_state_signal.emit("已注销，请重新登录")
         self.log("info", "已注销")
 
     # -- listening ----------------------------------------------------------
+
+    def _make_engine(self) -> Engine:
+        kwargs = {"on_grab": self._on_grab}
+        # on_outcome lands with the parallel feature work; only pass it
+        # when this Engine build accepts it, so the UI works either way.
+        try:
+            params = inspect.signature(Engine.__init__).parameters
+            if "on_outcome" in params:
+                kwargs["on_outcome"] = self._on_outcome
+        except (TypeError, ValueError):
+            pass
+        return Engine(
+            self.client, self.cfg, log=self.log, speak=self.voice.speak,
+            **kwargs,
+        )
 
     def _on_start_listen(self):
         if self.engine is not None and self.engine.running:
@@ -806,153 +1129,185 @@ class App(ctk.CTk):
         try:
             updates = self._read_settings_from_widgets()
         except cfgmod.ConfigError as exc:
-            messagebox.showerror("设置有误", str(exc), parent=self)
+            QMessageBox.critical(self, "设置有误", str(exc))
             return
         phone = updates["phone"]
         password = updates["password"]
         if not phone or not password:
-            messagebox.showwarning("缺少信息", "请先填写手机号和密码", parent=self)
+            QMessageBox.warning(self, "缺少信息", "请先填写手机号和密码")
             return
         self.cfg.update(updates)
-        self.engine = Engine(self.client, self.cfg, log=self.log, speak=self.voice.speak)
+        self.engine = self._make_engine()
         if self.engine.start(phone, password):
             self._listening = True
-            self.listen_state_var.set("正在监听")
+            self.listen_state_signal.emit("正在监听")
             self._set_listen_buttons(True)
 
     def _set_listen_buttons(self, listening: bool):
-        # _GlassButton swaps its baked gradient image per state, so the
-        # disabled look is a grey pill (a CTkButton only greys its text
-        # and still looks clickable). The fg_color/hover_color arguments
-        # are accepted by both button implementations; the fallback
-        # CTkButton uses them to grey its fill.
-        if listening:
-            self.start_btn.configure(
-                state="disabled", fg_color=BLUE_DISABLED,
-                hover_color=BLUE_DISABLED,
-            )
-            self.stop_btn.configure(state="normal")
-        else:
-            self.start_btn.configure(
-                state="normal", fg_color=BLUE, hover_color=BLUE_DARK,
-            )
-            self.stop_btn.configure(state="disabled")
+        self.start_btn.setEnabled(not listening)
+        self.stop_btn.setEnabled(listening)
 
     def _on_stop_listen(self):
         self._listening = False
         if self.engine is not None:
             self.engine.stop()
-        self.listen_state_var.set("已停止监听")
+        self.listen_state_signal.emit("已停止监听")
         self._set_listen_buttons(False)
 
     def _refresh_buttons(self):
-        # Never read a CTkButton's state with ["state"]/cget — the
-        # underlying canvas widget has no -state option and it raises
-        # TclError, which used to kill this loop the first time the
-        # engine existed but was not running. Track listening in a
-        # plain flag instead, and always reschedule.
-        try:
-            if self._listening and self.engine is not None and not self.engine.running:
-                # Engine stopped on its own (e.g. grab succeeded).
-                self._listening = False
-                self.listen_state_var.set("监听已停止")
-                self._set_listen_buttons(False)
-        finally:
-            self.after(500, self._refresh_buttons)
+        # Engine stopped on its own (e.g. grab succeeded).
+        if self._listening and self.engine is not None and not self.engine.running:
+            self._listening = False
+            self.listen_state_signal.emit("监听已停止")
+            self._set_listen_buttons(False)
 
-    def _on_close(self):
+    def closeEvent(self, event):
         if self.engine is not None:
             self.engine.stop()
         self.voice.stop()
-        self.destroy()
+        event.accept()
 
 
-class AdvancedDialog(ctk.CTkToplevel):
-    """Advanced settings: AES pairs, shop id, timeout, TLS, voice."""
+class AdvancedDialog(QDialog):
+    """Advanced settings: memo keywords, blacklist, shop id, timeout,
+    TLS, voice, auto-wait offset. Decryption keys are NOT shown here
+    (customers never see them); they live in the config file / code
+    defaults only."""
 
     def __init__(self, parent: App, cfg: dict, on_saved):
-        super().__init__(parent, fg_color=WINDOW_BG)
-        self.title("高级设置")
+        super().__init__(parent)
+        self.setWindowTitle("高级设置")
+        self.setFixedSize(760, 560)
         self.cfg = dict(cfg)
         self._on_saved = on_saved
-        self.resizable(False, False)
 
-        frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=14)
-        ctk.CTkLabel(
-            frame, text="高级设置", text_color=BLUE, anchor="w",
-            font=ctk.CTkFont(size=15, weight="bold"),
-        ).pack(anchor=tk.W, pady=(0, 4))
-        ctk.CTkLabel(
-            frame,
-            text="加解密密钥可在配置文件中修改；密钥只用于解密服务器响应，"
-                 "主密钥解密失败时自动尝试备用密钥。",
-            text_color=HINT, wraplength=520, anchor="w", justify="left",
-        ).pack(anchor=tk.W, pady=(0, 10))
-        rows_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        rows_frame.pack(fill=tk.X)
-        rows_frame.columnconfigure(2, weight=1)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        title = QLabel("高级设置")
+        title.setObjectName("sectionTitle")
+        title.setStyleSheet("font-size: 15px;")
+        root.addWidget(title)
 
-        self.entries: dict[str, tk.StringVar] = {}
+        form = QWidget()
+        grid = QGridLayout(form)
+        grid.setContentsMargins(0, 4, 0, 0)
+        grid.setColumnStretch(2, 1)
+        self.entries: dict[str, QLineEdit] = {}
         rows = [
-            ("aes_key_hex", "主密钥（十六进制）", "解密服务器响应的主密钥"),
-            ("aes_iv_hex", "主 IV（十六进制）", "配合主密钥使用"),
-            ("aes_key_hex_alt", "备用密钥（十六进制）", "主密钥解密失败时自动尝试"),
-            ("aes_iv_hex_alt", "备用 IV（十六进制）", "配合备用密钥使用"),
             ("shop_id", "优先店铺 ID", "登录后优先切换到的店铺"),
             ("request_timeout_sec", "请求超时（秒）", "单次请求最长等待时间"),
         ]
         for i, (key, label, hint) in enumerate(rows):
-            ctk.CTkLabel(
-                rows_frame, text=label, width=150, anchor="e", text_color=TEXT_DARK,
-            ).grid(row=i, column=0, sticky=tk.E, padx=(0, 8), pady=4)
-            var = tk.StringVar(value=str(self.cfg.get(key, "")))
-            self.entries[key] = var
-            width = 500 if "aes" in key else 120
-            ctk.CTkEntry(
-                rows_frame, textvariable=var, width=width, corner_radius=10,
-                fg_color="white", border_color=ENTRY_BORDER, text_color=TEXT_DARK,
-            ).grid(row=i, column=1, sticky=tk.W, pady=4)
-            ctk.CTkLabel(
-                rows_frame, text=hint, text_color=HINT,
-                font=ctk.CTkFont(size=12), anchor="w",
-            ).grid(row=i, column=2, sticky=tk.W, padx=(12, 0), pady=4)
+            lab = QLabel(label)
+            lab.setObjectName("fieldLabel")
+            lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            grid.addWidget(lab, i, 0)
+            edit = QLineEdit(str(self.cfg.get(key, "")))
+            edit.setFixedWidth(120)
+            self.entries[key] = edit
+            grid.addWidget(edit, i, 1)
+            h = QLabel(hint)
+            h.setObjectName("hint")
+            grid.addWidget(h, i, 2)
+        # 自动等待偏移 (秒): only applies to shops 50/105/1391.
+        lab = QLabel("自动等待偏移（秒）")
+        lab.setObjectName("fieldLabel")
+        lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(lab, 2, 0)
+        self.auto_wait_offset_spin = QDoubleSpinBox()
+        self.auto_wait_offset_spin.setRange(-0.5, 0.5)
+        self.auto_wait_offset_spin.setSingleStep(0.05)
+        self.auto_wait_offset_spin.setDecimals(3)
+        try:
+            self.auto_wait_offset_spin.setValue(float(self.cfg.get("auto_wait_offset", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            self.auto_wait_offset_spin.setValue(0.0)
+        grid.addWidget(self.auto_wait_offset_spin, 2, 1)
+        h = QLabel("仅适用于店铺 50 / 105 / 1391；正值延后、负值提前")
+        h.setObjectName("hint")
+        grid.addWidget(h, 2, 2)
+        root.addWidget(form)
 
-        self.verify_var = tk.BooleanVar(value=bool(self.cfg.get("verify_tls", True)))
-        ctk.CTkCheckBox(
-            frame, text="验证服务器 TLS 证书（推荐开启）", variable=self.verify_var,
-            text_color=TEXT_DARK, fg_color=BLUE, hover_color=BLUE_DARK,
-        ).pack(anchor=tk.W, pady=(8, 0))
-        self.voice_var = tk.BooleanVar(value=bool(self.cfg.get("voice_enabled", True)))
-        ctk.CTkCheckBox(
-            frame, text="语音播报（需要本机语音支持）", variable=self.voice_var,
-            text_color=TEXT_DARK, fg_color=BLUE, hover_color=BLUE_DARK,
-        ).pack(anchor=tk.W)
-        ctk.CTkLabel(
-            frame, text="配置文件：%s" % cfgmod.config_path(),
-            text_color=HINT, wraplength=700, anchor="w", justify="left",
-        ).pack(anchor=tk.W, pady=(8, 0))
+        lists_row = QHBoxLayout()
+        kw_box = QVBoxLayout()
+        kw_box.addWidget(QLabel("备注关键词（一行一个）"))
+        kw_hint = QLabel("命中任意一个就不抢")
+        kw_hint.setObjectName("hint")
+        kw_box.addWidget(kw_hint)
+        self.keyword_text = QPlainTextEdit()
+        self.keyword_text.setObjectName("listEdit")
+        self.keyword_text.setPlaceholderText("例如：加急")
+        self.keyword_text.setFixedHeight(70)
+        _set_lines(self.keyword_text, self.cfg.get("memo_keywords", []))
+        kw_box.addWidget(self.keyword_text)
+        lists_row.addLayout(kw_box, 1)
+        bl_box = QVBoxLayout()
+        bl_box.addWidget(QLabel("黑名单微信号（一行一个）"))
+        bl_hint = QLabel("每行一个微信号，命中就不抢")
+        bl_hint.setObjectName("hint")
+        bl_box.addWidget(bl_hint)
+        self.blacklist_text = QPlainTextEdit()
+        self.blacklist_text.setObjectName("listEdit")
+        self.blacklist_text.setPlaceholderText("例如：wechat123")
+        self.blacklist_text.setFixedHeight(70)
+        _set_lines(self.blacklist_text, self.cfg.get("blacklist", []))
+        bl_box.addWidget(self.blacklist_text)
+        lists_row.addLayout(bl_box, 1)
+        root.addLayout(lists_row)
 
-        btns = ctk.CTkFrame(frame, fg_color="transparent")
-        btns.pack(fill=tk.X, pady=(12, 0))
-        _primary_button(btns, "保存", self._save).pack(side=tk.RIGHT, padx=(6, 0))
-        _secondary_button(btns, "取消", self.destroy).pack(side=tk.RIGHT)
+        self.verify_check = QCheckBox("验证服务器 TLS 证书（推荐开启）")
+        self.verify_check.setChecked(bool(self.cfg.get("verify_tls", True)))
+        root.addWidget(self.verify_check)
+        self.voice_check = QCheckBox("语音播报（需要本机语音支持）")
+        self.voice_check.setChecked(bool(self.cfg.get("voice_enabled", True)))
+        root.addWidget(self.voice_check)
+        path_label = QLabel("配置文件：%s" % cfgmod.config_path())
+        path_label.setObjectName("hint")
+        path_label.setWordWrap(True)
+        root.addWidget(path_label)
+        root.addStretch(1)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setObjectName("secondary")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("保存")
+        save_btn.setObjectName("primary")
+        save_btn.clicked.connect(self._save)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(save_btn)
+        root.addLayout(btns)
 
     def _save(self):
         try:
-            for key, var in self.entries.items():
-                value = var.get().strip()
+            for key, edit in self.entries.items():
+                value = edit.text().strip()
                 if key == "shop_id":
                     self.cfg[key] = int(value)
                 elif key == "request_timeout_sec":
                     self.cfg[key] = float(value)
                 else:
                     self.cfg[key] = value
-            self.cfg["verify_tls"] = self.verify_var.get()
-            self.cfg["voice_enabled"] = self.voice_var.get()
+            self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
+            self.cfg["verify_tls"] = self.verify_check.isChecked()
+            self.cfg["voice_enabled"] = self.voice_check.isChecked()
+            self.cfg["memo_keywords"] = _lines(self.keyword_text)
+            new_blacklist = _lines(self.blacklist_text)
+            old_blacklist = self.cfg.get("blacklist", [])
+            if _blacklist_would_overwrite(old_blacklist, new_blacklist):
+                answer = QMessageBox.question(
+                    self, "黑名单可能被覆盖",
+                    "检测到可能误覆盖已有黑名单（当前 %d 条，将改为 %d 条）。"
+                    "确定要保存新的黑名单吗？" % (len(old_blacklist or []), len(new_blacklist)),
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+            self.cfg["blacklist"] = new_blacklist
             cfgmod.save(self.cfg)
         except (cfgmod.ConfigError, ValueError) as exc:
-            messagebox.showerror("保存失败", str(exc), parent=self)
+            QMessageBox.critical(self, "保存失败", str(exc))
             return
         self._on_saved(self.cfg)
-        self.destroy()
+        self.accept()
