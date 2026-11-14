@@ -67,6 +67,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QScrollArea,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -642,7 +643,15 @@ class App(QMainWindow):
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(14, 10, 14, 10)
         body_layout.setSpacing(12)
-        root.addWidget(body, 1)
+        # The body's minimum size is larger than the desktop at 125% scaling,
+        # so the window could not shrink and its bottom fell off-screen.
+        # A scroll area lets the window stay at WINDOW_SIZE and scroll instead.
+        scroll = QScrollArea()
+        scroll.setObjectName("bodyScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
