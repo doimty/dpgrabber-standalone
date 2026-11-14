@@ -297,6 +297,7 @@ QLabel#avatarBadge {
 }
 QLabel#accountName { color: %(SIDEBAR_TEXT)s; font-size: 13px; font-weight: bold; }
 QLabel#statValue { color: %(BLUE)s; font-size: 21px; font-weight: bold; }
+QLabel#subTitle { color: %(TEXT_DARK)s; font-size: 13px; font-weight: bold; }
 QLabel#historyLine1 { color: %(TEXT_DARK)s; font-size: 13px; font-weight: bold; }
 QLabel#historyLine2 { color: %(HINT)s; font-size: 12px; }
 QLabel#historyReason { color: %(HISTORY_REASON)s; font-size: 12px; }
@@ -778,6 +779,7 @@ class App(QMainWindow):
         sidebar_layout.setSpacing(0)
         self._build_login_section(sidebar_layout)
         self._build_control_section(sidebar_layout)
+        self._build_stats_section(sidebar_layout)
         sidebar_layout.addStretch(1)
         body_layout.addWidget(sidebar)
 
@@ -1064,6 +1066,50 @@ class App(QMainWindow):
         grid.addWidget(lab, row, 0)
         grid.addWidget(widget, row, 1)
 
+    def _stats_snapshot(self):
+        """success / failed / skipped / unknown counts for today."""
+        counts = {"success": 0, "failed": 0, "skipped": 0, "unknown": 0}
+        try:
+            entries = history_mod.load()
+        except Exception:
+            entries = []
+        today = time.strftime("%Y-%m-%d")
+        for entry in entries:
+            if not str(entry.get("grabbed_at") or "").startswith(today):
+                continue
+            outcome = str(entry.get("outcome") or "success")
+            counts[outcome if outcome in counts else "failed"] += 1
+        return counts
+
+    def _build_stats_section(self, sidebar_layout):
+        """今日统计 : sidebar card under 监听控制, where the space was empty."""
+        card, column = self._sidebar_card(sidebar_layout, "今日统计")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        self.stat_labels = {}
+        for index, (key, caption) in enumerate((
+            ("success", "成功"), ("failed", "失败"),
+            ("skipped", "跳过"), ("unknown", "未知"),
+        )):
+            value = QLabel("0")
+            value.setObjectName("statValue")
+            cap = QLabel(caption)
+            cap.setObjectName("hint")
+            grid.addWidget(value, 0, index)
+            grid.addWidget(cap, 1, index)
+            self.stat_labels[key] = value
+        column.addLayout(grid)
+        self._refresh_stats()
+        return card
+
+    def _refresh_stats(self):
+        labels = getattr(self, "stat_labels", None)
+        if not labels:
+            return
+        for key, value in self._stats_snapshot().items():
+            if key in labels:
+                labels[key].setText(str(value))
+
     def _build_conditions_section(self, main_layout):
         header = QHBoxLayout()
         header.addWidget(self._section_title("接单条件"))
@@ -1170,7 +1216,6 @@ class App(QMainWindow):
         main_layout.addWidget(card)
         main_layout.addSpacing(21)
         main_layout.addWidget(rest_card, 1)
-        main_layout.addSpacing(21)
 
     def _build_control_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "监听控制")
@@ -1309,6 +1354,7 @@ class App(QMainWindow):
         self._refresh_history()
 
     def _refresh_history(self):
+        self._refresh_stats()
         """Rebuild the history rows from the stored file, newest first."""
         self.history_list.clear()
         entries = history_mod.load_history()
