@@ -89,6 +89,7 @@ DEFAULT_CONFIG = {
     "voice_enabled": True,
         "notify_enabled": False,
         "notify_provider": "serverchan",
+        "notify_bark_server": "https://api.day.app",
         "notify_key": "",
         "notify_webhook": "",     # spoken announcements; silently off if pyttsx3 is missing
     "seen_ttl_sec": 60,        # de-dup window for already-seen order ids (seconds)
@@ -182,11 +183,14 @@ def validate(cfg: dict) -> dict:
         if len(raw) != 16:
             raise ConfigError("%s must decode to 16 bytes" % name)
 
-    if merged.get("notify_provider") not in ("serverchan", "pushplus", "webhook"):
+    if merged.get("notify_provider") not in ("bark", "serverchan", "pushplus", "webhook"):
         merged["notify_provider"] = "serverchan"
     merged["notify_enabled"] = bool(merged.get("notify_enabled", False))
     merged["notify_key"] = str(merged.get("notify_key") or "")
     merged["notify_webhook"] = str(merged.get("notify_webhook") or "")
+    merged["notify_bark_server"] = str(
+        merged.get("notify_bark_server") or "https://api.day.app"
+    )
     if not isinstance(merged["shop_id"], int) or merged["shop_id"] < 0:
         raise ConfigError("shop_id must be 0 (auto) or a positive shop id")
     if float(merged["min_amount"]) < 0 or float(merged["max_amount"]) < 0:
