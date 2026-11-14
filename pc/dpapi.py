@@ -23,6 +23,7 @@ no real request is ever sent from a test.
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 import base64
@@ -476,15 +477,20 @@ def _login_body(phone: str, secret: str) -> dict:
     password: sending it as ``password`` is exactly what produced
     "login rejected: 密码错误" for a value copied from another tool's config.
     """
-    body = {
+    # The platform compares an MD5 hex digest, not the plaintext: the stored
+    # credential e0604ab3e568576d5e9e0d47b13ad1a0 is exactly md5("Slov1221..").
+    # The field name is always "password" (DPGAPIClient.m:272-279); a separate
+    # password_hash key made the server see no password at all ("错误: null").
+    # A value that is already a 32-hex digest is passed through untouched so a
+    # hash pasted from another tool keeps working.
+    value = (secret or "").strip()
+    if not _HASH_RE.fullmatch(value):
+        value = hashlib.md5(value.encode("utf-8")).hexdigest()
+    return {
         "method": "password",
         "phoneNumber": {"regionCode": "CN", "mobileDial": "86", "mobile": phone},
+        "password": value,
     }
-    if _HASH_RE.fullmatch((secret or "").strip()):
-        body["password_hash"] = secret.strip().lower()
-    else:
-        body["password"] = secret
-    return body
 
 
 def _order_shops(shops, preferred_shop_id: int = 0):
