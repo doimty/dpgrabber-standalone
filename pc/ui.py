@@ -90,7 +90,7 @@ except Exception:
     _PIL_AVAILABLE = False
 
 APP_TITLE = "DPGrabber PC"
-WINDOW_SIZE = (1180, 800)
+WINDOW_SIZE = (1180, 660)
 
 # Day-palette aliases, kept so older references keep working. The live
 # colours come from the active theme's palette (themes.py) via
@@ -706,7 +706,6 @@ class App(QMainWindow):
         form_column = QVBoxLayout()
         form_column.setSpacing(0)
         self._build_conditions_section(form_column)
-        form_column.addStretch(1)
         right_column = QVBoxLayout()
         right_column.setSpacing(0)
         self._build_log_section(right_column)
@@ -893,9 +892,16 @@ class App(QMainWindow):
             rest_grid.addWidget(lab, row, col)
             rest_grid.addWidget(spin, row, col + 1)
         rest_grid.setVerticalSpacing(4)
-        card_layout.addWidget(rest_group)
-
+        # 刷新与休息 gets its own card at the bottom of the column: inside the
+        # conditions card it left ~200px of bare background under the form.
+        rest_card = self._card()
+        rest_layout = QVBoxLayout(rest_card)
+        rest_layout.setContentsMargins(12, 8, 12, 8)
+        rest_layout.addWidget(rest_group)
+        rest_layout.addStretch(1)
         main_layout.addWidget(card)
+        main_layout.addSpacing(10)
+        main_layout.addWidget(rest_card, 1)
         main_layout.addSpacing(10)
 
     def _build_control_section(self, sidebar_layout):
@@ -996,8 +1002,8 @@ class App(QMainWindow):
         self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.history_list.customContextMenuRequested.connect(self._on_history_context_menu)
         self.history_list.setFixedHeight(180)
-        card_layout.addWidget(self.history_list)
-        main_layout.addWidget(card)
+        card_layout.addWidget(self.history_list, 1)
+        main_layout.addWidget(card, 1)
         self._refresh_history()
 
     # -- history ------------------------------------------------------------
