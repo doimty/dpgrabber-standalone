@@ -87,6 +87,7 @@ DEFAULT_CONFIG = {
     "request_timeout_sec": 15,
     "verify_tls": True,        # verify the server TLS certificate (recommended)
     "voice_enabled": True,
+        "auto_stop_after_grab": True,
         "notify_enabled": False,
         "notify_provider": "serverchan",
         "notify_bark_server": "https://api.day.app",
@@ -186,6 +187,7 @@ def validate(cfg: dict) -> dict:
 
     if merged.get("notify_provider") not in ("bark", "serverchan", "pushplus", "webhook"):
         merged["notify_provider"] = "serverchan"
+    merged["auto_stop_after_grab"] = bool(merged.get("auto_stop_after_grab", True))
     merged["notify_enabled"] = bool(merged.get("notify_enabled", False))
     merged["notify_key"] = str(merged.get("notify_key") or "")
     merged["notify_webhook"] = str(merged.get("notify_webhook") or "")
