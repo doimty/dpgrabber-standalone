@@ -39,15 +39,15 @@ class ThemePaletteTests(unittest.TestCase):
     def test_theme_names_are_chinese(self):
         self.assertEqual(
             [theme["name"] for theme in THEMES.values()],
-            ["白天", "黑夜", "蓝色", "樱花粉", "薄荷绿", "紫罗兰"],
+            ["素白晨光", "玄青夜阑", "沧澜潮生", "绯樱春信", "竹青雨霁", "紫陌烟岚"],
         )
 
     def test_palette_for_falls_back_to_day(self):
         self.assertEqual(palette_for("nope"), THEMES["day"]["palette"])
         self.assertEqual(palette_for(""), THEMES["day"]["palette"])
         self.assertEqual(palette_for("sakura"), THEMES["sakura"]["palette"])
-        self.assertEqual(theme_name("nope"), "白天")
-        self.assertEqual(theme_name("sakura"), "樱花粉")
+        self.assertEqual(theme_name("nope"), "素白晨光")
+        self.assertEqual(theme_name("sakura"), "绯樱春信")
 
 
 class StylesheetTests(unittest.TestCase):
