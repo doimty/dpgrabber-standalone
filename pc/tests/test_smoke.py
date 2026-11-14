@@ -167,7 +167,8 @@ class LoginFlowTests(unittest.TestCase):
         self.assertEqual(body["phoneNumber"]["mobile"], "13800138000")
         self.assertEqual(body["phoneNumber"]["regionCode"], "CN")
         self.assertEqual(body["phoneNumber"]["mobileDial"], "86")
-        self.assertEqual(body["password"], "secret")
+        # md5("secret"): the platform compares the digest, not the plaintext
+        self.assertEqual(body["password"], "5ebe2294ecd0e0f08eab7690d2a6ee69")
 
     def test_full_session_flow(self):
         responses = [
