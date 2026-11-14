@@ -604,24 +604,33 @@ class ShopSelectionTests(unittest.TestCase):
 
 
 class LoginBodyTests(unittest.TestCase):
-    """PROTOCOL.md 3.2: password_hash wins when present."""
+    """The platform compares md5(password) hex in the "password" field."""
 
-    def test_32_hex_goes_out_as_password_hash(self):
+    def test_plaintext_is_md5_hashed(self):
         from dpapi import _login_body
-        body = _login_body("13800000000", "e0604ab3e568576d5e9e0d47b13ad1a0")
-        self.assertEqual(body["password_hash"], "e0604ab3e568576d5e9e0d47b13ad1a0")
-        self.assertNotIn("password", body)
-
-    def test_plaintext_goes_out_as_password(self):
-        from dpapi import _login_body
-        body = _login_body("13800000000", "Slov1221..")
-        self.assertEqual(body["password"], "Slov1221..")
+        body = _login_body("16637393776", "Slov1221..")
+        self.assertEqual(body["password"], "e0604ab3e568576d5e9e0d47b13ad1a0")
         self.assertNotIn("password_hash", body)
 
-    def test_hash_lookalikes_stay_password(self):
+    def test_existing_digest_is_passed_through(self):
         from dpapi import _login_body
-        for secret in ("e0604ab3e568576d5e9e0d47b13ad1a", "e0604ab3e568576d5e9e0d47b13ad1a00"):
-            self.assertIn("password", _login_body("1", secret))
+        digest = "e0604ab3e568576d5e9e0d47b13ad1a0"
+        self.assertEqual(_login_body("1", digest)["password"], digest)
+
+    def test_body_keeps_the_protocol_shape(self):
+        from dpapi import _login_body
+        body = _login_body("16637393776", "x")
+        self.assertEqual(body["method"], "password")
+        self.assertEqual(body["phoneNumber"]["mobile"], "16637393776")
+        self.assertEqual(body["phoneNumber"]["mobileDial"], "86")
+        self.assertEqual(sorted(body), ["method", "password", "phoneNumber"])
+
+    def test_whitespace_is_trimmed_before_hashing(self):
+        from dpapi import _login_body
+        self.assertEqual(
+            _login_body("1", "  Slov1221..  ")["password"],
+            _login_body("1", "Slov1221..")["password"],
+        )
 
 
 class ConfigListAppendTests(unittest.TestCase):
