@@ -130,8 +130,12 @@ def confirm_wait_error(cfg: dict) -> str | None:
     """Autoduopei shop-92 wait rule, shared by validate() and the engine.
 
     Returns an error message when the confirm-wait config is invalid,
-    else None. Rule: min >= 0, max >= 0, max >= min; when max > 0 then
-    min >= 3 and max - min >= 2 (otherwise the wait is refused)."""
+    else None.
+
+    Rule: min >= 0, max >= 0, max >= min, both <= 120. Setting min == max is
+    allowed and means a fixed wait — the earlier "min >= 3 and max - min >= 2"
+    rule only existed to keep a random window usable, and it blocked a plain
+    "wait 5 s" configuration."""
     try:
         min_w = float((cfg or {}).get("confirm_wait_min", 0) or 0)
         max_w = float((cfg or {}).get("confirm_wait_max", 0) or 0)
@@ -143,11 +147,8 @@ def confirm_wait_error(cfg: dict) -> str | None:
         return "confirm_wait_max must be >= 0"
     if max_w < min_w:
         return "confirm_wait_max must be >= confirm_wait_min"
-    if max_w > 0 and (min_w < 3 or max_w - min_w < 2):
-        return (
-            "when confirm_wait_max > 0, confirm_wait_min must be >= 3 "
-            "and confirm_wait_max - confirm_wait_min >= 2"
-        )
+    if min_w > 120 or max_w > 120:
+        return "confirm_wait_min/max must be <= 120 seconds"
     return None
 
 
