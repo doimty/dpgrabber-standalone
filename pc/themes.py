@@ -53,32 +53,32 @@ PALETTE_KEYS = (
 
 THEMES = {
     "day": {
-        "name": "白天",
+        "name": "素白晨光",
         "palette": {
-            "window_bg": "#EAF2FA", "card_bg": "#F8FCFF",
-            "card_border": "#CFE2F5",
-            "accent": "#1F6AA5", "accent_dark": "#185A8A",
-            "text_dark": "#1F2A37", "hint": "#5B7A99",
-            "sidebar_bg": "#D9E8F6", "sidebar_card_bg": "#FFFFFF",
-            "sidebar_card_border": "#C4D9EE",
-            "sidebar_text": "#1F2A37", "sidebar_hint": "#5B7A99",
-            "hero_top": "#4AA8F0", "hero_bottom": "#1769B0",
-            "hero_border": "#CFEBFB", "hero_stat_dim": "#DCEEFF",
-            "btn_top": "#5CB3F2", "btn_bottom": "#1E74C4",
-            "btn_hover_top": "#7CC2F7", "btn_hover_bottom": "#2A82D2",
-            "btn_disabled_bg": "#C9D8E4", "btn_disabled_text": "#8A9BA8",
-            "entry_bg": "#FFFFFF", "entry_border": "#B9D2EC",
-            "selection_bg": "#EAF2FA", "history_reason": "#9A6700",
-            "log_info": "#1F2A37", "log_success": "#1A7F37",
-            "log_warning": "#9A6700", "log_error": "#CF222E",
-            "log_debug": "#666666",
-            "outcome_success": "#1A7F37", "outcome_failed": "#CF222E",
-            "outcome_risk": "#9A6700", "outcome_unknown": "#666666",
-            "outcome_skipped": "#5B7A99",
+            "window_bg": "#F5F3F0", "card_bg": "#FFFFFF",
+            "card_border": "#E3DED7",
+            "accent": "#585349", "accent_dark": "#423E37",
+            "text_dark": "#2A2724", "hint": "#7B736A",
+            "sidebar_bg": "#EDEAE5", "sidebar_card_bg": "#FFFFFF",
+            "sidebar_card_border": "#DCD6CD",
+            "sidebar_text": "#2A2724", "sidebar_hint": "#7B736A",
+            "hero_top": "#6E685F", "hero_bottom": "#4A453F",
+            "hero_border": "#EAE6DF", "hero_stat_dim": "#EDE9E2",
+            "btn_top": "#6E685F", "btn_bottom": "#4A453F",
+            "btn_hover_top": "#7E776C", "btn_hover_bottom": "#585349",
+            "btn_disabled_bg": "#DED9D1", "btn_disabled_text": "#9C958B",
+            "entry_bg": "#FFFFFF", "entry_border": "#CFC8BE",
+            "selection_bg": "#F1EDE7", "history_reason": "#8A5A00",
+            "log_info": "#2A2724", "log_success": "#1A7F37",
+            "log_warning": "#8A5A00", "log_error": "#C0392B",
+            "log_debug": "#6E665C",
+            "outcome_success": "#1A7F37", "outcome_failed": "#C0392B",
+            "outcome_risk": "#8A5A00", "outcome_unknown": "#6E665C",
+            "outcome_skipped": "#7B736A",
         },
     },
     "night": {
-        "name": "黑夜",
+        "name": "玄青夜阑",
         "palette": {
             "window_bg": "#12161C", "card_bg": "#1C2129",
             "card_border": "#2E3742",
@@ -103,7 +103,7 @@ THEMES = {
         },
     },
     "blue": {
-        "name": "蓝色",
+        "name": "沧澜潮生",
         "palette": {
             "window_bg": "#DCEAF8", "card_bg": "#F2F8FE",
             "card_border": "#B8D4EE",
@@ -128,7 +128,7 @@ THEMES = {
         },
     },
     "sakura": {
-        "name": "樱花粉",
+        "name": "绯樱春信",
         "palette": {
             "window_bg": "#FFF5F7", "card_bg": "#FFFBFC",
             "card_border": "#F5C6D3",
@@ -153,7 +153,7 @@ THEMES = {
         },
     },
     "mint": {
-        "name": "薄荷绿",
+        "name": "竹青雨霁",
         "palette": {
             "window_bg": "#EAF7F1", "card_bg": "#F8FDFB",
             "card_border": "#C2E8D5",
@@ -178,7 +178,7 @@ THEMES = {
         },
     },
     "violet": {
-        "name": "紫罗兰",
+        "name": "紫陌烟岚",
         "palette": {
             "window_bg": "#F1EDFA", "card_bg": "#FBF9FE",
             "card_border": "#D9CFF0",
