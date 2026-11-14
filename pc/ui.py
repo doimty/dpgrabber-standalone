@@ -44,6 +44,7 @@ from __future__ import annotations
 import ctypes
 import inspect
 import os
+import re
 import sys
 import threading
 import time
@@ -283,6 +284,12 @@ QLabel#hint { color: %(HINT)s; font-size: 12px; }
 QLabel#sidebarHint { color: %(SIDEBAR_HINT)s; font-size: 12px; }
 QLabel#sidebarLabel { color: %(SIDEBAR_TEXT)s; font-size: 13px; }
 QLabel#sidebarState { color: %(SIDEBAR_HINT)s; font-size: 12px; }
+QLabel#avatarBadge {
+    background: %(BLUE)s; color: white; font-size: 21px; font-weight: bold;
+    border-radius: 22px;
+}
+QLabel#accountName { color: %(SIDEBAR_TEXT)s; font-size: 13px; font-weight: bold; }
+QLabel#statValue { color: %(BLUE)s; font-size: 21px; font-weight: bold; }
 QLabel#historyLine1 { color: %(TEXT_DARK)s; font-size: 13px; font-weight: bold; }
 QLabel#historyLine2 { color: %(HINT)s; font-size: 12px; }
 QLabel#historyReason { color: %(HISTORY_REASON)s; font-size: 12px; }
@@ -836,45 +843,135 @@ class App(QMainWindow):
 
     def _build_login_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "账号登录")
+
+        # --- signed-out form ------------------------------------------------
+        self.login_form = QWidget()
+        form = QVBoxLayout(self.login_form)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(4)
         phone_label = QLabel("手机号")
         phone_label.setObjectName("sidebarLabel")
-        layout.addWidget(phone_label)
+        form.addWidget(phone_label)
         self.phone_edit = QLineEdit()
         self.phone_edit.setFixedHeight(34)
         self.phone_edit.setPlaceholderText("11 位手机号")
-        layout.addWidget(self.phone_edit)
+        form.addWidget(self.phone_edit)
         hint = QLabel("登录用的手机号，11 位数字")
         hint.setObjectName("sidebarHint")
-        layout.addWidget(hint)
-        layout.addSpacing(4)
+        form.addWidget(hint)
         pw_label = QLabel("密码")
         pw_label.setObjectName("sidebarLabel")
-        layout.addWidget(pw_label)
+        form.addWidget(pw_label)
         self.password_edit = QLineEdit()
         self.password_edit.setFixedHeight(34)
         self.password_edit.setEchoMode(QLineEdit.Password)
-        layout.addWidget(self.password_edit)
+        form.addWidget(self.password_edit)
         self.show_pw_check = QCheckBox("显示密码")
         self.show_pw_check.setObjectName("sidebarCheck")
         self.show_pw_check.toggled.connect(self._toggle_show_password)
-        layout.addWidget(self.show_pw_check)
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(self._primary_button("登录", self._on_login))
-        btn_row.addWidget(self._secondary_button("注销", self._on_logout))
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
+        form.addWidget(self.show_pw_check)
+        self.login_btn = self._primary_button("登录", self._on_login)
+        form.addWidget(self.login_btn)
         self.login_state_label = QLabel("请输入手机号和密码后登录")
         self.login_state_label.setObjectName("sidebarState")
         self.login_state_label.setWordWrap(True)
-        layout.addWidget(self.login_state_label)
+        form.addWidget(self.login_state_label)
+        layout.addWidget(self.login_form)
+
+        # --- signed-in identity ---------------------------------------------
+        self.account_box = QWidget()
+        account = QVBoxLayout(self.account_box)
+        account.setContentsMargins(0, 0, 0, 0)
+        account.setSpacing(8)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.avatar_label = QLabel("·")
+        self.avatar_label.setObjectName("avatarBadge")
+        self.avatar_label.setFixedSize(44, 44)
+        self.avatar_label.setAlignment(Qt.AlignCenter)
+        head.addWidget(self.avatar_label)
+        names = QVBoxLayout()
+        names.setSpacing(1)
+        self.account_name_label = QLabel("—")
+        self.account_name_label.setObjectName("accountName")
+        self.account_phone_label = QLabel("")
+        self.account_phone_label.setObjectName("sidebarHint")
+        names.addWidget(self.account_name_label)
+        names.addWidget(self.account_phone_label)
+        head.addLayout(names, 1)
+        account.addLayout(head)
+
+        stats = QHBoxLayout()
+        stats.setSpacing(8)
+        self.week_count_label = QLabel("0")
+        self.week_count_label.setObjectName("statValue")
+        self.renewal_label = QLabel("—")
+        self.renewal_label.setObjectName("statValue")
+        for value, caption in ((self.week_count_label, "本周接单"),
+                               (self.renewal_label, "续单率")):
+            stats.addWidget(value)
+            cap = QLabel(caption)
+            cap.setObjectName("hint")
+            stats.addWidget(cap)
+        stats.addStretch(1)
+        account.addLayout(stats)
+
+        self.logout_btn = self._secondary_button("注销", self._on_logout)
+        account.addWidget(self.logout_btn)
+        self.account_box.setVisible(False)
+        layout.addWidget(self.account_box)
+        return card
+
+    def _show_account_card(self, signed_in: bool):
+        """Signed in: the form collapses into avatar + identity + logout."""
+        self.login_form.setVisible(not signed_in)
+        self.account_box.setVisible(signed_in)
+        if signed_in:
+            self._refresh_account_card()
+
+    def _refresh_account_card(self):
+        phone = self.phone_edit.text().strip()
+        name = getattr(self, "_clerk_name", "") or ""
+        clerk_id = getattr(self, "_clerk_id", "") or ""
+        shown = name or (cfgmod.mask_phone(phone) if phone else "已登录")
+        self.account_name_label.setText(
+            "%s（ID %s）" % (name, clerk_id) if name and clerk_id else shown
+        )
+        self.account_phone_label.setText(cfgmod.mask_phone(phone) if phone else "")
+        self.avatar_label.setText(((name or phone or "·")[0]).upper())
+
+        week = 0
+        try:
+            now = time.time()
+            for entry in history_mod.load():
+                stamp = str(entry.get("grabbed_at") or "")
+                try:
+                    when = time.mktime(time.strptime(stamp, "%Y-%m-%dT%H:%M:%S"))
+                except ValueError:
+                    continue
+                if now - when <= 7 * 86400:
+                    week += 1
+        except Exception:
+            week = 0
+        self.week_count_label.setText(str(week))
+        rate = self.cfg.get("last_renewal_rate")
+        self.renewal_label.setText("%d%%" % rate if isinstance(rate, int) else "—")
+
+    def _note_renewal_rate(self, reason: str):
+        """The platform states 续费率 in its refusals; cache it for the card."""
+        match = re.search(r"续费率\s*(\d{1,3})\s*%", reason or "")
+        if not match:
+            return
+        try:
+            rate = int(match.group(1))
+        except ValueError:
+            return
+        if self.cfg.get("last_renewal_rate") != rate:
+            self.cfg["last_renewal_rate"] = rate
+            self._refresh_account_card()
 
     def _form_row(self, grid, row, label, widget, hint):
-        """Two columns only: the hint lives in the widget's tooltip.
-
-        The third (hint) column forced the form to ~500px, which is what kept
-        the form/log split at 1.53 instead of 1:phi. A tooltip keeps the same
-        information without spending 300px of every row.
-        """
+        """Two columns only: the hint lives in the widget's tooltip."""
         lab = QLabel(label)
         lab.setObjectName("fieldLabel")
         lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -1267,6 +1364,7 @@ class App(QMainWindow):
         on_grab never fired for this order). Non-success outcomes are
         recorded so 接单历史 shows failed / risk / unknown / skipped too.
         """
+        self._note_renewal_rate(reason or "")
         outcome = str(outcome or "unknown")
         order_id = str(order.get("id") or order.get("no") or "")
         no = str(order.get("no") or order_id)
@@ -1468,6 +1566,10 @@ class App(QMainWindow):
 
     def _on_login_state(self, text: str):
         self.login_state_label.setText(text)
+        if text.startswith("已登录"):
+            self._show_account_card(True)
+        elif text.startswith(("未登录", "已注销", "登录失败")):
+            self._show_account_card(False)
 
     def _on_listen_state(self, text: str):
         self.listen_state_label.setText(text)
@@ -1508,6 +1610,8 @@ class App(QMainWindow):
                 clerk = extract_clerk(self.client.clerk_get(session))
             except ApiError:
                 clerk = None
+            self._clerk_name = str((clerk or {}).get("name") or "")
+            self._clerk_id = str((clerk or {}).get("id") or "")
             if clerk:
                 label = "已登录：%s（ID：%s），店铺 sid=%s" % (
                     clerk.get("name") or "", clerk.get("id") or "", session.sid,
