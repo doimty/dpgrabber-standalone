@@ -312,12 +312,6 @@ QPushButton#winMin, QPushButton#winMax, QPushButton#winClose {
 }
 QPushButton#winMin:hover, QPushButton#winMax:hover { background: rgba(255,255,255,0.22); }
 QPushButton#winClose:hover { background: #D9453D; }
-QLabel#heroChip {
-    background: rgba(255,255,255,0.22); color: white;
-    border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: bold;
-}
-QLabel#heroChip[ok="false"] { background: rgba(217,69,61,0.85); }
-QLabel#heroChip[ok="true"] { background: rgba(46,160,67,0.85); }
 QScrollArea#sidebarScroll { background: transparent; border: none; }
 QScrollArea#sidebarScroll > QWidget > QWidget { background: transparent; }
 QLabel#avatarBadge {
@@ -991,7 +985,7 @@ class App(QMainWindow):
         self.status_label.setObjectName("heroStatDim")
         layout.addWidget(self.status_label)
         self.renewal_chip = QLabel("")
-        self.renewal_chip.setObjectName("heroChip")
+        self.renewal_chip.setObjectName("heroStatDim")
         self.renewal_chip.setVisible(False)
         layout.addWidget(self.renewal_chip)
 
@@ -1181,12 +1175,22 @@ class App(QMainWindow):
             cache_dir.mkdir(parents=True, exist_ok=True)
             suffix = ".gif" if url.lower().endswith(".gif") else ".img"
             target = cache_dir / ("avatar_%s%s" % (clerk.get("id") or "me", suffix))
-            if not target.exists() or target.stat().st_size < 1024:
+            png_target = target.with_suffix(".png")
+            if not png_target.exists() or png_target.stat().st_size < 512:
                 with urllib.request.urlopen(url, timeout=15) as response:
                     data = response.read()
                 if len(data) > 512:
                     target.write_bytes(data)
-            self.avatar_signal.emit(str(target))
+                    try:
+                        from PIL import Image
+                        import io
+                        image = Image.open(io.BytesIO(data)).convert("RGBA")
+                        image.thumbnail((88, 88))
+                        image.save(png_target, "PNG")
+                    except Exception:
+                        pass
+            chosen = png_target if png_target.exists() else target
+            self.avatar_signal.emit(str(chosen))
         except Exception:
             self.avatar_signal.emit("")
 
@@ -1207,12 +1211,10 @@ class App(QMainWindow):
 
     def _on_clerk_state(self, state):
         status = int(state.get("status") or 0)
-        if getattr(self, "online_check", None) is not None:
-            self.online_check.blockSignals(True)
-            self.online_check.setChecked(status == 1)
-            self.online_check.blockSignals(False)
-            self.online_check.setText("在线接单（当前在线）" if status == 1 else "在线接单（当前离线）")
-        self._rebuild_item_switches(state.get("items") or [], state.get("enabled") or [])
+        self._set_online_text(status == 1)
+        items = state.get("items")
+        if items is not None:
+            self._rebuild_item_switches(items, state.get("enabled") or [])
 
     def _rebuild_item_switches(self, items, enabled):
         holder = getattr(self, "item_switch_box", None)
@@ -1239,11 +1241,22 @@ class App(QMainWindow):
             hint.setObjectName("sidebarHint")
             holder.addWidget(hint)
 
+    def _set_online_text(self, online: bool):
+        box = getattr(self, "online_check", None)
+        if box is None:
+            return
+        box.blockSignals(True)
+        box.setText("在线接单（当前在线）" if online else "在线接单（当前离线）")
+        box.setChecked(online)
+        box.blockSignals(False)
+
     def _toggle_online(self, checked: bool):
         session = getattr(self.client, "session", None)
         if session is None:
             return
         target = 1 if checked else 2
+        # flip the label immediately so the control answers the click
+        self._set_online_text(bool(checked))
 
         def worker():
             try:
@@ -1251,9 +1264,12 @@ class App(QMainWindow):
             except Exception as exc:
                 result = {"code": -1, "msg": str(exc)[:80]}
             ok = result.get("code") == 0
-            self.log("success" if ok else "error",
-                     "已上线" if ok and target == 1 else
-                     ("已下线" if ok else "切换在线状态失败：%s" % result.get("msg")))
+            if ok:
+                self.log("success", "已上线" if target == 1 else "已下线")
+            else:
+                self.log("error", "切换在线状态失败：%s" % result.get("msg"))
+                self.clerk_state_signal.emit({"status": 2 if target == 1 else 1,
+                                              "items": [], "enabled": []})
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1285,8 +1301,13 @@ class App(QMainWindow):
                 "%Y-%m-%d", time.localtime(time.time() - now.tm_wday * 86400))
             today = time.strftime("%Y-%m-%d")
             stats = self.client.clerk_statistics(monday, today, session=session) or {}
-        except Exception:
+            if not stats:
+                fallback = self.client.order_total(
+                    monday + " 00:00:00", today + " 23:59:59", session=session)
+                self.log("warning", "本周统计为空，改用订单总数：%s" % fallback)
+        except Exception as exc:
             stats = {}
+            self.log("warning", "本周统计失败：%s" % str(exc)[:80])
         self.week_orders_signal.emit(stats or None)
 
     RENEWAL_TARGET = 30.0
@@ -1299,11 +1320,10 @@ class App(QMainWindow):
             chip.setVisible(False)
             return
         ok = fee_rate >= self.RENEWAL_TARGET
-        chip.setText("续费率 %d%% / %d%%" % (round(fee_rate), int(self.RENEWAL_TARGET)))
-        chip.setProperty("ok", ok)
-        chip.setStyleSheet("")           # force a re-evaluation of the property selector
-        chip.style().unpolish(chip)
-        chip.style().polish(chip)
+        chip.setText("%s 续费率 %d%% / %d%%" % (
+            "●" if ok else "○", round(fee_rate), int(self.RENEWAL_TARGET)))
+        colour = "#7BD88F" if ok else "#FFB4A8"
+        chip.setStyleSheet("color: %s; font-size: 13px;" % colour)
         chip.setVisible(True)
 
     def _on_week_orders(self, stats):
