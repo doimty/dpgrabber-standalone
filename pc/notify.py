@@ -15,8 +15,9 @@ import json
 import urllib.parse
 import urllib.request
 
-PROVIDERS = ("serverchan", "pushplus", "webhook")
+PROVIDERS = ("bark", "serverchan", "pushplus", "webhook")
 PROVIDER_NAMES = {
+    "bark": "Bark",
     "serverchan": "Server酱",
     "pushplus": "PushPlus",
     "webhook": "自定义 Webhook",
@@ -53,6 +54,8 @@ class Notifier:
         if not self.enabled:
             return False
         try:
+            if self.provider == "bark":
+                return self._bark(title, body)
             if self.provider == "serverchan":
                 return self._serverchan(title, body)
             if self.provider == "pushplus":
@@ -62,6 +65,22 @@ class Notifier:
             return False
 
     # -- channels ----------------------------------------------------------
+
+    def _bark(self, title: str, body: str) -> bool:
+        """Bark: iOS push. Key is the device key; server may be self-hosted."""
+        key = str(self.cfg.get("notify_key") or "").strip()
+        if not key:
+            return False
+        server = str(self.cfg.get("notify_bark_server") or "https://api.day.app").strip()
+        if not server.lower().startswith(("http://", "https://")):
+            return False
+        url = server.rstrip("/") + "/push"
+        payload = json.dumps(
+            {"device_key": key, "title": title, "body": body, "group": "DPGrabber"},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        status, text = self._post(url, payload, {"Content-Type": "application/json"}, 8)
+        return status == 200 and '"code":200' in text.replace(" ", "")
 
     def _serverchan(self, title: str, body: str) -> bool:
         key = str(self.cfg.get("notify_key") or "").strip()
