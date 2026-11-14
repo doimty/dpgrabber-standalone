@@ -23,8 +23,10 @@ jobs:
           cd pc
           python -m unittest discover -s tests
       - name: Write build stamp
+        shell: bash
         run: |
-          python -c "import subprocess,pathlib; sha=subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip(); pathlib.Path('pc/build_stamp.py').write_text('SHA = \"%s\"\n' % sha, encoding='utf-8')"
+          sha=$(git rev-parse --short HEAD)
+          printf 'SHA = "%s"\n' "$sha" > pc/build_stamp.py
           cat pc/build_stamp.py
 
       - name: Install PyInstaller
