@@ -457,8 +457,20 @@ class Engine:
         except Exception:
             pass  # history recording must never break the grab flow
 
+    def _poll_delay(self) -> float:
+        """Sleep before the next poll, jittered like the reference tool.
+
+        A fixed cadence is trivially fingerprintable, so the delay is
+        poll_interval_sec +/- poll_jitter_sec. The competitor profile
+        (0.6-1.1 s) is base 0.85 with jitter 0.25. Never below 0.1 s.
+        """
+        base = float(self.cfg.get("poll_interval_sec", 0.5))
+        jitter = float(self.cfg.get("poll_jitter_sec", 0.25))
+        if jitter <= 0:
+            return max(0.1, base)
+        return max(0.1, base + self._rng.uniform(-jitter, jitter))
+
     def _poll_loop(self, phone: str, password: str):
-        interval = float(self.cfg.get("poll_interval_sec", 0.5))
         page_size = 20
         timeout = float(self.cfg.get("request_timeout_sec", 15))
         order_filter = OrderFilter(
@@ -509,18 +521,18 @@ class Engine:
                     continue
                 self._consecutive_failures += 1
                 self.log("warning", "监听请求失败：%s" % exc.message)
-                if not self._sleep(interval):
+                if not self._sleep(self._poll_delay()):
                     return
                 continue
             self._consecutive_failures = 0
             if not orders:
-                if not self._sleep(interval):
+                if not self._sleep(self._poll_delay()):
                     return
                 continue
             order = orders[0]
             order_id = order_id_of(order)
             if self._is_seen(order_id):
-                if not self._sleep(interval):
+                if not self._sleep(self._poll_delay()):
                     return
                 continue
             self._mark_seen(order_id)
