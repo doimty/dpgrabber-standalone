@@ -731,7 +731,12 @@ class App(QMainWindow):
         if available <= 0:
             return
         form_width = int(round(available / (1.0 + self.GOLDEN)))
-        form_width = max(300, min(form_width, available - 260))
+        # never below what the form actually needs: at 324 the labels and the
+        # controls overlapped, because the column was narrower than its own
+        # minimumSizeHint (342 after the label shortening)
+        needed = wrap.minimumSizeHint().width()
+        form_width = max(form_width, needed)
+        form_width = min(form_width, available - 260)
         if wrap.width() != form_width:
             wrap.setFixedWidth(form_width)
 
@@ -1199,12 +1204,12 @@ class App(QMainWindow):
         self.confirm_wait_min_spin = QSpinBox()
         self.confirm_wait_min_spin.setRange(0, 120)
         self.confirm_wait_min_spin.setSuffix(" 秒")
-        self._form_row(grid, 4, "抢单前等待最小（秒）", self.confirm_wait_min_spin,
+        self._form_row(grid, 4, "等待最小（秒）", self.confirm_wait_min_spin,
                        "0 不等待；可等于最大值")
         self.confirm_wait_max_spin = QSpinBox()
         self.confirm_wait_max_spin.setRange(0, 120)
         self.confirm_wait_max_spin.setSuffix(" 秒")
-        self._form_row(grid, 5, "抢单前等待最大（秒）", self.confirm_wait_max_spin,
+        self._form_row(grid, 5, "等待最大（秒）", self.confirm_wait_max_spin,
                        "相同即固定等待")
         inner.setMaximumWidth(500)
         for widget in (self.memo_mode_box, self.confirm_wait_min_spin,
@@ -1237,7 +1242,7 @@ class App(QMainWindow):
         self.risk_rest_max_spin.setSuffix(" 分钟")
         for spin in (self.risk_run_min_spin, self.risk_run_max_spin,
                      self.risk_rest_min_spin, self.risk_rest_max_spin):
-            spin.setFixedWidth(88)
+            spin.setFixedWidth(80)
         for index, (lab_text, spin) in enumerate([
             ("刷新最短", self.risk_run_min_spin),
             ("刷新最长", self.risk_run_max_spin),
@@ -1250,7 +1255,8 @@ class App(QMainWindow):
             # its content instead of stretching to fill the column
             rest_grid.addWidget(lab, 2 + index // 2, (index % 2) * 2)
             rest_grid.addWidget(spin, 2 + index // 2, (index % 2) * 2 + 1)
-        rest_grid.setVerticalSpacing(4)
+        rest_grid.setVerticalSpacing(6)
+        rest_grid.setHorizontalSpacing(8)
         # 刷新与休息 gets its own card at the bottom of the column: inside the
         # conditions card it left ~200px of bare background under the form.
         # One row measure for every control in the form: QSS min-height cannot
