@@ -1373,8 +1373,9 @@ class AdvancedDialog(QDialog):
             ("shop_id", "优先店铺（0=自动）",
          "0 = 自动挑选账号有店员权限的店铺；填数字则优先该店铺，无权限时自动改选"),
             ("request_timeout_sec", "请求超时（秒）", "单次请求最长等待时间"),
-            ("notify_key", "推送密钥", "Server酱 / PushPlus 的 SendKey；webhook 渠道忽略"),
+            ("notify_key", "推送密钥", "Bark 设备 Key / Server酱 SendKey / PushPlus token"),
             ("notify_webhook", "推送 Webhook", "自定义地址，收到 {title, body} JSON；非空时优先于密钥"),
+            ("notify_bark_server", "Bark 服务端", "默认 https://api.day.app；自建填自己的域名"),
         ]
         for i, (key, label, hint) in enumerate(rows):
             lab = QLabel(label)
