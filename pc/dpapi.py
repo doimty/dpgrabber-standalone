@@ -481,6 +481,22 @@ class ApiClient:
 
     # -- clerk state (discovered 2026-11-15 from the uni-app bundle) ---------
 
+    def clerk_statistics(self, start_date: str, end_date: str,
+                         session: Session | None = None) -> dict:
+        """GET /s/c/statistics/statisticsClerkOrder — dates are yyyy-MM-dd.
+
+        Returns the raw ``list`` dict: orderCount, continuedCount,
+        continuedUserCount, firstCount, refundedCount, orderAmount, ...
+        A full timestamp is rejected ("Unable to parse the date").
+        """
+        path = ("/s/c/statistics/statisticsClerkOrder?startTime=%s&endTime=%s"
+                % (quote(start_date), quote(end_date)))
+        resp = self.request("GET", path, session=session, timeout=25)
+        if not isinstance(resp, dict) or resp.get("code") != 0:
+            return {}
+        data = resp.get("list")
+        return data if isinstance(data, dict) else {}
+
     def set_online(self, status: int, update_auto_online: bool = False,
                    session: Session | None = None) -> dict:
         """POST /s/c/clerk/updateStatus — the platform wants form params here."""
