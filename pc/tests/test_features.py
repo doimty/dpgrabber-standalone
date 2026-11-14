@@ -549,5 +549,29 @@ class QualificationRefusalTests(unittest.TestCase):
         self.assertEqual(reason, "被其他人抢走")
 
 
+class PollJitterTests(unittest.TestCase):
+    """autoduopei.cc 的刷新节奏是 0.6-1.1 秒随机；固定节奏是可识别的特征。"""
+
+    def _engine(self, base, jitter):
+        engine = Engine.__new__(Engine)
+        engine.cfg = {"poll_interval_sec": base, "poll_jitter_sec": jitter}
+        engine._rng = __import__("random").Random(11)
+        return engine
+
+    def test_jitter_off_returns_the_base_interval(self):
+        self.assertEqual(self._engine(0.5, 0)._poll_delay(), 0.5)
+
+    def test_jitter_keeps_every_delay_inside_the_band(self):
+        engine = self._engine(0.85, 0.25)
+        delays = [engine._poll_delay() for _ in range(40)]
+        self.assertGreaterEqual(min(delays), 0.6)
+        self.assertLessEqual(max(delays), 1.1)
+        self.assertGreater(len(set(delays)), 10, "delays look fixed")
+
+    def test_jitter_never_goes_below_the_floor(self):
+        engine = self._engine(0.05, 5)
+        self.assertGreaterEqual(min(engine._poll_delay() for _ in range(20)), 0.1)
+
+
 if __name__ == "__main__":
     unittest.main()
