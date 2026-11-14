@@ -473,13 +473,17 @@ class Engine:
     def _poll_loop(self, phone: str, password: str):
         page_size = 20
         timeout = float(self.cfg.get("request_timeout_sec", 15))
-        order_filter = OrderFilter(
-            self.cfg.get("min_amount", 10.0),
-            self.cfg.get("max_amount", 0.0),
-            self.cfg.get("memo_mode", 0),
-            self.cfg.get("memo_keywords", []),
-            self.cfg.get("blacklist", []),
-        )
+        # Rebuilt every poll: 右键拉黑 / 加入关键词 from the history list must
+        # take effect while listening, so the filter cannot be a start-time
+        # snapshot. Constructing it is a handful of list copies.
+        def build_filter():
+            return OrderFilter(
+                self.cfg.get("min_amount", 10.0),
+                self.cfg.get("max_amount", 0.0),
+                self.cfg.get("memo_mode", 0),
+                self.cfg.get("memo_keywords", []),
+                self.cfg.get("blacklist", []),
+            )
         # Risk run/rest rhythm (autoduopei risk_run/rest): when enabled,
         # poll for one random run period, rest, then resume. The rest
         # check runs only at the top of the loop, after any confirm task
@@ -536,6 +540,7 @@ class Engine:
                     return
                 continue
             self._mark_seen(order_id)
+            order_filter = build_filter()
             amount = amount_yuan_from_cents(order.get("totalAmount"))
             self.log(
                 "info",
