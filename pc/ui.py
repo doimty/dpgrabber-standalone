@@ -580,6 +580,11 @@ class App(QMainWindow):
         self._refresh_timer.start(500)
         # Canary: proves on launch that the log path is alive.
         self.log("info", "DPGrabber PC 已启动")
+        try:
+            from build_stamp import SHA as _build_sha
+            self.log("info", "构建 %s" % _build_sha)
+        except Exception:
+            pass
 
     # -- construction -----------------------------------------------------
 
