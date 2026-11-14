@@ -588,7 +588,10 @@ class Engine:
                 self.on_grab(order, order_id, confirm_calls)
             except Exception:
                 pass  # history recording must never break the grab flow
-        self.stop()
+        if self.cfg.get("auto_stop_after_grab", True):
+            self.stop()
+        else:
+            self.log("info", "已关闭「接到单自动停止监听」，继续轮询")
         return "ok", ""
 
     def _sleep_retry(self, deadline_mono: float) -> bool:
