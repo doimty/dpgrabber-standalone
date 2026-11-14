@@ -624,5 +624,51 @@ class LoginBodyTests(unittest.TestCase):
             self.assertIn("password", _login_body("1", secret))
 
 
+class ConfigListAppendTests(unittest.TestCase):
+    """右键拉黑：同一个微信号不能重复进列表，配置要落盘。"""
+
+    def _app_stub(self, cfg):
+        from ui import App
+        app = App.__new__(App)
+        app.cfg = cfg
+        app.logged = []
+        app.log = lambda level, msg: app.logged.append((level, msg))
+        return app
+
+    def test_appends_once_and_saves(self, ):
+        import ui as ui_mod
+        saved = {}
+        original = ui_mod.cfgmod.save
+        ui_mod.cfgmod.save = lambda cfg, **k: saved.update(cfg)
+        try:
+            app = self._app_stub({"blacklist": ["a"]})
+            app._append_to_config_list("blacklist", "b", "已拉黑微信号")
+            app._append_to_config_list("blacklist", "b", "已拉黑微信号")
+            self.assertEqual(app.cfg["blacklist"], ["a", "b"])
+            self.assertEqual(saved["blacklist"], ["a", "b"])
+            self.assertEqual(app.logged[-1][0], "success")
+        finally:
+            ui_mod.cfgmod.save = original
+
+    def test_blank_value_is_ignored(self):
+        app = self._app_stub({"memo_keywords": []})
+        app._append_to_config_list("memo_keywords", "   ", "已加入备注关键词")
+        self.assertEqual(app.cfg["memo_keywords"], [])
+        self.assertEqual(app.logged, [])
+
+    def test_save_failure_is_reported_not_raised(self):
+        import ui as ui_mod
+        def boom(cfg, **k):
+            raise OSError("disk full")
+        original = ui_mod.cfgmod.save
+        ui_mod.cfgmod.save = boom
+        try:
+            app = self._app_stub({"blacklist": []})
+            app._append_to_config_list("blacklist", "x", "已拉黑微信号")
+            self.assertEqual(app.logged[-1][0], "warning")
+        finally:
+            ui_mod.cfgmod.save = original
+
+
 if __name__ == "__main__":
     unittest.main()
