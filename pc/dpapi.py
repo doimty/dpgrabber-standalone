@@ -23,6 +23,8 @@ no real request is ever sent from a test.
 
 from __future__ import annotations
 
+import re
+
 import base64
 import binascii
 import json
@@ -321,11 +323,7 @@ class ApiClient:
         secret = (password or "").strip()
         if not phone or not secret:
             raise ApiError("api", "phone and password are required")
-        body = {
-            "method": "password",
-            "phoneNumber": {"regionCode": "CN", "mobileDial": "86", "mobile": phone},
-            "password": secret,
-        }
+        body = _login_body(phone, secret)
         resp = self.request(
             "POST", "/s/duopei-account/login", session=None,
             body=body, body_type="json",
@@ -341,10 +339,17 @@ class ApiClient:
         return Session(token=token, sid="50")
 
     def session_for_account(
-        self, phone: str, password: str, preferred_shop_id: int = 92
+        self, phone: str, password: str, preferred_shop_id: int = 0,
+        on_note=None,
     ) -> Session:
         """Full manual login: login -> list shops -> switch per shop ->
-        getBalance validation. Returns a usable session or raises ApiError.
+        clerk permission check -> getBalance validation.
+
+        ``preferred_shop_id`` is only a *hint*: 0 means "no preference", and a
+        shop is only accepted when the account really holds a clerk seat there.
+        Switching to a shop without 店员权限 looks successful (a token comes
+        back) but the platform rejects every order call later, which is the
+        failure mode measured on autoduopei.cc (2026-11-14).
 
         Auth / IP / cancelled failures abort immediately; other per-shop
         failures move on to the next shop (DPGAPIClient.m:298-361).
@@ -357,8 +362,7 @@ class ApiClient:
         if resp.get("code") != 0:
             raise ApiError("api", "shop list rejected")
         shops = resp.get("data") if isinstance(resp.get("data"), list) else []
-        ordered = [s for s in shops if isinstance(s, dict) and _shop_id(s) == preferred_shop_id]
-        ordered += [s for s in shops if isinstance(s, dict) and s not in ordered]
+        ordered = _order_shops(shops, preferred_shop_id)
         last_error: ApiError | None = None
         for shop in ordered:
             account_id = str(shop.get("accountId") or "")
@@ -393,6 +397,17 @@ class ApiClient:
                 last_error = exc
                 continue
             if balance and balance.get("code") == 0:
+                # A token alone does not prove permission; ask for the clerk
+                # seat. An inconclusive answer (network/other API error) must
+                # not block a login that already returned a balance.
+                permission = self._confirm_clerk_seat(candidate)
+                if permission is False:
+                    if on_note:
+                        on_note("店铺 %s 无店员权限，已跳过" % sid)
+                    continue
+                if on_note:
+                    on_note("已切换到店铺 %s（店员权限%s）"
+                            % (sid, "已确认" if permission else "未确认"))
                 with self._lock:
                     self.session = candidate
                 return candidate
@@ -402,6 +417,20 @@ class ApiClient:
         )
 
     # -- business calls -------------------------------------------------
+
+    def _confirm_clerk_seat(self, session: Session):
+        """True = seat confirmed, False = definitively no seat, None = unknown."""
+        try:
+            decoded = self.clerk_get(session)
+        except ApiError as exc:
+            if exc.kind in ("ip", "cancelled"):
+                raise
+            return None
+        if not isinstance(decoded, dict):
+            return None
+        if decoded.get("code") not in (0, None):
+            return None
+        return extract_clerk(decoded) is not None
 
     def clerk_get(self, session: Session | None = None) -> dict:
         """GET /s/c/clerk/get. Returns the raw decoded dict; callers use
@@ -434,6 +463,43 @@ class ApiClient:
         """POST /s/c/order/confirm?id=... . Returns the decoded dict."""
         path = "/s/c/order/confirm?id=%s" % quote(str(order_id), safe=_FORM_SAFE)
         return self.request("POST", path, timeout=timeout)
+
+
+_HASH_RE = re.compile(r"[0-9a-fA-F]{32}")
+
+
+def _login_body(phone: str, secret: str) -> dict:
+    """Login body honouring the protocol's password_hash precedence.
+
+    PROTOCOL.md 3.2: the field takes ``password_hash`` when set, otherwise
+    ``password``. A 32-character hex string is a hash (16 bytes), not a
+    password: sending it as ``password`` is exactly what produced
+    "login rejected: 密码错误" for a value copied from another tool's config.
+    """
+    body = {
+        "method": "password",
+        "phoneNumber": {"regionCode": "CN", "mobileDial": "86", "mobile": phone},
+    }
+    if _HASH_RE.fullmatch((secret or "").strip()):
+        body["password_hash"] = secret.strip().lower()
+    else:
+        body["password"] = secret
+    return body
+
+
+def _order_shops(shops, preferred_shop_id: int = 0):
+    """Shops to try, in order.
+
+    With no preference (0) the list keeps its server order: the first shop the
+    account can actually work in wins, instead of a hard-coded 92 that may not
+    hold a seat. An explicit preference is tried first, then everything else.
+    """
+    candidates = [s for s in shops if isinstance(s, dict)]
+    if preferred_shop_id and preferred_shop_id > 0:
+        head = [s for s in candidates if _shop_id(s) == preferred_shop_id]
+        tail = [s for s in candidates if _shop_id(s) != preferred_shop_id]
+        return head + tail
+    return candidates
 
 
 def _shop_id(shop: dict) -> int:
