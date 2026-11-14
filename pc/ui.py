@@ -1159,27 +1159,53 @@ class App(QMainWindow):
         self.week_orders_signal.emit(stats or None)
 
     def _on_week_orders(self, stats):
-        label = getattr(self, "week_count_label", None)
+        """Three platform ratios, each with its own formula.
+
+        续费率 = continuedAmount / orderAmount    (money, this is the gate the
+                  platform quotes: 6000/24500 = 24% for 加冰)
+        续单率 = continuedCount / orderCount
+        续客率 = continuedUserCount / totalOrderCount
+        """
+        week_label = getattr(self, "week_count_label", None)
+        rate_label = getattr(self, "renewal_label", None)
         if not isinstance(stats, dict) or not stats:
-            if label is not None:
-                label.setText("—")
+            for label in (week_label, rate_label):
+                if label is not None:
+                    label.setText("—")
             return
+
+        def ratio(numerator, denominator):
+            try:
+                numerator = float(numerator or 0)
+                denominator = float(denominator or 0)
+            except (TypeError, ValueError):
+                return None
+            if denominator <= 0:
+                return None
+            return 100.0 * numerator / denominator
+
         orders = int(stats.get("orderCount") or 0)
         continued = int(stats.get("continuedCount") or 0)
-        if label is not None:
-            label.setText(str(orders))
-        rate_label = getattr(self, "renewal_label", None)
+        users = int(stats.get("continuedUserCount") or 0)
+        total = int(stats.get("totalOrderCount") or 0)
+        fee_rate = ratio(stats.get("continuedAmount"), stats.get("orderAmount"))
+        order_rate = ratio(continued, orders)
+        user_rate = ratio(users, total)
+
+        if week_label is not None:
+            week_label.setText(str(orders))
         if rate_label is not None:
-            if continued and orders:
-                rate_label.setText("%d%%" % round(100.0 * continued / orders))
-                self._renewal_source = "计算：续单 %d / 订单 %d" % (continued, orders)
-            elif isinstance(self.cfg.get("last_renewal_rate"), int):
-                rate_label.setText("%d%%" % self.cfg["last_renewal_rate"])
-                self._renewal_source = "平台拒绝原话"
-            else:
-                rate_label.setText("—")
-        if rate_label is not None:
-            rate_label.setToolTip(getattr(self, "_renewal_source", "本周续单比例"))
+            rate_label.setText("—" if fee_rate is None else "%d%%" % round(fee_rate))
+            detail = ["续费率 %.1f%%（续单金额 %.2f / 订单金额 %.2f）" % (
+                fee_rate or 0,
+                (stats.get("continuedAmount") or 0) / 100.0,
+                (stats.get("orderAmount") or 0) / 100.0)]
+            if order_rate is not None:
+                detail.append("续单率 %.1f%%（%d/%d 单）" % (order_rate, continued, orders))
+            if user_rate is not None:
+                detail.append("续客率 %.1f%%（%d/%d 人）" % (user_rate, users, total))
+            rate_label.setToolTip("\n".join(detail))
+            self._renewal_source = detail[0]
 
     def _on_avatar(self, path: str):
         label = getattr(self, "avatar_label", None)
