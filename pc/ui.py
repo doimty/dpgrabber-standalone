@@ -71,6 +71,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -90,7 +91,7 @@ except Exception:
     _PIL_AVAILABLE = False
 
 APP_TITLE = "DPGrabber PC"
-WINDOW_SIZE = (1180, 660)
+WINDOW_SIZE = (1180, 729)  # 1180 / 729 = 1.6187 -> 1:phi within 0.04%
 
 # Day-palette aliases, kept so older references keep working. The live
 # colours come from the active theme's palette (themes.py) via
@@ -241,23 +242,23 @@ QDialog QGroupBox { color: %(TEXT_DARK)s; }
 QFrame#card {
     background: %(CARD_BG)s;
     border: 1px solid %(CARD_BORDER)s;
-    border-radius: 14px;
+    border-radius: 13px;
 }
 QFrame#sidebar {
     background: %(SIDEBAR_BG)s;
-    border-radius: 14px;
+    border-radius: 13px;
 }
 QFrame#sidebarCard {
     background: %(SIDEBAR_CARD_BG)s;
     border: 1px solid %(SIDEBAR_CARD_BORDER)s;
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#hero {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(HERO_TOP)s, stop:1 %(HERO_BOTTOM)s);
     border-bottom: 2px solid %(HERO_BORDER)s;
 }
-QLabel#heroTitle { color: white; font-size: 20px; font-weight: bold; }
+QLabel#heroTitle { color: white; font-size: 21px; font-weight: bold; }
 QComboBox#heroCombo {
     background: rgba(255,255,255,0.16); color: white; font-size: 12px;
     border: 1px solid rgba(255,255,255,0.55); border-radius: 8px;
@@ -287,12 +288,12 @@ QLabel#historyLine2 { color: %(HINT)s; font-size: 12px; }
 QLabel#historyReason { color: %(HISTORY_REASON)s; font-size: 12px; }
 QLineEdit {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px;
 }
 QLineEdit:focus { border: 1px solid %(BLUE)s; }
 QComboBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px;
     /* Draw the popup ourselves: the native Windows popup is a separate
        window that ignores every rule below and renders as a white slab. */
     combobox-popup: 0;
@@ -307,19 +308,19 @@ QComboBox::down-arrow {
 }
 QComboBox QAbstractItemView {
     background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
-    border: 1px solid %(CARD_BORDER)s; border-radius: 10px;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 8px;
     selection-background-color: %(SELECTION_BG)s; selection-color: %(TEXT_DARK)s;
     outline: none; padding: 4px;
 }
 QComboBox QAbstractItemView::item {
-    color: %(TEXT_DARK)s; min-height: 26px; padding: 2px 8px; border-radius: 6px;
+    color: %(TEXT_DARK)s; min-height: 26px; padding: 2px 8px; border-radius: 5px;
 }
 QComboBox QAbstractItemView::item:selected {
     background: %(SELECTION_BG)s; color: %(TEXT_DARK)s;
 }
 QSpinBox, QDoubleSpinBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px;
 }
 QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid %(BLUE)s; }
 QSpinBox::up-button, QDoubleSpinBox::up-button {
@@ -348,7 +349,7 @@ QPushButton#primary {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(BTN_TOP)s, stop:1 %(BTN_BOTTOM)s);
     color: white; font-size: 13px; font-weight: bold;
-    border: none; border-radius: 10px; padding: 7px 16px;
+    border: none; border-radius: 8px; padding: 8px 13px;
 }
 QPushButton#primary:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -359,7 +360,7 @@ QPushButton#primary:disabled {
 }
 QPushButton#secondary {
     background: %(ENTRY_BG)s; color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(BLUE)s; border-radius: 10px; padding: 7px 16px;
+    border: 1px solid %(BLUE)s; border-radius: 8px; padding: 8px 13px;
 }
 QPushButton#secondary:hover { background: %(SELECTION_BG)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
@@ -367,12 +368,22 @@ QCheckBox { color: %(TEXT_DARK)s; font-size: 13px; spacing: 6px; }
 QCheckBox#sidebarCheck { color: %(SIDEBAR_TEXT)s; }
 QCheckBox::indicator { width: 16px; height: 16px; }
 QCheckBox::indicator:unchecked {
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 6px; background: %(ENTRY_BG)s;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 5px; background: %(ENTRY_BG)s;
 }
 QCheckBox::indicator:checked {
-    border: 1px solid %(BLUE)s; border-radius: 6px;
+    border: 1px solid %(BLUE)s; border-radius: 5px;
     background: %(BLUE)s; %(CHECK_CSS)s
 }
+QTabWidget#bottomTabs::pane { border: none; background: transparent; }
+QTabWidget#bottomTabs QTabBar::tab {
+    background: transparent; color: %(HINT)s; border: none;
+    padding: 8px 21px; margin-right: 5px; font-size: 13px;
+}
+QTabWidget#bottomTabs QTabBar::tab:selected {
+    color: %(BLUE)s; font-weight: bold;
+    border-bottom: 2px solid %(BLUE)s;
+}
+QTabWidget#bottomTabs QTabBar::tab:hover { color: %(TEXT_DARK)s; }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { border: none; }
 QListWidget::item:selected { background: %(SELECTION_BG)s; }
@@ -380,12 +391,12 @@ QScrollBar:vertical {
     background: transparent; width: 12px; margin: 0px;
 }
 QScrollBar::handle:vertical {
-    background: %(BLUE)s; min-height: 20px; border-radius: 6px;
+    background: %(BLUE)s; min-height: 20px; border-radius: 5px;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QGroupBox {
     color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(CARD_BORDER)s; border-radius: 10px;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 8px;
     margin-top: 10px; padding-top: 8px;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
@@ -661,7 +672,7 @@ class App(QMainWindow):
         label.setWordWrap(True)
         # Cap the hint column: without it a long hint wraps to four lines and
         # drags its row tall, so the form stops looking like a table.
-        label.setMaximumWidth(440)
+        label.setMaximumWidth(300)
         return label
 
     def _build_widgets(self):
@@ -690,7 +701,7 @@ class App(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(280)
+        sidebar.setFixedWidth(279)  # 1180 / 279 = 4.229 = phi^3 within 0.17%
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
@@ -708,10 +719,28 @@ class App(QMainWindow):
         self._build_conditions_section(form_column)
         right_column = QVBoxLayout()
         right_column.setSpacing(0)
-        self._build_log_section(right_column)
-        self._build_history_section(right_column)
-        main_layout.addLayout(form_column, 2)
-        main_layout.addLayout(right_column, 3)
+        self.bottom_tabs = QTabWidget()
+        self.bottom_tabs.setObjectName("bottomTabs")
+        log_page = QWidget()
+        log_layout = QVBoxLayout(log_page)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        self._build_log_section(log_layout, tabbed=True)
+        history_page = QWidget()
+        history_layout = QVBoxLayout(history_page)
+        history_layout.setContentsMargins(0, 0, 0, 0)
+        self._build_history_section(history_layout, tabbed=True)
+        self.bottom_tabs.addTab(log_page, "运行日志")
+        self.bottom_tabs.addTab(history_page, "接单历史")
+        right_column.addWidget(self.bottom_tabs, 1)
+        # form : right = 1 : 1.618 once the form is capped; without the cap the
+        # form's own minimum width (label + field + hint) won the extra space
+        # and the split drifted to 2.08 : 1.
+        form_wrap = QWidget()
+        form_wrap.setMaximumWidth(520)
+        form_column.setContentsMargins(0, 0, 0, 0)
+        form_wrap.setLayout(form_column)
+        main_layout.addWidget(form_wrap)
+        main_layout.addLayout(right_column, 1)
 
 
         body_layout.addWidget(main_area, 1)
@@ -719,7 +748,7 @@ class App(QMainWindow):
     def _build_hero(self, root):
         hero = QFrame()
         hero.setObjectName("hero")
-        hero.setFixedHeight(56)
+        hero.setFixedHeight(55)  # 34 * phi
         layout = QHBoxLayout(hero)
         layout.setContentsMargins(20, 0, 20, 0)
         title = QLabel(APP_TITLE)
@@ -763,7 +792,7 @@ class App(QMainWindow):
         card = QFrame()
         card.setObjectName("sidebarCard")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setContentsMargins(13, 13, 13, 13)
         card_layout.setSpacing(4)
         wrapper = QVBoxLayout()
         wrapper.setContentsMargins(12, 0, 12, 12)
@@ -819,7 +848,7 @@ class App(QMainWindow):
         main_layout.addLayout(header)
         card = self._card()
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 8, 12, 8)
+        card_layout.setContentsMargins(13, 13, 13, 13)
         inner = QWidget()
         grid = QGridLayout(inner)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -852,7 +881,7 @@ class App(QMainWindow):
         self.confirm_wait_max_spin.setSuffix(" 秒")
         self._form_row(grid, 5, "抢单前等待最大（秒）", self.confirm_wait_max_spin,
                        "相同即固定等待")
-        inner.setMaximumWidth(560)
+        inner.setMaximumWidth(500)
         for widget in (self.memo_mode_box, self.confirm_wait_min_spin,
                        self.confirm_wait_max_spin):
             widget.setFixedWidth(150)
@@ -896,7 +925,7 @@ class App(QMainWindow):
         # conditions card it left ~200px of bare background under the form.
         rest_card = self._card()
         rest_layout = QVBoxLayout(rest_card)
-        rest_layout.setContentsMargins(12, 8, 12, 8)
+        rest_layout.setContentsMargins(13, 13, 13, 13)
         rest_layout.addWidget(rest_group)
         rest_layout.addStretch(1)
         main_layout.addWidget(card)
@@ -967,11 +996,12 @@ class App(QMainWindow):
         row.addStretch(1)
         sidebar_layout.addLayout(row)
 
-    def _build_log_section(self, main_layout):
-        main_layout.addWidget(self._section_title("运行日志"))
+    def _build_log_section(self, main_layout, tabbed=False):
+        if not tabbed:
+            main_layout.addWidget(self._section_title("运行日志"))
         card = self._card()
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setContentsMargins(13, 13, 13, 13)
         # QPlainTextEdit: retained-mode, so the log survives maximize /
         # restore (the old CTkTextbox lost its content on maximize).
         self.log_text = QPlainTextEdit()
@@ -987,22 +1017,31 @@ class App(QMainWindow):
         clear_row.addStretch(1)
         card_layout.addLayout(clear_row)
         main_layout.addWidget(card, 1)
-        main_layout.addSpacing(10)
+        if not tabbed:
+            main_layout.addSpacing(10)
 
-    def _build_history_section(self, main_layout):
-        header = QHBoxLayout()
-        header.addWidget(self._section_title("接单历史"))
-        header.addStretch(1)
-        header.addWidget(self._secondary_button("清空历史", self._on_clear_history))
-        main_layout.addLayout(header)
+    def _build_history_section(self, main_layout, tabbed=False):
+        if not tabbed:
+            header = QHBoxLayout()
+            header.addWidget(self._section_title("接单历史"))
+            header.addStretch(1)
+            header.addWidget(self._secondary_button("清空历史", self._on_clear_history))
+            main_layout.addLayout(header)
         card = self._card()
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 10, 12, 10)
         self.history_list = QListWidget()
         self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.history_list.customContextMenuRequested.connect(self._on_history_context_menu)
-        self.history_list.setFixedHeight(180)
-        card_layout.addWidget(self.history_list, 1)
+        if tabbed:
+            card_layout.addWidget(self.history_list, 1)
+            clear_row = QHBoxLayout()
+            clear_row.addWidget(self._secondary_button("清空历史", self._on_clear_history))
+            clear_row.addStretch(1)
+            card_layout.addLayout(clear_row)
+        else:
+            self.history_list.setFixedHeight(180)
+            card_layout.addWidget(self.history_list, 1)
         main_layout.addWidget(card, 1)
         self._refresh_history()
 
