@@ -679,5 +679,61 @@ class ConfigListAppendTests(unittest.TestCase):
             ui_mod.cfgmod.save = original
 
 
+class ShopPermissionProbeTests(unittest.TestCase):
+    """选店必须按「有店员权限」来：clerk/get 没结论时用业务调用兜底。"""
+
+    def _client(self, seats, clerk_raises=True):
+        from dpapi import ApiClient, Session, ApiError
+
+        class Fake(ApiClient):
+            def __init__(self):
+                super().__init__("00" * 32, "00" * 16)
+                self.switched = []
+
+            def login_account(self, phone, password):
+                return Session(token="base", sid="50")
+
+            def request(self, method, path, **kw):
+                if "list-shop-account" in path:
+                    return {"code": 0,
+                            "data": [{"accountId": "a" + s, "shopId": int(s)} for s in seats]}
+                if "switch-account" in path:
+                    return {"code": 0, "data": {"token": "t"}}
+                return {"code": 0}
+
+            def clerk_get(self, session=None):
+                if clerk_raises:
+                    raise ApiError("api", "clerk 500")
+                return {"code": 0, "data": {"id": 1}}
+
+            def random_list(self, page_size=20, timeout=15, session=None):
+                if seats[session.sid] == "ok":
+                    return []
+                raise ApiError("api", "没有店员权限")
+
+        return Fake()
+
+    def test_seatless_shop_is_skipped_when_business_call_refuses(self):
+        client = self._client({"50": "deny", "92": "ok"})
+        notes = []
+        session = client.session_for_account("p", "w", 0, on_note=notes.append)
+        self.assertEqual(session.sid, "92")
+        self.assertTrue(any("没有店员权限" in n for n in notes), notes)
+
+    def test_all_denied_raises(self):
+        from dpapi import ApiError
+        client = self._client({"50": "deny", "92": "deny"})
+        with self.assertRaises(ApiError):
+            client.session_for_account("p", "w", 0, on_note=lambda n: None)
+
+    def test_first_working_shop_wins_without_preference(self):
+        client = self._client({"50": "ok", "92": "ok"})
+        self.assertEqual(client.session_for_account("p", "w", 0).sid, "50")
+
+    def test_preference_is_tried_first(self):
+        client = self._client({"50": "ok", "92": "ok"})
+        self.assertEqual(client.session_for_account("p", "w", 92).sid, "92")
+
+
 if __name__ == "__main__":
     unittest.main()
