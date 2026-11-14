@@ -365,6 +365,7 @@ class ApiClient:
         shops = resp.get("data") if isinstance(resp.get("data"), list) else []
         ordered = _order_shops(shops, preferred_shop_id)
         last_error: ApiError | None = None
+        fallback: Session | None = None
         for shop in ordered:
             account_id = str(shop.get("accountId") or "")
             sid = str(shop.get("shopId") or "")
@@ -398,20 +399,28 @@ class ApiClient:
                 last_error = exc
                 continue
             if balance and balance.get("code") == 0:
-                # A token alone does not prove permission; ask for the clerk
-                # seat. An inconclusive answer (network/other API error) must
-                # not block a login that already returned a balance.
-                permission = self._confirm_clerk_seat(candidate)
-                if permission is False:
-                    if on_note:
-                        on_note("店铺 %s 无店员权限，已跳过" % sid)
-                    continue
+                # A token alone does not prove permission, and the platform only
+                # says "没有店员权限" once business calls start. Ask for the
+                # clerk seat: a confirmed seat wins immediately, a denial skips
+                # the shop, and an inconclusive answer is parked as a fallback
+                # so the remaining shops still get a chance.
+                state, note = self._probe_shop_permission(candidate)
                 if on_note:
-                    on_note("已切换到店铺 %s（店员权限%s）"
-                            % (sid, "已确认" if permission else "未确认"))
-                with self._lock:
-                    self.session = candidate
-                return candidate
+                    on_note("店铺 %s：%s" % (sid, note))
+                if state == "confirmed":
+                    with self._lock:
+                        self.session = candidate
+                    return candidate
+                if state == "denied":
+                    continue
+                if fallback is None:
+                    fallback = candidate
+        if fallback is not None:
+            if on_note:
+                on_note("没有确认到店员权限的店铺，沿用 sid=%s（权限未确认）" % fallback.sid)
+            with self._lock:
+                self.session = fallback
+            return fallback
         raise ApiError(
             "auth",
             "no usable shop session: %s" % (last_error.message if last_error else "all shops rejected"),
@@ -419,32 +428,66 @@ class ApiClient:
 
     # -- business calls -------------------------------------------------
 
+    def _probe_shop_permission(self, session: Session):
+        """("confirmed" | "denied" | "unknown", note).
+
+        clerk/get is the documented probe, but it can be inconclusive (error
+        code, unexpected shape, transient failure). The platform's own answer
+        to a business call is more honest: a shop without a seat replies
+        "没有店员权限" to randomList. Falling back to that keeps a seatless shop
+        from being accepted just because the first probe could not decide.
+        """
+        state, note = self._confirm_clerk_seat(session)
+        if state != "unknown":
+            return state, note
+        try:
+            self.random_list(page_size=1, timeout=10, session=session)
+        except ApiError as exc:
+            if exc.kind in ("ip", "cancelled"):
+                raise
+            text = str(exc.message or "")
+            if "店员" in text or "权限" in text:
+                return "denied", "业务探测：%s" % text
+            return "unknown", "%s；业务探测：%s" % (note, text)
+        return "confirmed", "业务探测可下单"
+
     def _confirm_clerk_seat(self, session: Session):
-        """True = seat confirmed, False = definitively no seat, None = unknown."""
+        """("confirmed" | "denied" | "unknown", note)."""
         try:
             decoded = self.clerk_get(session)
         except ApiError as exc:
             if exc.kind in ("ip", "cancelled"):
                 raise
-            return None
+            return "unknown", "店员校验失败：%s" % exc.message
         if not isinstance(decoded, dict):
-            return None
+            return "unknown", "店员校验响应异常"
         if decoded.get("code") not in (0, None):
-            return None
-        return extract_clerk(decoded) is not None
+            return "unknown", "店员校验 code=%s %s" % (
+                decoded.get("code"), decoded.get("msg") or ""
+            )
+        clerk = extract_clerk(decoded)
+        if clerk is None:
+            return "denied", "无店员席位"
+        return "confirmed", "店员 ID %s" % clerk.get("id")
 
     def clerk_get(self, session: Session | None = None) -> dict:
         """GET /s/c/clerk/get. Returns the raw decoded dict; callers use
         extract_clerk() to find the clerk object."""
         return self.request("GET", "/s/c/clerk/get", session=session, timeout=15)
 
-    def random_list(self, page_size: int = 20, timeout: float = 15) -> list:
+    def random_list(self, page_size: int = 20, timeout: float = 15,
+                    session: Session | None = None) -> list:
         """GET /s/c/order/randomList. Returns the order list (possibly empty).
-        A missing list is treated as empty, not fatal, so polling continues."""
+        A missing list is treated as empty, not fatal, so polling continues.
+
+        ``session`` lets the login path probe a *candidate* shop before it is
+        published as the client session; the platform answers "没有店员权限"
+        for a shop the account holds no seat in.
+        """
         resp = self.request(
             "GET",
             "/s/c/order/randomList?pageNo=1&pageSize=%d" % page_size,
-            timeout=timeout,
+            timeout=timeout, session=session,
         )
         orders = resp.get("list")
         if orders is None and isinstance(resp.get("data"), dict):
