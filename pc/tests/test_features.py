@@ -144,7 +144,8 @@ class NewConfigTests(unittest.TestCase):
         self.assertEqual(cfg["risk_rest_max"], 20)
 
     def test_confirm_wait_valid(self):
-        for min_w, max_w in ((0, 0), (3, 5), (5, 7), (3, 100)):
+        for min_w, max_w in ((0, 0), (3, 5), (5, 7), (3, 100),
+                             (5, 5), (0.5, 0.5), (1, 1), (120, 120)):
             cfg = cfgmod.validate(dict(cfgmod.DEFAULT_CONFIG,
                                        confirm_wait_min=min_w,
                                        confirm_wait_max=max_w))
@@ -153,17 +154,11 @@ class NewConfigTests(unittest.TestCase):
 
     def test_confirm_wait_invalid(self):
         bad_cases = [
-            # min < 3 while max > 0
-            {"confirm_wait_min": 1, "confirm_wait_max": 5},
-            {"confirm_wait_min": 2.9, "confirm_wait_max": 5},
-            {"confirm_wait_min": 0, "confirm_wait_max": 5},
-            # max - min < 2
-            {"confirm_wait_min": 3, "confirm_wait_max": 4},
-            {"confirm_wait_min": 3, "confirm_wait_max": 4.5},
-            # negative / inverted
+            # negative / inverted / above the cap
             {"confirm_wait_min": -1, "confirm_wait_max": 0},
             {"confirm_wait_min": 0, "confirm_wait_max": -1},
             {"confirm_wait_min": 5, "confirm_wait_max": 3},
+            {"confirm_wait_min": 121, "confirm_wait_max": 121},
         ]
         for over in bad_cases:
             with self.assertRaises(cfgmod.ConfigError, msg=str(over)):
@@ -172,7 +167,10 @@ class NewConfigTests(unittest.TestCase):
     def test_confirm_wait_error_helper(self):
         self.assertIsNone(cfgmod.confirm_wait_error({"confirm_wait_min": 0, "confirm_wait_max": 0}))
         self.assertIsNone(cfgmod.confirm_wait_error({"confirm_wait_min": 3, "confirm_wait_max": 5}))
-        self.assertIsNotNone(cfgmod.confirm_wait_error({"confirm_wait_min": 1, "confirm_wait_max": 5}))
+        self.assertIsNone(cfgmod.confirm_wait_error({"confirm_wait_min": 1, "confirm_wait_max": 5}))
+        self.assertIsNone(cfgmod.confirm_wait_error({"confirm_wait_min": 5, "confirm_wait_max": 5}))
+        self.assertIsNotNone(cfgmod.confirm_wait_error({"confirm_wait_min": 5, "confirm_wait_max": 3}))
+        self.assertIsNotNone(cfgmod.confirm_wait_error({"confirm_wait_min": 121, "confirm_wait_max": 121}))
 
     def test_auto_wait_offset_valid(self):
         for value in (0, 0.0, 0.5, -0.5, 0.123, -0.001, 0.25):
@@ -437,7 +435,7 @@ class EngineConfirmWaitTests(unittest.TestCase):
 
     def test_invalid_wait_refuses_to_start(self):
         stub = StubApiClient(polls=[], confirms=[])
-        cfg = _test_engine_cfg(confirm_wait_min=1, confirm_wait_max=5)
+        cfg = _test_engine_cfg(confirm_wait_min=5, confirm_wait_max=3)
         logs = []
 
         def log(level, message):
