@@ -2009,8 +2009,8 @@ class App(QMainWindow):
         buttons has no room at an 1180px window.
         """
         if text.startswith("已登录"):
-            name = getattr(self, "_clerk_name", "") or ""
-            self.status_label.setText("已登录 · %s" % name if name else "已登录")
+            sid = getattr(self, "_session_sid", "") or ""
+            self.status_label.setText("店铺 %s" % sid if sid else "已登录")
             self.status_label.setToolTip(text)
         elif text.startswith("登录失败"):
             self.status_label.setText("登录失败")
@@ -2067,6 +2067,7 @@ class App(QMainWindow):
                 clerk = None
             self._clerk_name = str((clerk or {}).get("name") or "")
             self._clerk_id = str((clerk or {}).get("id") or "")
+            self._session_sid = str(getattr(session, "sid", "") or "")
             self._fetch_avatar(clerk or {})
             self._fetch_week_orders(session)
             self._fetch_clerk_state(session, clerk or {})
