@@ -298,6 +298,7 @@ QLabel#avatarBadge {
 QLabel#accountName { color: %(SIDEBAR_TEXT)s; font-size: 13px; font-weight: bold; }
 QLabel#statValue { color: %(BLUE)s; font-size: 21px; font-weight: bold; }
 QLabel#subTitle { color: %(TEXT_DARK)s; font-size: 13px; font-weight: bold; }
+QFrame#divider { background: %(CARD_BORDER)s; border: none; }
 QLabel#historyLine1 { color: %(TEXT_DARK)s; font-size: 13px; font-weight: bold; }
 QLabel#historyLine2 { color: %(HINT)s; font-size: 12px; }
 QLabel#historyReason { color: %(HISTORY_REASON)s; font-size: 12px; }
@@ -916,14 +917,16 @@ class App(QMainWindow):
         title_label.setObjectName("sidebarTitle")
         parent_layout.addWidget(title_label)
         # Indent the title like the old UI (padx=14).
-        title_label.setContentsMargins(14, 12, 14, 2)
+        # 13px above the title, 8px between the title and its card: the old
+        # 2px bottom margin made every heading look like it sat on the card.
+        title_label.setContentsMargins(14, 10, 14, 0)
         card = QFrame()
         card.setObjectName("sidebarCard")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(13, 13, 13, 13)
         card_layout.setSpacing(4)
         wrapper = QVBoxLayout()
-        wrapper.setContentsMargins(12, 0, 12, 12)
+        wrapper.setContentsMargins(12, 8, 12, 8)
         wrapper.addWidget(card)
         parent_layout.addLayout(wrapper)
         return card, card_layout
@@ -1083,7 +1086,7 @@ class App(QMainWindow):
 
     def _build_stats_section(self, sidebar_layout):
         """今日统计 : sidebar card under 监听控制, where the space was empty."""
-        card, column = self._sidebar_card(sidebar_layout, "今日统计")
+        card, column = self._sidebar_card(sidebar_layout, "今日概况")
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)
         self.stat_labels = {}
@@ -1099,8 +1102,59 @@ class App(QMainWindow):
             grid.addWidget(cap, 1, index)
             self.stat_labels[key] = value
         column.addLayout(grid)
+        divider = QFrame()
+        divider.setObjectName("divider")
+        divider.setFixedHeight(1)
+        column.addWidget(divider)
+        self.last_order_main = QLabel("暂无记录")
+        self.last_order_main.setObjectName("sidebarState")
+        self.last_order_main.setWordWrap(True)
+        column.addWidget(self.last_order_main)
+        self.last_order_note = QLabel("抢到单后会显示在这里")
+        self.last_order_note.setObjectName("sidebarHint")
+        self.last_order_note.setWordWrap(True)
+        column.addWidget(self.last_order_note)
         self._refresh_stats()
+        self._refresh_last_order()
         return card
+
+    def _build_last_order_section(self, sidebar_layout):
+        card, column = self._sidebar_card(sidebar_layout, "最近一单")
+        self.last_order_main = QLabel("暂无记录")
+        self.last_order_main.setObjectName("sidebarState")
+        self.last_order_main.setWordWrap(True)
+        column.addWidget(self.last_order_main)
+        self.last_order_note = QLabel("抢到单后会显示在这里")
+        self.last_order_note.setObjectName("sidebarHint")
+        self.last_order_note.setWordWrap(True)
+        column.addWidget(self.last_order_note)
+        self._refresh_last_order()
+        return card
+
+    def _refresh_last_order(self):
+        label = getattr(self, "last_order_main", None)
+        note = getattr(self, "last_order_note", None)
+        if label is None:
+            return
+        try:
+            entries = history_mod.load()
+        except Exception:
+            entries = []
+        if not entries:
+            label.setText("暂无记录")
+            note.setText("抢到单后会显示在这里")
+            return
+        entry = max(entries, key=lambda e: str(e.get("grabbed_at") or ""))
+        stamp = str(entry.get("grabbed_at") or "").replace("T", " ")[5:16]
+        outcome = str(entry.get("outcome") or "success")
+        tag, _ = _outcome_label(outcome, self._palette)
+        try:
+            amount = float(entry.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        label.setText("%s   ¥%.2f   [%s]" % (stamp, amount, tag))
+        reason = str(entry.get("reason") or "").strip()
+        note.setText(reason if reason else str(entry.get("no") or ""))
 
     def _refresh_stats(self):
         labels = getattr(self, "stat_labels", None)
@@ -1116,6 +1170,7 @@ class App(QMainWindow):
         header.addStretch(1)
         header.addWidget(self._ghost_button("保存设置", self._on_save_settings))
         main_layout.addLayout(header)
+        main_layout.addSpacing(8)
         card = self._card()
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(13, 13, 13, 13)
@@ -1182,7 +1237,7 @@ class App(QMainWindow):
         self.risk_rest_max_spin.setSuffix(" 分钟")
         for spin in (self.risk_run_min_spin, self.risk_run_max_spin,
                      self.risk_rest_min_spin, self.risk_rest_max_spin):
-            spin.setFixedWidth(130)
+            spin.setFixedWidth(88)
         for index, (lab_text, spin) in enumerate([
             ("刷新最短", self.risk_run_min_spin),
             ("刷新最长", self.risk_run_max_spin),
@@ -1191,11 +1246,10 @@ class App(QMainWindow):
         ]):
             lab = QLabel(lab_text)
             lab.setObjectName("fieldLabel")
-            # one pair per row: the column is only ~324px wide, so two pairs
-            # side by side overlap
-            row = 2 + index
-            rest_grid.addWidget(lab, row, 0)
-            rest_grid.addWidget(spin, row, 1)
+            # two pairs per row with 88px spins: 2x2 keeps this card hugging
+            # its content instead of stretching to fill the column
+            rest_grid.addWidget(lab, 2 + index // 2, (index % 2) * 2)
+            rest_grid.addWidget(spin, 2 + index // 2, (index % 2) * 2 + 1)
         rest_grid.setVerticalSpacing(4)
         # 刷新与休息 gets its own card at the bottom of the column: inside the
         # conditions card it left ~200px of bare background under the form.
@@ -1355,6 +1409,7 @@ class App(QMainWindow):
 
     def _refresh_history(self):
         self._refresh_stats()
+        self._refresh_last_order()
         """Rebuild the history rows from the stored file, newest first."""
         self.history_list.clear()
         entries = history_mod.load_history()
