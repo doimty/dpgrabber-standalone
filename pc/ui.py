@@ -243,7 +243,7 @@ QDialog QCheckBox { color: %(TEXT_DARK)s; }
 QDialog QGroupBox { color: %(TEXT_DARK)s; }
 QFrame#card {
     background: %(CARD_BG)s;
-    border: 1px solid %(CARD_BORDER)s;
+    border: none;
     border-radius: 13px;
 }
 QFrame#sidebar {
@@ -252,8 +252,8 @@ QFrame#sidebar {
 }
 QFrame#sidebarCard {
     background: %(SIDEBAR_CARD_BG)s;
-    border: 1px solid %(SIDEBAR_CARD_BORDER)s;
-    border-radius: 8px;
+    border: none;
+    border-radius: 13px;
 }
 QFrame#hero {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -377,6 +377,11 @@ QPushButton#secondary {
     border: 1px solid %(BLUE)s; border-radius: 8px; padding: 8px 13px; min-height: 16px;
 }
 QPushButton#secondary:hover { background: %(SELECTION_BG)s; }
+QPushButton#ghost {
+    background: transparent; color: %(BLUE)s; font-size: 12px; font-weight: bold;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 8px; padding: 0px 13px;
+}
+QPushButton#ghost:hover { background: %(SELECTION_BG)s; border-color: %(BLUE)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
 QCheckBox { color: %(TEXT_DARK)s; font-size: 13px; spacing: 6px; }
 QCheckBox#sidebarCheck { color: %(SIDEBAR_TEXT)s; }
@@ -669,6 +674,13 @@ class App(QMainWindow):
         # 34 = 21 + 13: pinning the height makes every button land on the
         # golden row measure instead of drifting with padding + border.
         btn.setFixedHeight(34)
+        btn.clicked.connect(slot)
+        return btn
+
+    def _ghost_button(self, text, slot):
+        btn = QPushButton(text)
+        btn.setObjectName("ghost")
+        btn.setFixedHeight(30)
         btn.clicked.connect(slot)
         return btn
 
@@ -1056,7 +1068,7 @@ class App(QMainWindow):
         header = QHBoxLayout()
         header.addWidget(self._section_title("接单条件"))
         header.addStretch(1)
-        header.addWidget(self._primary_button("保存设置", self._on_save_settings))
+        header.addWidget(self._ghost_button("保存设置", self._on_save_settings))
         main_layout.addLayout(header)
         card = self._card()
         card_layout = QVBoxLayout(card)
@@ -1109,7 +1121,7 @@ class App(QMainWindow):
         rest_grid.addWidget(rest_title, 0, 0, 1, 4)
         self.run_rest_check = QCheckBox("开启刷新与休息（风控店铺轮换休息）")
         self.run_rest_check.setChecked(True)
-        rest_grid.addWidget(self.run_rest_check, 0, 0, 1, 4)
+        rest_grid.addWidget(self.run_rest_check, 1, 0, 1, 4)
         self.risk_run_min_spin = QSpinBox()
         self.risk_run_min_spin.setRange(1, 600)
         self.risk_run_min_spin.setSuffix(" 分钟")
@@ -1156,9 +1168,9 @@ class App(QMainWindow):
         rest_layout.addWidget(rest_group)
         rest_layout.addStretch(1)
         main_layout.addWidget(card)
-        main_layout.addSpacing(10)
+        main_layout.addSpacing(21)
         main_layout.addWidget(rest_card, 1)
-        main_layout.addSpacing(10)
+        main_layout.addSpacing(21)
 
     def _build_control_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "监听控制")
@@ -1245,7 +1257,7 @@ class App(QMainWindow):
         card_layout.addLayout(clear_row)
         main_layout.addWidget(card, 1)
         if not tabbed:
-            main_layout.addSpacing(10)
+            main_layout.addSpacing(21)
 
     def _build_history_section(self, main_layout, tabbed=False):
         if not tabbed:
