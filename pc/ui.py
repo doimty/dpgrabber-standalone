@@ -1164,8 +1164,11 @@ class App(QMainWindow):
         self.week_count_label.setObjectName("statValue")
         self.renewal_label = QLabel("—")
         self.renewal_label.setObjectName("statValue")
+        # 续费率 = 续单金额/订单金额 (the ratio the platform gates on);
+        # 续单率 = 续单数/订单数. These are different numbers - the caption has
+        # to name the one actually displayed.
         for value, caption in ((self.week_count_label, "本周接单"),
-                               (self.renewal_label, "续单率")):
+                               (self.renewal_label, "续费率")):
             stats.addWidget(value)
             cap = QLabel(caption)
             cap.setObjectName("hint")
@@ -1180,33 +1183,55 @@ class App(QMainWindow):
         return card
 
     def _fetch_avatar(self, clerk: dict):
-        """Download the clerk's avatarUrl once, cached next to the config."""
+        """Download the clerk avatar once and cache a full-resolution PNG.
+
+        The source is up to 1080x1080; shrinking it here and scaling again in
+        the label resampled the same image twice, which is why the circle looked
+        soft at 125% scaling. The PNG keeps the source resolution (capped at
+        512) and the label scales by device pixel ratio.
+        """
         url = str(clerk.get("avatarUrl") or "")
         if not url.startswith(("http://", "https://")):
             self.avatar_signal.emit("")
             return
-        # ~/.dpgrabber is not creatable on this machine (PermissionError), so
-        # the avatar is cached beside the config file, which is writable.
         cache_dir = Path(cfgmod.config_dir()) / "avatars"
+        clerk_id = clerk.get("id") or "me"
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
-            suffix = ".gif" if url.lower().endswith(".gif") else ".img"
-            target = cache_dir / ("avatar_%s%s" % (clerk.get("id") or "me", suffix))
-            png_target = target.with_suffix(".png")
-            if not png_target.exists() or png_target.stat().st_size < 512:
+            source = cache_dir / ("avatar_%s.img" % clerk_id)
+            target = cache_dir / ("avatar_%s_v2.png" % clerk_id)
+
+            if not source.exists() or source.stat().st_size < 1024:
                 with urllib.request.urlopen(url, timeout=15) as response:
                     data = response.read()
                 if len(data) > 512:
-                    target.write_bytes(data)
-                    try:
-                        from PIL import Image
-                        import io
-                        image = Image.open(io.BytesIO(data)).convert("RGBA")
-                        image.thumbnail((88, 88))
-                        image.save(png_target, "PNG")
-                    except Exception:
-                        pass
-            chosen = png_target if png_target.exists() else target
+                    source.write_bytes(data)
+
+            needs_convert = True
+            if target.exists() and target.stat().st_size > 512:
+                try:
+                    from PIL import Image
+                    with Image.open(target) as probe:
+                        needs_convert = max(probe.size) < 128
+                except Exception:
+                    needs_convert = True
+            if needs_convert:
+                try:
+                    from PIL import Image
+                    import io
+                    raw = source.read_bytes() if source.exists() else b""
+                    if raw:
+                        image = Image.open(io.BytesIO(raw)).convert("RGBA")
+                        if max(image.size) > 512:
+                            image.thumbnail((512, 512))
+                        # write beside the target and swap: never fails on a lock
+                        temp = target.with_suffix(".tmp")
+                        image.save(temp, "PNG")
+                        temp.replace(target)
+                except Exception:
+                    pass
+
+            chosen = target if target.exists() else source
             self.avatar_signal.emit(str(chosen))
         except Exception:
             self.avatar_signal.emit("")
@@ -1391,14 +1416,14 @@ class App(QMainWindow):
             week_label.setText(str(orders))
         if rate_label is not None:
             rate_label.setText("—" if fee_rate is None else "%d%%" % round(fee_rate))
-            detail = ["续费率 %.1f%%（续单金额 %.2f / 订单金额 %.2f）" % (
+            detail = ["续费率（金额比）%.1f%% = 续单金额 %.2f / 订单金额 %.2f" % (
                 fee_rate or 0,
                 (stats.get("continuedAmount") or 0) / 100.0,
                 (stats.get("orderAmount") or 0) / 100.0)]
             if order_rate is not None:
-                detail.append("续单率 %.1f%%（%d/%d 单）" % (order_rate, continued, orders))
+                detail.append("续单率（单数比）%.1f%% = %d/%d 单" % (order_rate, continued, orders))
             if user_rate is not None:
-                detail.append("续客率 %.1f%%（%d/%d 人）" % (user_rate, users, total))
+                detail.append("续客率（人数比）%.1f%% = %d/%d 人" % (user_rate, users, total))
             rate_label.setToolTip("\n".join(detail))
             self._renewal_source = detail[0]
             self._update_renewal_chip(fee_rate)
@@ -1410,7 +1435,11 @@ class App(QMainWindow):
         pixmap = QPixmap(path)
         if pixmap.isNull():
             return
-        pixmap = pixmap.scaled(44, 44, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        dpr = label.devicePixelRatioF() or 1.0
+        target = int(round(44 * dpr))
+        pixmap = pixmap.scaled(target, target, Qt.KeepAspectRatioByExpanding,
+                               Qt.SmoothTransformation)
+        pixmap.setDevicePixelRatio(dpr)
         label.setPixmap(pixmap)
         label.setText("")
         circle = QPainterPath()
