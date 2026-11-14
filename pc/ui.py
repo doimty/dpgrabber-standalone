@@ -173,16 +173,16 @@ QDialog { background: %(WINDOW_BG)s; }
 QFrame#card {
     background: %(CARD_BG)s;
     border: 1px solid %(CARD_BORDER)s;
-    border-radius: 14px;
+    border-radius: 16px;
 }
 QFrame#sidebar {
     background: %(SIDEBAR_BG)s;
-    border-radius: 14px;
+    border-radius: 16px;
 }
 QFrame#sidebarCard {
     background: %(SIDEBAR_CARD_BG)s;
     border: 1px solid %(SIDEBAR_CARD_BORDER)s;
-    border-radius: 12px;
+    border-radius: 16px;
 }
 QFrame#hero {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -210,6 +210,7 @@ QLineEdit:focus { border: 1px solid %(BLUE)s; }
 QComboBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
     border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+    combobox-popup: 0;
 }
 QComboBox:focus { border: 1px solid %(BLUE)s; }
 QComboBox::drop-down {
@@ -220,10 +221,12 @@ QComboBox::down-arrow {
     %(CHEVRON_DOWN_CSS)s width: 14px; height: 10px;
 }
 QComboBox QAbstractItemView {
-    background: %(ENTRY_BG)s; border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px;
+    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 12px;
     selection-background-color: %(SELECTION_BG)s; selection-color: %(TEXT_DARK)s;
-    outline: none; padding: 4px;
+    outline: none; padding: 6px;
 }
+QComboBox QAbstractItemView::item { min-height: 26px; padding: 3px 8px; border-radius: 8px; }
 QComboBox QAbstractItemView::item { padding: 7px 10px; border-radius: 6px; }
 QComboBox QAbstractItemView::item:selected { background: %(SELECTION_BG)s; }
 QSpinBox, QDoubleSpinBox {
@@ -233,31 +236,31 @@ QSpinBox, QDoubleSpinBox {
 QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid %(BLUE)s; }
 QSpinBox::up-button, QDoubleSpinBox::up-button {
     subcontrol-origin: border; subcontrol-position: top right;
-    width: 26px; border: none; background: transparent;
+    width: 22px; border: none; background: transparent;
     border-top-right-radius: 10px;
 }
 QSpinBox::down-button, QDoubleSpinBox::down-button {
     subcontrol-origin: border; subcontrol-position: bottom right;
-    width: 26px; border: none; background: transparent;
+    width: 22px; border: none; background: transparent;
     border-bottom-right-radius: 10px;
 }
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
     background: %(SELECTION_BG)s;
 }
-QSpinBox::up-arrow { %(CHEVRON_UP_CSS)s width: 14px; height: 10px; }
-QSpinBox::down-arrow { %(CHEVRON_DOWN_CSS)s width: 14px; height: 10px; }
+QSpinBox::up-arrow { %(CHEVRON_UP_CSS)s width: 12px; height: 8px; }
+QSpinBox::down-arrow { %(CHEVRON_DOWN_CSS)s width: 12px; height: 8px; }
 QPlainTextEdit {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 6px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 6px;
 }
 QPlainTextEdit#logView { border: none; border-radius: 0px; padding: 2px; }
-QPlainTextEdit#listEdit { border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; }
+QPlainTextEdit#listEdit { border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; }
 QPushButton#primary {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(BTN_TOP)s, stop:1 %(BTN_BOTTOM)s);
     color: white; font-size: 13px; font-weight: bold;
-    border: none; border-radius: 16px; padding: 7px 18px;
+    border: none; border-radius: 10px; padding: 8px 16px;
 }
 QPushButton#primary:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -268,7 +271,7 @@ QPushButton#primary:disabled {
 }
 QPushButton#secondary {
     background: %(ENTRY_BG)s; color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(BLUE)s; border-radius: 16px; padding: 7px 18px;
+    border: 1px solid %(BLUE)s; border-radius: 10px; padding: 8px 16px;
 }
 QPushButton#secondary:hover { background: %(SELECTION_BG)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
@@ -276,10 +279,10 @@ QCheckBox { color: %(TEXT_DARK)s; font-size: 13px; spacing: 6px; }
 QCheckBox#sidebarCheck { color: %(SIDEBAR_TEXT)s; }
 QCheckBox::indicator { width: 16px; height: 16px; }
 QCheckBox::indicator:unchecked {
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 4px; background: %(ENTRY_BG)s;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 5px; background: %(ENTRY_BG)s;
 }
 QCheckBox::indicator:checked {
-    border: 1px solid %(BLUE)s; border-radius: 4px;
+    border: 1px solid %(BLUE)s; border-radius: 5px;
     background: %(BLUE)s;
 }
 QListWidget { background: transparent; border: none; outline: none; }
@@ -292,9 +295,19 @@ QScrollBar::handle:vertical {
     background: %(BLUE)s; min-height: 20px; border-radius: 6px;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QMenu {
+    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 12px; padding: 6px;
+}
+QMenu::item { padding: 6px 18px; border-radius: 8px; }
+QMenu::item:selected { background: %(SELECTION_BG)s; }
+QToolTip {
+    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 8px; padding: 5px 8px;
+}
 QGroupBox {
     color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(CARD_BORDER)s; border-radius: 10px;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 12px;
     margin-top: 10px; padding-top: 8px;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
@@ -340,8 +353,8 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
         "ENTRY_BORDER": p["entry_border"],
         "SELECTION_BG": p["selection_bg"],
         "HISTORY_REASON": p["history_reason"],
-        "CHEVRON_DOWN_CSS": ('image: url(%s);' % chevron_down) if chevron_down else "",
-        "CHEVRON_UP_CSS": ('image: url(%s);' % chevron_up) if chevron_up else "",
+        "CHEVRON_DOWN_CSS": ('image: url("%s");' % chevron_down) if chevron_down else "",
+        "CHEVRON_UP_CSS": ('image: url("%s");' % chevron_up) if chevron_up else "",
     }
     return _STYLESHEET_TEMPLATE % subs
 
