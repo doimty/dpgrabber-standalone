@@ -735,5 +735,63 @@ class ShopPermissionProbeTests(unittest.TestCase):
         self.assertEqual(client.session_for_account("p", "w", 92).sid, "92")
 
 
+class LoginSessionShopTests(unittest.TestCase):
+    """Login 的 sid 必须来自响应里的 shopId：写死 50 会让 1391 店的账号一路 401。"""
+
+    def _client(self, payload):
+        from dpapi import ApiClient
+
+        class Fake(ApiClient):
+            def __init__(self):
+                super().__init__("00" * 32, "00" * 16)
+
+            def request(self, method, path, **kw):
+                if "login" in path and "list-shop" not in path:
+                    return {"code": 0, "data": payload}
+                return {"code": 0, "data": {"token": "t"}}
+
+        return Fake()
+
+    def test_sid_comes_from_the_login_response(self):
+        session = self._client({"token": "abc", "shopId": 1391}).login_account("1", "w")
+        self.assertEqual(session.sid, "1391")
+
+    def test_sid_defaults_to_50_when_absent(self):
+        session = self._client({"token": "abc"}).login_account("1", "w")
+        self.assertEqual(session.sid, "50")
+
+    def test_list_shop_uses_the_session_sid(self):
+        from dpapi import Session
+
+        seen = {}
+
+        from dpapi import ApiClient
+
+        class Fake(ApiClient):
+            def __init__(self):
+                super().__init__("00" * 32, "00" * 16)
+
+            def login_account(self, phone, password):
+                return Session(token="t", sid="1391")
+
+            def request(self, method, path, **kw):
+                if "list-shop-account" in path:
+                    seen["sid"] = kw.get("extra_headers", {}).get("sid")
+                    return {"code": 0, "data": []}
+                return {"code": 0}
+
+            def clerk_get(self, session=None):
+                return {"code": 0, "data": {"id": 1}}
+
+            def random_list(self, page_size=20, timeout=15, session=None):
+                return []
+
+        try:
+            Fake().session_for_account("1", "w")
+        except Exception:
+            pass
+        self.assertEqual(seen.get("sid"), "1391")
+
+
 if __name__ == "__main__":
     unittest.main()
