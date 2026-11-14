@@ -211,6 +211,9 @@ QLineEdit:focus { border: 1px solid %(BLUE)s; }
 QComboBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
     border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
+    /* Draw the popup ourselves: the native Windows popup is a separate
+       window that ignores every rule below and renders as a white slab. */
+    combobox-popup: 0;
 }
 QComboBox:focus { border: 1px solid %(BLUE)s; }
 QComboBox::drop-down {
@@ -221,12 +224,17 @@ QComboBox::down-arrow {
     %(CHEVRON_DOWN_CSS)s width: 14px; height: 10px;
 }
 QComboBox QAbstractItemView {
-    background: %(ENTRY_BG)s; border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px;
+    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 10px;
     selection-background-color: %(SELECTION_BG)s; selection-color: %(TEXT_DARK)s;
     outline: none; padding: 4px;
 }
-QComboBox QAbstractItemView::item { padding: 7px 10px; border-radius: 6px; }
-QComboBox QAbstractItemView::item:selected { background: %(SELECTION_BG)s; }
+QComboBox QAbstractItemView::item {
+    color: %(TEXT_DARK)s; min-height: 26px; padding: 2px 8px; border-radius: 6px;
+}
+QComboBox QAbstractItemView::item:selected {
+    background: %(SELECTION_BG)s; color: %(TEXT_DARK)s;
+}
 QSpinBox, QDoubleSpinBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
     border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
@@ -798,6 +806,9 @@ class App(QMainWindow):
     def _build_theme_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "主题")
         self.theme_box = QComboBox()
+        # Six items must show as six rows: without a cap Qt sizes the popup
+        # from the screen, which is how it ended up as a tall white slab.
+        self.theme_box.setMaxVisibleItems(10)
         for theme_id, theme in THEMES.items():
             self.theme_box.addItem(theme["name"], theme_id)
         idx = list(THEMES.keys()).index(self._theme_id)
