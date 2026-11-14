@@ -225,6 +225,12 @@ _CHEVRON_CACHE: dict = {}
 
 _STYLESHEET_TEMPLATE = """
 QMainWindow, QWidget#central { background: %(WINDOW_BG)s; }
+/* The body sits in a scroll area since 24ca8cde; without these rules the
+   viewport keeps the system's light background and the dark themes get a
+   white band behind the section titles. */
+QScrollArea#bodyScroll { background: %(WINDOW_BG)s; border: none; }
+QScrollArea#bodyScroll > QWidget > QWidget { background: %(WINDOW_BG)s; }
+QScrollArea#bodyScroll QScrollBar:vertical { background: transparent; }
 QDialog { background: %(WINDOW_BG)s; }
 QFrame#card {
     background: %(CARD_BG)s;
