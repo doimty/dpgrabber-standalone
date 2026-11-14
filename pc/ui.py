@@ -189,7 +189,8 @@ QFrame#hero {
         stop:0 %(HERO_TOP)s, stop:1 %(HERO_BOTTOM)s);
     border-bottom: 2px solid %(HERO_BORDER)s;
 }
-QLabel#heroTitle { color: white; font-size: 20px; font-weight: bold; }
+QLabel#heroTitle { color: white; font-size: 16px; font-weight: bold; }
+QLabel#subTitle { color: %(HINT)s; font-size: 12px; font-weight: bold; }
 QLabel#heroStat { color: white; font-size: 13px; font-weight: bold; }
 QLabel#heroStatDim { color: %(HERO_STAT_DIM)s; font-size: 13px; }
 QLabel#sectionTitle { color: %(BLUE)s; font-size: 14px; font-weight: bold; }
@@ -257,7 +258,8 @@ QPushButton#primary {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(BTN_TOP)s, stop:1 %(BTN_BOTTOM)s);
     color: white; font-size: 13px; font-weight: bold;
-    border: none; border-radius: 16px; padding: 7px 18px;
+    border: 1px solid transparent; border-radius: 10px; padding: 7px 16px;
+    min-height: 18px;
 }
 QPushButton#primary:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -268,7 +270,8 @@ QPushButton#primary:disabled {
 }
 QPushButton#secondary {
     background: %(ENTRY_BG)s; color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(BLUE)s; border-radius: 16px; padding: 7px 18px;
+    border: 1px solid %(BLUE)s; border-radius: 10px; padding: 7px 16px;
+    min-height: 18px;
 }
 QPushButton#secondary:hover { background: %(SELECTION_BG)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
@@ -279,8 +282,8 @@ QCheckBox::indicator:unchecked {
     border: 1px solid %(ENTRY_BORDER)s; border-radius: 4px; background: %(ENTRY_BG)s;
 }
 QCheckBox::indicator:checked {
-    border: 1px solid %(BLUE)s; border-radius: 4px;
-    background: %(BLUE)s;
+    border: 1px solid %(BLUE)s; border-radius: 5px;
+    background: %(BLUE)s; %(CHECK_CSS)s
 }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { border: none; }
@@ -300,6 +303,35 @@ QGroupBox {
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
 """
 
+def _check_png(color_hex: str, theme_id: str = DEFAULT_THEME) -> str:
+    """White tick for a checked box, drawn like the chevrons are.
+
+    Qt only paints its own tick glyph while the indicator keeps the native
+    look; once the indicator gets a custom fill the mark disappears and the
+    box reads as a plain coloured square.
+    """
+    if not _PIL_AVAILABLE:
+        return ""
+    import tempfile
+    from pathlib import Path as _Path
+
+    key = ("check", theme_id)
+    path = _Path(tempfile.gettempdir()) / ("dpgrabber_check_%s.png" % theme_id)
+    if _CHEVRON_CACHE.get(key) == color_hex and path.exists():
+        return path.as_posix()
+
+    w, h = 12, 12
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    draw.line([(2, 6), (5, 9), (10, 3)], fill=(r, g, b, 255), width=2, joint="curve")
+    img.save(str(path))
+    _CHEVRON_CACHE[key] = color_hex
+    return path.as_posix()
+
+
 
 def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
     """Build the full QSS for a palette.
@@ -313,6 +345,7 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
     p.update(palette or {})
     chevron_down = _chevron_png("down", p["accent"], theme_id)
     chevron_up = _chevron_png("up", p["accent"], theme_id)
+    check_mark = _check_png("#FFFFFF", theme_id)
     subs = {
         "WINDOW_BG": p["window_bg"],
         "CARD_BG": p["card_bg"],
@@ -342,6 +375,7 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
         "HISTORY_REASON": p["history_reason"],
         "CHEVRON_DOWN_CSS": ('image: url("%s");' % chevron_down) if chevron_down else "",
         "CHEVRON_UP_CSS": ('image: url("%s");' % chevron_up) if chevron_up else "",
+        "CHECK_CSS": ('image: url("%s");' % check_mark) if check_mark else "",
     }
     return _STYLESHEET_TEMPLATE % subs
 
@@ -543,6 +577,8 @@ class App(QMainWindow):
         return frame
 
     def _hint(self, text):
+        # Wrapped, width-capped: the previous single-line hints stretched the
+        # grid and left a large empty band on the right of every form row.
         label = QLabel(text)
         label.setObjectName("hint")
         label.setWordWrap(True)
@@ -589,7 +625,7 @@ class App(QMainWindow):
     def _build_hero(self, root):
         hero = QFrame()
         hero.setObjectName("hero")
-        hero.setFixedHeight(56)
+        hero.setFixedHeight(48)
         layout = QHBoxLayout(hero)
         layout.setContentsMargins(20, 0, 20, 0)
         title = QLabel(APP_TITLE)
@@ -673,6 +709,8 @@ class App(QMainWindow):
         grid = QGridLayout(inner)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setColumnStretch(2, 1)
+        grid.setVerticalSpacing(6)
+        grid.setHorizontalSpacing(10)
         self.min_amount_edit = QLineEdit()
         self._form_row(grid, 0, "最小金额（元）", self.min_amount_edit,
                        "只抢不低于这个价的单")
@@ -700,11 +738,15 @@ class App(QMainWindow):
         card_layout.addWidget(inner)
 
         # 刷新与休息 (run/rest): visible toggle + four minute fields.
-        rest_group = QGroupBox("刷新与休息")
+        rest_group = QWidget()
         rest_grid = QGridLayout(rest_group)
+        rest_grid.setContentsMargins(0, 10, 0, 0)
+        rest_title = QLabel("刷新与休息")
+        rest_title.setObjectName("subTitle")
+        rest_grid.addWidget(rest_title, 0, 0, 1, 8)
         self.run_rest_check = QCheckBox("开启刷新与休息（风控店铺轮换休息）")
         self.run_rest_check.setChecked(True)
-        rest_grid.addWidget(self.run_rest_check, 0, 0, 1, 4)
+        rest_grid.addWidget(self.run_rest_check, 1, 0, 1, 8)
         self.risk_run_min_spin = QSpinBox()
         self.risk_run_min_spin.setRange(1, 600)
         self.risk_run_min_spin.setSuffix(" 分钟")
@@ -725,10 +767,10 @@ class App(QMainWindow):
         ]):
             lab = QLabel(lab_text)
             lab.setObjectName("fieldLabel")
-            rest_grid.addWidget(lab, 1, col * 2)
-            rest_grid.addWidget(spin, 1, col * 2 + 1)
+            rest_grid.addWidget(lab, 2, col * 2)
+            rest_grid.addWidget(spin, 2, col * 2 + 1)
         hint = self._hint("每轮刷新持续随机时长后休息随机时长，再继续监听。")
-        rest_grid.addWidget(hint, 2, 0, 1, 8)
+        rest_grid.addWidget(hint, 3, 0, 1, 8)
         card_layout.addWidget(rest_group)
 
         save_row = QHBoxLayout()
@@ -803,6 +845,7 @@ class App(QMainWindow):
         self.log_text.setObjectName("logView")
         self.log_text.setReadOnly(True)
         self.log_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.log_text.setMinimumHeight(150)
         # Cap retained lines: a 0.5 s poll loop otherwise grows the log
         # without bound and every repaint gets slower.
         self.log_text.setMaximumBlockCount(2000)
@@ -811,7 +854,7 @@ class App(QMainWindow):
         clear_row.addWidget(self._secondary_button("清空日志", self._clear_log))
         clear_row.addStretch(1)
         card_layout.addLayout(clear_row)
-        main_layout.addWidget(card, 1)
+        main_layout.addWidget(card, 0)
         main_layout.addSpacing(10)
 
     def _build_history_section(self, main_layout):
@@ -824,9 +867,9 @@ class App(QMainWindow):
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 10, 12, 10)
         self.history_list = QListWidget()
-        self.history_list.setFixedHeight(180)
-        card_layout.addWidget(self.history_list)
-        main_layout.addWidget(card)
+        self.history_list.setMinimumHeight(180)
+        card_layout.addWidget(self.history_list, 1)
+        main_layout.addWidget(card, 1)
         self._refresh_history()
 
     # -- history ------------------------------------------------------------
