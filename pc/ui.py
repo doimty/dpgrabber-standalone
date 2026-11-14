@@ -288,12 +288,12 @@ QLabel#historyLine2 { color: %(HINT)s; font-size: 12px; }
 QLabel#historyReason { color: %(HISTORY_REASON)s; font-size: 12px; }
 QLineEdit {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px; min-height: 16px;
 }
 QLineEdit:focus { border: 1px solid %(BLUE)s; }
 QComboBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px; min-height: 16px;
     /* Draw the popup ourselves: the native Windows popup is a separate
        window that ignores every rule below and renders as a white slab. */
     combobox-popup: 0;
@@ -320,7 +320,7 @@ QComboBox QAbstractItemView::item:selected {
 }
 QSpinBox, QDoubleSpinBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 8px 13px; min-height: 16px;
 }
 QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid %(BLUE)s; }
 QSpinBox::up-button, QDoubleSpinBox::up-button {
@@ -349,7 +349,7 @@ QPushButton#primary {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(BTN_TOP)s, stop:1 %(BTN_BOTTOM)s);
     color: white; font-size: 13px; font-weight: bold;
-    border: none; border-radius: 8px; padding: 8px 13px;
+    border: none; border-radius: 8px; padding: 8px 13px; min-height: 18px;
 }
 QPushButton#primary:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -360,7 +360,7 @@ QPushButton#primary:disabled {
 }
 QPushButton#secondary {
     background: %(ENTRY_BG)s; color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(BLUE)s; border-radius: 8px; padding: 8px 13px;
+    border: 1px solid %(BLUE)s; border-radius: 8px; padding: 8px 13px; min-height: 16px;
 }
 QPushButton#secondary:hover { background: %(SELECTION_BG)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
@@ -647,12 +647,18 @@ class App(QMainWindow):
     def _primary_button(self, text, slot):
         btn = QPushButton(text)
         btn.setObjectName("primary")
+        # 34 = 21 + 13: pinning the height makes every button land on the
+        # golden row measure instead of drifting with padding + border.
+        btn.setFixedHeight(34)
         btn.clicked.connect(slot)
         return btn
 
     def _secondary_button(self, text, slot):
         btn = QPushButton(text)
         btn.setObjectName("secondary")
+        # 34 = 21 + 13: pinning the height makes every button land on the
+        # golden row measure instead of drifting with padding + border.
+        btn.setFixedHeight(34)
         btn.clicked.connect(slot)
         return btn
 
@@ -674,6 +680,31 @@ class App(QMainWindow):
         # drags its row tall, so the form stops looking like a table.
         label.setMaximumWidth(300)
         return label
+
+    GOLDEN = 1.6180339887
+
+    def _apply_golden_split(self):
+        """form : right = 1 : phi, recomputed whenever the window resizes.
+
+        Available = window - body margins (14+14) - sidebar gap (12)
+                            - sidebar - column gap (12)
+        The form takes available/(1+phi); the tabs column takes the rest.
+        """
+        wrap = getattr(self, "_form_wrap", None)
+        sidebar = getattr(self, "_sidebar", None)
+        if wrap is None or sidebar is None:
+            return
+        available = self.width() - 28 - 12 - sidebar.width() - 12
+        if available <= 0:
+            return
+        form_width = int(round(available / (1.0 + self.GOLDEN)))
+        form_width = max(300, min(form_width, available - 260))
+        if wrap.width() != form_width:
+            wrap.setFixedWidth(form_width)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_golden_split()
 
     def _build_widgets(self):
         central = QWidget()
@@ -700,6 +731,7 @@ class App(QMainWindow):
         root.addWidget(scroll, 1)
 
         sidebar = QFrame()
+        self._sidebar = sidebar
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(279)  # 1180 / 279 = 4.229 = phi^3 within 0.17%
         sidebar_layout = QVBoxLayout(sidebar)
@@ -736,7 +768,7 @@ class App(QMainWindow):
         # form's own minimum width (label + field + hint) won the extra space
         # and the split drifted to 2.08 : 1.
         form_wrap = QWidget()
-        form_wrap.setMaximumWidth(520)
+        self._form_wrap = form_wrap
         form_column.setContentsMargins(0, 0, 0, 0)
         form_wrap.setLayout(form_column)
         main_layout.addWidget(form_wrap)
@@ -771,6 +803,7 @@ class App(QMainWindow):
         self.theme_box = QComboBox()
         self.theme_box.setObjectName("heroCombo")
         self.theme_box.setFixedWidth(132)
+        self.theme_box.setFixedHeight(34)
         for theme_id, theme in THEMES.items():
             self.theme_box.addItem(theme["name"], theme_id)
         self.theme_box.setCurrentIndex(list(THEMES.keys()).index(self._theme_id))
@@ -779,6 +812,7 @@ class App(QMainWindow):
         layout.addSpacing(8)
         advanced = QPushButton("高级设置")
         advanced.setObjectName("heroButton")
+        advanced.setFixedHeight(34)
         advanced.clicked.connect(self._open_advanced)
         layout.addWidget(advanced)
         root.addWidget(hero)
@@ -806,6 +840,7 @@ class App(QMainWindow):
         phone_label.setObjectName("sidebarLabel")
         layout.addWidget(phone_label)
         self.phone_edit = QLineEdit()
+        self.phone_edit.setFixedHeight(34)
         self.phone_edit.setPlaceholderText("11 位手机号")
         layout.addWidget(self.phone_edit)
         hint = QLabel("登录用的手机号，11 位数字")
@@ -816,6 +851,7 @@ class App(QMainWindow):
         pw_label.setObjectName("sidebarLabel")
         layout.addWidget(pw_label)
         self.password_edit = QLineEdit()
+        self.password_edit.setFixedHeight(34)
         self.password_edit.setEchoMode(QLineEdit.Password)
         layout.addWidget(self.password_edit)
         self.show_pw_check = QCheckBox("显示密码")
@@ -833,12 +869,18 @@ class App(QMainWindow):
         layout.addWidget(self.login_state_label)
 
     def _form_row(self, grid, row, label, widget, hint):
+        """Two columns only: the hint lives in the widget's tooltip.
+
+        The third (hint) column forced the form to ~500px, which is what kept
+        the form/log split at 1.53 instead of 1:phi. A tooltip keeps the same
+        information without spending 300px of every row.
+        """
         lab = QLabel(label)
         lab.setObjectName("fieldLabel")
         lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        widget.setToolTip(hint)
         grid.addWidget(lab, row, 0)
         grid.addWidget(widget, row, 1)
-        grid.addWidget(self._hint(hint), row, 2)
 
     def _build_conditions_section(self, main_layout):
         header = QHBoxLayout()
@@ -886,6 +928,8 @@ class App(QMainWindow):
                        self.confirm_wait_max_spin):
             widget.setFixedWidth(150)
         card_layout.addWidget(inner, 0, Qt.AlignLeft)
+        tip = self._hint("悬停任意输入框可查看该项说明")
+        card_layout.addWidget(tip)
 
         # 刷新与休息 (run/rest): visible toggle + four minute fields.
         rest_group = QWidget()
@@ -908,6 +952,9 @@ class App(QMainWindow):
         self.risk_rest_max_spin = QSpinBox()
         self.risk_rest_max_spin.setRange(0, 600)
         self.risk_rest_max_spin.setSuffix(" 分钟")
+        for spin in (self.risk_run_min_spin, self.risk_run_max_spin,
+                     self.risk_rest_min_spin, self.risk_rest_max_spin):
+            spin.setFixedWidth(130)
         for index, (lab_text, spin) in enumerate([
             ("刷新最短", self.risk_run_min_spin),
             ("刷新最长", self.risk_run_max_spin),
@@ -916,13 +963,23 @@ class App(QMainWindow):
         ]):
             lab = QLabel(lab_text)
             lab.setObjectName("fieldLabel")
-            row = 2 + index // 2
-            col = (index % 2) * 2
-            rest_grid.addWidget(lab, row, col)
-            rest_grid.addWidget(spin, row, col + 1)
+            # one pair per row: the column is only ~324px wide, so two pairs
+            # side by side overlap
+            row = 2 + index
+            rest_grid.addWidget(lab, row, 0)
+            rest_grid.addWidget(spin, row, 1)
         rest_grid.setVerticalSpacing(4)
         # 刷新与休息 gets its own card at the bottom of the column: inside the
         # conditions card it left ~200px of bare background under the form.
+        # One row measure for every control in the form: QSS min-height cannot
+        # win against each widget's own padding, so pin it here.
+        for widget in (self.min_amount_edit, self.max_amount_edit,
+                       self.poll_interval_edit, self.memo_mode_box,
+                       self.confirm_wait_min_spin, self.confirm_wait_max_spin,
+                       self.risk_run_min_spin, self.risk_run_max_spin,
+                       self.risk_rest_min_spin, self.risk_rest_max_spin):
+            widget.setFixedHeight(34)
+
         rest_card = self._card()
         rest_layout = QVBoxLayout(rest_card)
         rest_layout.setContentsMargins(13, 13, 13, 13)
