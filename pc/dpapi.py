@@ -337,7 +337,11 @@ class ApiClient:
         token = data.get("token") if isinstance(data.get("token"), str) else ""
         if not token:
             raise ApiError("auth", "login response has no token")
-        return Session(token=token, sid="50")
+        # The token is bound to the shop the platform reports here. Hardcoding
+        # "50" made every later call answer HTTP 401 "login state invalid" for
+        # accounts whose default shop is not 50 (e.g. 1391).
+        sid = str(data.get("shopId") or "50")
+        return Session(token=token, sid=sid)
 
     def session_for_account(
         self, phone: str, password: str, preferred_shop_id: int = 0,
@@ -358,7 +362,7 @@ class ApiClient:
         base = self.login_account(phone, password)
         resp = self.request(
             "GET", "/s/duopei-account/list-shop-account", session=base,
-            extra_headers={"sid": "50"}, timeout=15,
+            extra_headers={"sid": base.sid}, timeout=15,
         )
         if resp.get("code") != 0:
             raise ApiError("api", "shop list rejected")
@@ -375,7 +379,7 @@ class ApiClient:
                 switched = self.request(
                     "POST", "/s/duopei-account/switch-account", session=base,
                     body={"accountId": account_id}, body_type="form",
-                    extra_headers={"sid": "50"}, timeout=15,
+                    extra_headers={"sid": base.sid}, timeout=15,
                 )
             except ApiError as exc:
                 if exc.kind in ("auth", "ip", "cancelled"):
