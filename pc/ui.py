@@ -1158,21 +1158,26 @@ class App(QMainWindow):
         head.addLayout(names, 1)
         account.addLayout(head)
 
+        # 续费率（金额比）决定能不能接随机单；续单率（单数比）影响发工资。
+        # 两个都要，所以并排分开显示，各自带标题。
         stats = QHBoxLayout()
-        stats.setSpacing(8)
+        stats.setSpacing(13)
         self.week_count_label = QLabel("0")
         self.week_count_label.setObjectName("statValue")
         self.renewal_label = QLabel("—")
         self.renewal_label.setObjectName("statValue")
-        # 续费率 = 续单金额/订单金额 (the ratio the platform gates on);
-        # 续单率 = 续单数/订单数. These are different numbers - the caption has
-        # to name the one actually displayed.
+        self.order_rate_label = QLabel("—")
+        self.order_rate_label.setObjectName("statValue")
         for value, caption in ((self.week_count_label, "本周接单"),
-                               (self.renewal_label, "续费率")):
-            stats.addWidget(value)
+                               (self.renewal_label, "续费率"),
+                               (self.order_rate_label, "续单率")):
+            cell = QVBoxLayout()
+            cell.setSpacing(0)
+            cell.addWidget(value)
             cap = QLabel(caption)
             cap.setObjectName("hint")
-            stats.addWidget(cap)
+            cell.addWidget(cap)
+            stats.addLayout(cell)
         stats.addStretch(1)
         account.addLayout(stats)
 
@@ -1388,6 +1393,7 @@ class App(QMainWindow):
         """
         week_label = getattr(self, "week_count_label", None)
         rate_label = getattr(self, "renewal_label", None)
+        order_rate_label = getattr(self, "order_rate_label", None)
         if not isinstance(stats, dict) or not stats:
             for label in (week_label, rate_label):
                 if label is not None:
@@ -1426,6 +1432,12 @@ class App(QMainWindow):
                 detail.append("续客率（人数比）%.1f%% = %d/%d 人" % (user_rate, users, total))
             rate_label.setToolTip("\n".join(detail))
             self._renewal_source = detail[0]
+            if order_rate_label is not None:
+                order_rate_label.setText(
+                    "—" if order_rate is None else "%d%%" % round(order_rate))
+                order_rate_label.setToolTip("续单率（单数比）%s = %d/%d 单" % (
+                    "—" if order_rate is None else "%.1f%%" % order_rate,
+                    continued, orders))
             self._update_renewal_chip(fee_rate)
 
     def _on_avatar(self, path: str):
