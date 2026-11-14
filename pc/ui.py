@@ -294,6 +294,14 @@ QPushButton#winMin, QPushButton#winMax, QPushButton#winClose {
 }
 QPushButton#winMin:hover, QPushButton#winMax:hover { background: rgba(255,255,255,0.22); }
 QPushButton#winClose:hover { background: #D9453D; }
+QLabel#heroChip {
+    background: rgba(255,255,255,0.22); color: white;
+    border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: bold;
+}
+QLabel#heroChip[ok="false"] { background: rgba(217,69,61,0.85); }
+QLabel#heroChip[ok="true"] { background: rgba(46,160,67,0.85); }
+QScrollArea#sidebarScroll { background: transparent; border: none; }
+QScrollArea#sidebarScroll > QWidget > QWidget { background: transparent; }
 QLabel#avatarBadge {
     background: %(BLUE)s; color: white; font-size: 21px; font-weight: bold;
     border-radius: 22px;
@@ -795,6 +803,12 @@ class App(QMainWindow):
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
+        sidebar_host = QScrollArea()
+        sidebar_host.setObjectName("sidebarScroll")
+        sidebar_host.setWidgetResizable(True)
+        sidebar_host.setFrameShape(QFrame.NoFrame)
+        sidebar_host.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar_host.setFixedWidth(279)
         sidebar = QFrame()
         self._sidebar = sidebar
         sidebar.setObjectName("sidebar")
@@ -807,7 +821,9 @@ class App(QMainWindow):
         self._build_item_switch_section(sidebar_layout)
         self._build_stats_section(sidebar_layout)
         sidebar_layout.addStretch(1)
-        body_layout.addWidget(sidebar)
+        sidebar_layout.addStretch(1)
+        sidebar_host.setWidget(sidebar)
+        body_layout.addWidget(sidebar_host)
 
         main_area = QWidget()
         main_layout = QHBoxLayout(main_area)
@@ -863,6 +879,10 @@ class App(QMainWindow):
         self.status_label = QLabel("未登录")
         self.status_label.setObjectName("heroStatDim")
         layout.addWidget(self.status_label)
+        self.renewal_chip = QLabel("")
+        self.renewal_chip.setObjectName("heroChip")
+        self.renewal_chip.setVisible(False)
+        layout.addWidget(self.renewal_chip)
 
         # Toolbar controls live in the hero: the sidebar is for the account and
         # the run switch, not for periodic settings.
@@ -1158,6 +1178,23 @@ class App(QMainWindow):
             stats = {}
         self.week_orders_signal.emit(stats or None)
 
+    RENEWAL_TARGET = 30.0
+
+    def _update_renewal_chip(self, fee_rate):
+        chip = getattr(self, "renewal_chip", None)
+        if chip is None:
+            return
+        if fee_rate is None:
+            chip.setVisible(False)
+            return
+        ok = fee_rate >= self.RENEWAL_TARGET
+        chip.setText("续费率 %d%% / %d%%" % (round(fee_rate), int(self.RENEWAL_TARGET)))
+        chip.setProperty("ok", ok)
+        chip.setStyleSheet("")           # force a re-evaluation of the property selector
+        chip.style().unpolish(chip)
+        chip.style().polish(chip)
+        chip.setVisible(True)
+
     def _on_week_orders(self, stats):
         """Three platform ratios, each with its own formula.
 
@@ -1206,6 +1243,7 @@ class App(QMainWindow):
                 detail.append("续客率 %.1f%%（%d/%d 人）" % (user_rate, users, total))
             rate_label.setToolTip("\n".join(detail))
             self._renewal_source = detail[0]
+            self._update_renewal_chip(fee_rate)
 
     def _on_avatar(self, path: str):
         label = getattr(self, "avatar_label", None)
