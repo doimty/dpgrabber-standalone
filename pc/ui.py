@@ -232,6 +232,12 @@ QScrollArea#bodyScroll { background: %(WINDOW_BG)s; border: none; }
 QScrollArea#bodyScroll > QWidget > QWidget { background: %(WINDOW_BG)s; }
 QScrollArea#bodyScroll QScrollBar:vertical { background: transparent; }
 QDialog { background: %(WINDOW_BG)s; }
+/* The dialogs scroll since 43762ee5; the viewport otherwise keeps the
+   system palette, which paints label text white on a light dialog. */
+QDialog QScrollArea > QWidget > QWidget { background: %(WINDOW_BG)s; }
+QDialog QLabel { color: %(TEXT_DARK)s; background: transparent; }
+QDialog QCheckBox { color: %(TEXT_DARK)s; }
+QDialog QGroupBox { color: %(TEXT_DARK)s; }
 QFrame#card {
     background: %(CARD_BG)s;
     border: 1px solid %(CARD_BORDER)s;
@@ -937,6 +943,8 @@ class App(QMainWindow):
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 10, 12, 10)
         self.history_list = QListWidget()
+        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self._on_history_context_menu)
         self.history_list.setFixedHeight(180)
         card_layout.addWidget(self.history_list)
         main_layout.addWidget(card)
@@ -1017,9 +1025,60 @@ class App(QMainWindow):
         )
         line1.setTextFormat(Qt.RichText)
         item = QListWidgetItem()
+        item.setData(Qt.UserRole, dict(entry))
         item.setSizeHint(widget.sizeHint())
         self.history_list.addItem(item)
         self.history_list.setItemWidget(item, widget)
+
+    def _on_history_context_menu(self, pos):
+        """Right-click a row: blacklist its WeChat id or add its memo keyword."""
+        item = self.history_list.itemAt(pos)
+        if item is None:
+            return
+        entry = item.data(Qt.UserRole) or {}
+        wechat = str(entry.get("userWechatId") or "").strip()
+        memo = str(entry.get("userMemo") or "").strip()
+        menu = QMenu(self)
+        black_action = None
+        keyword_action = None
+        if wechat:
+            black_action = menu.addAction("拉黑微信号 %s" % wechat)
+        else:
+            menu.addAction("该订单没有微信号").setEnabled(False)
+        if memo:
+            short = memo if len(memo) <= 18 else memo[:18] + "…"
+            keyword_action = menu.addAction("把备注加入关键词「%s」" % short)
+        else:
+            menu.addAction("该订单没有备注").setEnabled(False)
+        menu.addSeparator()
+        copy_action = menu.addAction("复制订单号")
+        chosen = menu.exec(self.history_list.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is black_action:
+            self._append_to_config_list("blacklist", wechat, "已拉黑微信号")
+        elif chosen is keyword_action:
+            self._append_to_config_list("memo_keywords", memo, "已加入备注关键词")
+        elif chosen is copy_action:
+            from PySide6.QtGui import QGuiApplication
+            QGuiApplication.clipboard().setText(str(entry.get("no") or ""))
+            self.log("info", "订单号已复制到剪贴板")
+
+    def _append_to_config_list(self, key: str, value: str, message: str):
+        """Append to blacklist / memo_keywords, persist, and say so."""
+        value = (value or "").strip()
+        if not value:
+            return
+        values = [str(v) for v in (self.cfg.get(key) or [])]
+        if value not in values:
+            values.append(value)
+            self.cfg[key] = values
+            try:
+                cfgmod.save(self.cfg)
+            except Exception as exc:
+                self.log("warning", "保存配置失败：%s" % exc)
+                return
+        self.log("success", "%s：%s" % (message, value))
 
     def _on_clear_history(self):
         history_mod.clear_history()
@@ -1359,8 +1418,16 @@ class AdvancedDialog(QDialog):
         self.cfg = dict(cfg)
         self._on_saved = on_saved
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
         title = QLabel("高级设置")
         title.setObjectName("sectionTitle")
         title.setStyleSheet("font-size: 15px;")
@@ -1414,7 +1481,10 @@ class AdvancedDialog(QDialog):
 
         lists_row = QHBoxLayout()
         kw_box = QVBoxLayout()
-        kw_box.addWidget(QLabel("备注关键词（一行一个）"))
+        kw_title = QLabel("备注关键词（一行一个）")
+        kw_title.setObjectName("fieldLabel")
+        kw_box.addSpacing(8)
+        kw_box.addWidget(kw_title)
         kw_hint = QLabel("命中任意一个就不抢")
         kw_hint.setObjectName("hint")
         kw_box.addWidget(kw_hint)
@@ -1426,7 +1496,10 @@ class AdvancedDialog(QDialog):
         kw_box.addWidget(self.keyword_text)
         lists_row.addLayout(kw_box, 1)
         bl_box = QVBoxLayout()
-        bl_box.addWidget(QLabel("黑名单微信号（一行一个）"))
+        bl_title = QLabel("黑名单微信号（一行一个）")
+        bl_title.setObjectName("fieldLabel")
+        bl_box.addSpacing(8)
+        bl_box.addWidget(bl_title)
         bl_hint = QLabel("每行一个微信号，命中就不抢")
         bl_hint.setObjectName("hint")
         bl_box.addWidget(bl_hint)
