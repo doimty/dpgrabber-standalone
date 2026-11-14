@@ -57,14 +57,14 @@ def main(argv=None) -> int:
 
     from PySide6.QtCore import QTimer
     from themes import DEFAULT_THEME, THEMES
-    from ui import App, build_stylesheet
+    from ui import App, apply_theme
 
     qapp = _ensure_qapp()
     # Apply the saved theme before showing anything.
     theme_id = str(cfg.get("theme") or DEFAULT_THEME)
     if theme_id not in THEMES:
         theme_id = DEFAULT_THEME
-    qapp.setStyleSheet(build_stylesheet(THEMES[theme_id]["palette"], theme_id))
+    apply_theme(qapp, THEMES[theme_id]["palette"], theme_id)
 
     if args.smoke_test:
         app = App(cfg)

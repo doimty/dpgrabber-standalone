@@ -81,6 +81,50 @@ class StylesheetTests(unittest.TestCase):
         self.assertIn(THEMES["day"]["palette"]["accent"], css)
         self.assertNotIn("%(", css)
 
+    def test_input_fields_are_visible_against_their_card(self):
+        # Regression guard (2026-11-14): the night theme's input fields
+        # were nearly invisible — entry fill almost the same colour as
+        # the card, border too faint. Every theme must define its fields
+        # either by a fill that stands out from the card or by a border
+        # that stands out from the fill (max per-channel gap >= 20).
+        def _rgb(hexcol):
+            h = hexcol.lstrip("#")
+            return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))
+
+        for theme_id, theme in THEMES.items():
+            p = theme["palette"]
+            fill_gap = max(
+                abs(a - b) for a, b in zip(_rgb(p["entry_bg"]), _rgb(p["card_bg"]))
+            )
+            border_gap = max(
+                abs(a - b)
+                for a, b in zip(_rgb(p["entry_border"]), _rgb(p["entry_bg"]))
+            )
+            self.assertGreaterEqual(
+                max(fill_gap, border_gap),
+                20,
+                f"{theme_id}: fields blend into the card "
+                f"(fill gap {fill_gap}, border gap {border_gap})",
+            )
+
+    def test_spin_buttons_have_no_hover_fill(self):
+        # Regression guard (2026-11-14): a filled hover rect on the spin
+        # up/down buttons rendered as a square block stuck on the rounded
+        # field. The buttons must stay transparent in every state.
+        for theme_id, theme in THEMES.items():
+            css = build_stylesheet(theme["palette"], theme_id)
+            self.assertNotIn("up-button:hover", css, theme_id)
+            self.assertNotIn("down-button:hover", css, theme_id)
+
+    def test_log_view_is_rounded(self):
+        # Regression guard (2026-11-14): the log view had border-radius 0,
+        # a square box inside a rounded card. It must match the other
+        # text areas (8px).
+        css = build_stylesheet(THEMES["day"]["palette"], "day")
+        self.assertIn("QPlainTextEdit#logView", css)
+        self.assertNotIn("border-radius: 0px", css)
+        self.assertIn("border-radius: 8px", css)
+
 
 class ThemeConfigTests(unittest.TestCase):
     def test_theme_defaults_to_day(self):

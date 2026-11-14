@@ -49,7 +49,7 @@ import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -173,16 +173,16 @@ QDialog { background: %(WINDOW_BG)s; }
 QFrame#card {
     background: %(CARD_BG)s;
     border: 1px solid %(CARD_BORDER)s;
-    border-radius: 16px;
+    border-radius: 14px;
 }
 QFrame#sidebar {
     background: %(SIDEBAR_BG)s;
-    border-radius: 16px;
+    border-radius: 14px;
 }
 QFrame#sidebarCard {
     background: %(SIDEBAR_CARD_BG)s;
     border: 1px solid %(SIDEBAR_CARD_BORDER)s;
-    border-radius: 16px;
+    border-radius: 12px;
 }
 QFrame#hero {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -210,7 +210,6 @@ QLineEdit:focus { border: 1px solid %(BLUE)s; }
 QComboBox {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
     border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 7px 10px;
-    combobox-popup: 0;
 }
 QComboBox:focus { border: 1px solid %(BLUE)s; }
 QComboBox::drop-down {
@@ -221,12 +220,10 @@ QComboBox::down-arrow {
     %(CHEVRON_DOWN_CSS)s width: 14px; height: 10px;
 }
 QComboBox QAbstractItemView {
-    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
-    border: 1px solid %(CARD_BORDER)s; border-radius: 12px;
+    background: %(ENTRY_BG)s; border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px;
     selection-background-color: %(SELECTION_BG)s; selection-color: %(TEXT_DARK)s;
-    outline: none; padding: 6px;
+    outline: none; padding: 4px;
 }
-QComboBox QAbstractItemView::item { min-height: 26px; padding: 3px 8px; border-radius: 8px; }
 QComboBox QAbstractItemView::item { padding: 7px 10px; border-radius: 6px; }
 QComboBox QAbstractItemView::item:selected { background: %(SELECTION_BG)s; }
 QSpinBox, QDoubleSpinBox {
@@ -236,31 +233,31 @@ QSpinBox, QDoubleSpinBox {
 QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid %(BLUE)s; }
 QSpinBox::up-button, QDoubleSpinBox::up-button {
     subcontrol-origin: border; subcontrol-position: top right;
-    width: 22px; border: none; background: transparent;
+    width: 26px; border: none; background: transparent;
     border-top-right-radius: 10px;
 }
 QSpinBox::down-button, QDoubleSpinBox::down-button {
     subcontrol-origin: border; subcontrol-position: bottom right;
-    width: 22px; border: none; background: transparent;
+    width: 26px; border: none; background: transparent;
     border-bottom-right-radius: 10px;
 }
-QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-    background: %(SELECTION_BG)s;
-}
-QSpinBox::up-arrow { %(CHEVRON_UP_CSS)s width: 12px; height: 8px; }
-QSpinBox::down-arrow { %(CHEVRON_DOWN_CSS)s width: 12px; height: 8px; }
+/* No hover fill on the spin buttons: a filled hover rect has hard
+   square edges (only one corner is rounded) and reads as a square
+   block stuck on the rounded field. The chevron arrows are the
+   affordance; the buttons stay transparent in every state. */
+QSpinBox::up-arrow { %(CHEVRON_UP_CSS)s width: 14px; height: 10px; }
+QSpinBox::down-arrow { %(CHEVRON_DOWN_CSS)s width: 14px; height: 10px; }
 QPlainTextEdit {
     background: %(ENTRY_BG)s; color: %(TEXT_DARK)s; font-size: 13px;
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; padding: 6px;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; padding: 6px;
 }
-QPlainTextEdit#logView { border: none; border-radius: 0px; padding: 2px; }
-QPlainTextEdit#listEdit { border: 1px solid %(ENTRY_BORDER)s; border-radius: 10px; }
+QPlainTextEdit#logView { border: none; border-radius: 8px; padding: 2px; }
+QPlainTextEdit#listEdit { border: 1px solid %(ENTRY_BORDER)s; border-radius: 8px; }
 QPushButton#primary {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 %(BTN_TOP)s, stop:1 %(BTN_BOTTOM)s);
     color: white; font-size: 13px; font-weight: bold;
-    border: none; border-radius: 10px; padding: 8px 16px;
+    border: none; border-radius: 16px; padding: 7px 18px;
 }
 QPushButton#primary:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -271,7 +268,7 @@ QPushButton#primary:disabled {
 }
 QPushButton#secondary {
     background: %(ENTRY_BG)s; color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(BLUE)s; border-radius: 10px; padding: 8px 16px;
+    border: 1px solid %(BLUE)s; border-radius: 16px; padding: 7px 18px;
 }
 QPushButton#secondary:hover { background: %(SELECTION_BG)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
@@ -279,10 +276,10 @@ QCheckBox { color: %(TEXT_DARK)s; font-size: 13px; spacing: 6px; }
 QCheckBox#sidebarCheck { color: %(SIDEBAR_TEXT)s; }
 QCheckBox::indicator { width: 16px; height: 16px; }
 QCheckBox::indicator:unchecked {
-    border: 1px solid %(ENTRY_BORDER)s; border-radius: 5px; background: %(ENTRY_BG)s;
+    border: 1px solid %(ENTRY_BORDER)s; border-radius: 4px; background: %(ENTRY_BG)s;
 }
 QCheckBox::indicator:checked {
-    border: 1px solid %(BLUE)s; border-radius: 5px;
+    border: 1px solid %(BLUE)s; border-radius: 4px;
     background: %(BLUE)s;
 }
 QListWidget { background: transparent; border: none; outline: none; }
@@ -295,19 +292,9 @@ QScrollBar::handle:vertical {
     background: %(BLUE)s; min-height: 20px; border-radius: 6px;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-QMenu {
-    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
-    border: 1px solid %(CARD_BORDER)s; border-radius: 12px; padding: 6px;
-}
-QMenu::item { padding: 6px 18px; border-radius: 8px; }
-QMenu::item:selected { background: %(SELECTION_BG)s; }
-QToolTip {
-    background-color: %(CARD_BG)s; color: %(TEXT_DARK)s;
-    border: 1px solid %(CARD_BORDER)s; border-radius: 8px; padding: 5px 8px;
-}
 QGroupBox {
     color: %(BLUE)s; font-size: 13px; font-weight: bold;
-    border: 1px solid %(CARD_BORDER)s; border-radius: 12px;
+    border: 1px solid %(CARD_BORDER)s; border-radius: 10px;
     margin-top: 10px; padding-top: 8px;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
@@ -353,14 +340,29 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME) -> str:
         "ENTRY_BORDER": p["entry_border"],
         "SELECTION_BG": p["selection_bg"],
         "HISTORY_REASON": p["history_reason"],
-        "CHEVRON_DOWN_CSS": ('image: url("%s");' % chevron_down) if chevron_down else "",
-        "CHEVRON_UP_CSS": ('image: url("%s");' % chevron_up) if chevron_up else "",
+        "CHEVRON_DOWN_CSS": ('image: url(%s);' % chevron_down) if chevron_down else "",
+        "CHEVRON_UP_CSS": ('image: url(%s);' % chevron_up) if chevron_up else "",
     }
     return _STYLESHEET_TEMPLATE % subs
 
 
 # Default stylesheet (day theme) so existing imports keep working.
 STYLESHEET = build_stylesheet(_DAY, DEFAULT_THEME)
+
+
+def apply_theme(qapp, palette: dict, theme_id: str = DEFAULT_THEME) -> None:
+    """Apply a theme to the application: QSS plus placeholder colour.
+
+    QSS cannot set placeholder-text colour, so the palette's hint colour
+    is applied to QPalette.PlaceholderText here. Without it the "..."
+    placeholders are nearly invisible in the night theme. Only the
+    placeholder role is touched; every other palette colour is left
+    alone.
+    """
+    qapp.setStyleSheet(build_stylesheet(palette, theme_id))
+    pal = qapp.palette()
+    pal.setColor(QPalette.PlaceholderText, QColor(palette.get("hint", "#5B7A99")))
+    qapp.setPalette(pal)
 
 
 def _apply_mica(window: QMainWindow) -> bool:
@@ -437,25 +439,6 @@ def _outcome_label(outcome: str, palette: dict | None = None):
     color = p.get("outcome_" + key, p.get("outcome_unknown", "#666666"))
     return label, color
 
-
-def _prevent_sleep(enable: bool) -> None:
-    """Hold off Windows idle sleep while the listener is running.
-
-    Losing the poll loop to system sleep means not grabbing at all, so we
-    take ES_CONTINUOUS + ES_SYSTEM_REQUIRED for the duration of a listen
-    run and release it on stop/close. No-op off Windows; best effort.
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-
-        ES_CONTINUOUS = 0x80000000
-        ES_SYSTEM_REQUIRED = 0x00000001
-        flags = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if enable else 0)
-        ctypes.windll.kernel32.SetThreadExecutionState(flags)
-    except Exception:
-        pass
 
 class App(QMainWindow):
     # Signals: worker threads emit these; slots run on the UI thread.
@@ -772,7 +755,7 @@ class App(QMainWindow):
         self._palette = palette_for(theme_id)
         app = QApplication.instance()
         if app is not None:
-            app.setStyleSheet(build_stylesheet(self._palette, theme_id))
+            apply_theme(app, self._palette, theme_id)
         self.cfg["theme"] = theme_id
         try:
             cfgmod.save(self.cfg)
@@ -800,9 +783,6 @@ class App(QMainWindow):
         self.log_text.setObjectName("logView")
         self.log_text.setReadOnly(True)
         self.log_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        # Cap retained lines: a 0.5 s poll loop otherwise grows the log
-        # without bound and every repaint gets slower.
-        self.log_text.setMaximumBlockCount(2000)
         card_layout.addWidget(self.log_text, 1)
         clear_row = QHBoxLayout()
         clear_row.addWidget(self._secondary_button("清空日志", self._clear_log))
@@ -1175,7 +1155,6 @@ class App(QMainWindow):
         self.engine = self._make_engine()
         if self.engine.start(phone, password):
             self._listening = True
-            _prevent_sleep(True)
             self.listen_state_signal.emit("正在监听")
             self._set_listen_buttons(True)
 
@@ -1189,7 +1168,6 @@ class App(QMainWindow):
             self.engine.stop()
         self.listen_state_signal.emit("已停止监听")
         self._set_listen_buttons(False)
-        _prevent_sleep(False)
 
     def _refresh_buttons(self):
         # Engine stopped on its own (e.g. grab succeeded).
@@ -1197,13 +1175,11 @@ class App(QMainWindow):
             self._listening = False
             self.listen_state_signal.emit("监听已停止")
             self._set_listen_buttons(False)
-            _prevent_sleep(False)
 
     def closeEvent(self, event):
         if self.engine is not None:
             self.engine.stop()
         self.voice.stop()
-        _prevent_sleep(False)
         event.accept()
 
 

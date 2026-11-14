@@ -82,8 +82,7 @@ python dpgrabber_pc.py
 | `dpapi.py` | API 客户端：会话、登录、加解密、请求封装 |
 | `engine.py` | 监听引擎：轮询、过滤、确认状态机、提交 |
 | `config.py` | 配置加载、校验、保存（0600） |
-| `ui.py` | PySide6（Qt Widgets）界面，当前使用的界面 |
-| `ui_tk.py` | 旧版 CustomTkinter 界面，仅留作对照，程序不再加载 |
+| `ui.py` | tkinter 界面 |
 | `voice.py` | 可选语音播报（pyttsx3，不可用时静默） |
 | `tests/test_smoke.py` | 离线单测（打桩 transport，不发真实请求） |
 | `build-pc.md` | Windows 打包说明（PyInstaller） |
