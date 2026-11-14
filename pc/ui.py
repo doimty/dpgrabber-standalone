@@ -480,7 +480,19 @@ class App(QMainWindow):
     def __init__(self, cfg: dict):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(*WINDOW_SIZE)
+        # WINDOW_SIZE is taller than a 1080p screen, so the bottom of the
+        # sidebar (高级设置) opened off-screen. Fit the available desktop and
+        # centre, keeping the declared size as an upper bound.
+        screen = QApplication.primaryScreen()
+        width, height = WINDOW_SIZE
+        if screen is not None:
+            area = screen.availableGeometry()
+            width = min(width, max(1024, area.width() - 80))
+            height = min(height, max(700, area.height() - 80))
+        self.resize(width, height)
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(area.center().x() - width // 2, area.center().y() - height // 2)
         self.cfg = cfg
         # Active theme: palette + id, kept in sync by _on_theme_changed.
         self._theme_id = str(cfg.get("theme") or DEFAULT_THEME)
@@ -554,6 +566,9 @@ class App(QMainWindow):
         label = QLabel(text)
         label.setObjectName("hint")
         label.setWordWrap(True)
+        # Cap the hint column: without it a long hint wraps to four lines and
+        # drags its row tall, so the form stops looking like a table.
+        label.setMaximumWidth(440)
         return label
 
     def _build_widgets(self):
@@ -581,6 +596,7 @@ class App(QMainWindow):
         self._build_login_section(sidebar_layout)
         self._build_control_section(sidebar_layout)
         self._build_theme_section(sidebar_layout)
+        sidebar_layout.addStretch(1)
         self._build_advanced_button(sidebar_layout)
         sidebar_layout.addStretch(1)
         body_layout.addWidget(sidebar)
@@ -673,7 +689,11 @@ class App(QMainWindow):
         grid.addWidget(self._hint(hint), row, 2)
 
     def _build_conditions_section(self, main_layout):
-        main_layout.addWidget(self._section_title("接单条件"))
+        header = QHBoxLayout()
+        header.addWidget(self._section_title("接单条件"))
+        header.addStretch(1)
+        header.addWidget(self._primary_button("保存设置", self._on_save_settings))
+        main_layout.addLayout(header)
         card = self._card()
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 8, 12, 8)
@@ -683,29 +703,36 @@ class App(QMainWindow):
         grid.setColumnStretch(2, 1)
         self.min_amount_edit = QLineEdit()
         self._form_row(grid, 0, "最小金额（元）", self.min_amount_edit,
-                       "只抢不低于这个价的单")
+                       "不低于此价")
         self.max_amount_edit = QLineEdit()
         self._form_row(grid, 1, "最大金额（元）", self.max_amount_edit,
-                       "高于这个价不抢；填 0 表示不限制")
+                       "填 0 不限制")
         self.poll_interval_edit = QLineEdit()
         self._form_row(grid, 2, "轮询间隔（秒）", self.poll_interval_edit,
-                       "每隔多久刷一次订单列表")
+                       "列表刷新节奏")
+        for widget in (self.min_amount_edit, self.max_amount_edit,
+                       self.poll_interval_edit):
+            widget.setFixedWidth(190)
         self.memo_mode_box = QComboBox()
         self.memo_mode_box.addItems(["不检测备注", "有备注不抢"])
         self._form_row(grid, 3, "备注检测", self.memo_mode_box,
-                       "“不检测备注”只按关键词过滤；“有备注不抢”则订单带任何备注都跳过。"
-                       "备注关键词命中时本身总会跳过")
+                       "有备注即跳过")
         self.confirm_wait_min_spin = QSpinBox()
         self.confirm_wait_min_spin.setRange(0, 120)
         self.confirm_wait_min_spin.setSuffix(" 秒")
         self._form_row(grid, 4, "抢单前等待最小（秒）", self.confirm_wait_min_spin,
-                       "0 表示不等待；启用时最小值 ≥ 3 秒")
+                       "启用时 ≥ 3 秒")
         self.confirm_wait_max_spin = QSpinBox()
         self.confirm_wait_max_spin.setRange(0, 120)
         self.confirm_wait_max_spin.setSuffix(" 秒")
         self._form_row(grid, 5, "抢单前等待最大（秒）", self.confirm_wait_max_spin,
-                       "0 表示不等待；启用时最大值 - 最小值 ≥ 2 秒")
-        card_layout.addWidget(inner)
+                       "启用时 差值 ≥ 2 秒")
+        # A stretched form leaves a huge empty band beside every hint.
+        inner.setMaximumWidth(980)
+        for widget in (self.memo_mode_box, self.confirm_wait_min_spin,
+                       self.confirm_wait_max_spin):
+            widget.setFixedWidth(190)
+        card_layout.addWidget(inner, 0, Qt.AlignLeft)
 
         # 刷新与休息 (run/rest): visible toggle + four minute fields.
         rest_group = QGroupBox("刷新与休息")
@@ -735,14 +762,10 @@ class App(QMainWindow):
             lab.setObjectName("fieldLabel")
             rest_grid.addWidget(lab, 1, col * 2)
             rest_grid.addWidget(spin, 1, col * 2 + 1)
-        hint = self._hint("每轮刷新持续随机时长后休息随机时长，再继续监听。")
+        hint = self._hint("每轮随机刷新时长后休随机时长")
         rest_grid.addWidget(hint, 2, 0, 1, 8)
         card_layout.addWidget(rest_group)
 
-        save_row = QHBoxLayout()
-        save_row.addWidget(self._primary_button("保存设置", self._on_save_settings))
-        save_row.addStretch(1)
-        card_layout.addLayout(save_row)
         main_layout.addWidget(card)
         main_layout.addSpacing(10)
 
@@ -870,6 +893,7 @@ class App(QMainWindow):
         entries = history_mod.load_history()
         if not entries:
             item = QListWidgetItem("暂无接单记录，抢到单后会自动出现在这里")
+            item.setTextAlignment(Qt.AlignCenter)
             item.setForeground(QColor(HINT))
             self.history_list.addItem(item)
             return
