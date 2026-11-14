@@ -21,6 +21,7 @@ import config as cfgmod
 import history as history_mod
 from dpapi import ApiError, Session
 from engine import Engine, confirm_wait_seconds
+import engine as engine_module
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +519,34 @@ class EngineRunRestTests(unittest.TestCase):
         engine.stop()
         if engine.thread is not None:
             engine.thread.join(timeout=5)
+
+
+class QualificationRefusalTests(unittest.TestCase):
+    """autoduopei.cc 实测原文（2026-11-14）：资质类拒绝必须判终态并原样透传。"""
+
+    MESSAGE = (
+        "本周订单8单，当前续费率22%，需要达标续费率30%，"
+        "可继续抢随机单，请提升续费率后，再来接随机单"
+    )
+
+    def test_qualification_refusal_is_terminal(self):
+        outcome, reason = engine_module.classify_confirm({"code": 1, "msg": self.MESSAGE})
+        self.assertEqual(outcome, "fail")
+        self.assertEqual(reason, self.MESSAGE)
+
+    def test_unknown_refusal_still_retries(self):
+        outcome, reason = engine_module.classify_confirm(
+            {"code": 1, "msg": "系统繁忙，请稍后重试"}
+        )
+        self.assertEqual(outcome, "retry")
+        self.assertEqual(reason, "系统繁忙，请稍后重试")
+
+    def test_order_taken_is_still_labelled(self):
+        outcome, reason = engine_module.classify_confirm(
+            {"code": 1, "msg": "订单已被其他人抢走"}
+        )
+        self.assertEqual(outcome, "fail")
+        self.assertEqual(reason, "被其他人抢走")
 
 
 if __name__ == "__main__":
