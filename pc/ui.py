@@ -492,10 +492,10 @@ def build_stylesheet(palette: dict, theme_id: str = DEFAULT_THEME,
         # Mica only shows where we do not paint opaque pixels: the window
         # surface, the cards and the inputs each keep a little transparency,
         # while text colours stay untouched so contrast holds.
-        window_bg = translucent(window_bg, 186)     # ~73%
-        card_bg = translucent(card_bg, 232)
-        sidebar_card_bg = translucent(sidebar_card_bg, 224)
-        entry_bg = translucent(entry_bg, 214)
+        window_bg = translucent(window_bg, 170)     # ~67%
+        card_bg = translucent(card_bg, 205)
+        sidebar_card_bg = translucent(sidebar_card_bg, 198)
+        entry_bg = translucent(entry_bg, 190)
     subs = {
         "WINDOW_BG": window_bg,
         "CARD_BG": card_bg,
@@ -1194,6 +1194,18 @@ class App(QMainWindow):
         layout.addWidget(self.account_box)
         return card
 
+    def _cleanup_avatar_cache(self, directory):
+        """删除旧版本留下的中间文件（88px 缩略图、探针图）。"""
+        try:
+            for item in directory.glob("avatar_*.png"):
+                if "_v2" in item.name or "_v3" in item.name:
+                    continue
+                item.unlink(missing_ok=True)
+            for junk in ("probe.png",):
+                (directory / junk).unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def _fetch_avatar(self, clerk: dict):
         """Download the clerk avatar once and cache a full-resolution PNG.
 
@@ -1210,6 +1222,7 @@ class App(QMainWindow):
         clerk_id = clerk.get("id") or "me"
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
+            self._cleanup_avatar_cache(cache_dir)
             source = cache_dir / ("avatar_%s.img" % clerk_id)
             target = cache_dir / ("avatar_%s_v3.png" % clerk_id)
 
@@ -2178,7 +2191,45 @@ class App(QMainWindow):
         dialog = AdvancedDialog(self, self.cfg, on_saved=self._on_advanced_saved)
         dialog.exec()
 
+    def _rotation_accounts(self):
+        try:
+            return [m["phone"] for m in accounts_mod.list_accounts()]
+        except Exception:
+            return []
+
+    def _sync_rotation_timer(self):
+        if not hasattr(self, "_rotate_timer"):
+            from PySide6.QtCore import QTimer as _QTimer
+            self._rotate_timer = _QTimer(self)
+            self._rotate_timer.timeout.connect(self._rotate_next)
+        listening = bool(self.engine is not None and self.engine.running)
+        enabled = bool(self.cfg.get("rotate_enabled")) and listening
+        phones = self._rotation_accounts()
+        if enabled and len(phones) > 1:
+            minutes = int(self.cfg.get("rotate_minutes") or 30)
+            self._rotate_timer.start(max(1, minutes) * 60 * 1000)
+        else:
+            self._rotate_timer.stop()
+
+    def _rotate_next(self):
+        phones = self._rotation_accounts()
+        if len(phones) < 2:
+            self._rotate_timer.stop()
+            return
+        current = str(self.cfg.get("phone") or "")
+        index = phones.index(current) if current in phones else -1
+        target = phones[(index + 1) % len(phones)]
+        self.log("info", "账号轮换：%s → %s" % (
+            cfgmod.mask_phone(current), cfgmod.mask_phone(target)))
+        was_listening = bool(self.engine is not None and self.engine.running)
+        self._on_stop_listen()
+        self._activate_account(target)
+        if was_listening:
+            from PySide6.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(1500, self._on_start_listen)
+
     def _on_advanced_saved(self, new_cfg: dict):
+        switch_to = str(new_cfg.pop("switch_to_account", "") or "")
         self.cfg = new_cfg
         try:
             self._save_cfg()
@@ -2189,6 +2240,8 @@ class App(QMainWindow):
         from notify import Notifier
         self.notifier = Notifier(new_cfg)
         self.log("success", "高级设置已保存")
+        if switch_to:
+            self._activate_account(switch_to)
 
     # -- logging (signal-driven; worker threads only emit) ------------------
 
@@ -2451,6 +2504,7 @@ class App(QMainWindow):
             _prevent_sleep(True)
             self.listen_state_signal.emit("正在监听")
             self._set_listen_buttons(True)
+            self._sync_rotation_timer()
 
     def _set_listen_buttons(self, listening: bool):
         self.start_btn.setEnabled(not listening)
@@ -2463,6 +2517,10 @@ class App(QMainWindow):
         self.listen_state_signal.emit("已停止监听")
         self._set_listen_buttons(False)
         _prevent_sleep(False)
+        try:
+            self._sync_rotation_timer()
+        except Exception:
+            pass
 
     def _refresh_buttons(self):
         # Engine stopped on its own (e.g. grab succeeded).
@@ -2471,6 +2529,10 @@ class App(QMainWindow):
             self.listen_state_signal.emit("监听已停止")
             self._set_listen_buttons(False)
             _prevent_sleep(False)
+            try:
+                self._sync_rotation_timer()
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         if self.engine is not None:
@@ -2522,6 +2584,29 @@ class AdvancedDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
+
+        # 账号切换放在这里：登录卡保持干净，但能力还在
+        account_row = QHBoxLayout()
+        account_label = QLabel("账号")
+        account_label.setObjectName("fieldLabel")
+        account_label.setFixedWidth(96)
+        account_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        account_row.addWidget(account_label)
+        self.account_combo = QComboBox()
+        self.account_combo.setMinimumWidth(260)
+        self._account_choices = []
+        current_phone = str(self.cfg.get("phone") or "")
+        for meta in accounts_mod.list_accounts():
+            self.account_combo.addItem(accounts_mod.label_for(meta), meta["phone"])
+            self._account_choices.append(meta["phone"])
+            if meta["phone"] == current_phone:
+                self.account_combo.setCurrentIndex(self.account_combo.count() - 1)
+        self.account_combo.addItem("＋ 新增账号…", "__new__")
+        account_row.addWidget(self.account_combo)
+        add_hint = QLabel("每个账号一份配置文件；切换后需要重新登录")
+        add_hint.setObjectName("hint")
+        account_row.addWidget(add_hint, 1)
+        outer.addLayout(account_row)
 
         form = QWidget()
         grid = QGridLayout(form)
@@ -2605,6 +2690,20 @@ class AdvancedDialog(QDialog):
         self.verify_check = QCheckBox("验证服务器 TLS 证书（推荐开启）")
         self.verify_check.setChecked(bool(self.cfg.get("verify_tls", True)))
         root.addWidget(self.verify_check)
+        rotate_row = QHBoxLayout()
+        self.rotate_check = QCheckBox("账号轮换")
+        self.rotate_check.setChecked(bool(self.cfg.get("rotate_enabled", False)))
+        self.rotate_minutes_spin = QSpinBox()
+        self.rotate_minutes_spin.setRange(5, 600)
+        self.rotate_minutes_spin.setSuffix(" 分钟")
+        self.rotate_minutes_spin.setValue(int(self.cfg.get("rotate_minutes", 30) or 30))
+        rotate_row.addWidget(self.rotate_check)
+        rotate_row.addWidget(self.rotate_minutes_spin)
+        rotate_hint = QLabel("每个账号跑这么久后自动换下一个（需要多个账号配置文件）")
+        rotate_hint.setObjectName("hint")
+        rotate_row.addWidget(rotate_hint, 1)
+        root.addLayout(rotate_row)
+
         self.notify_row = QHBoxLayout()
         self.notify_check = QCheckBox("开启抢单推送")
         self.notify_check.setChecked(bool(self.cfg.get("notify_enabled", False)))
@@ -2718,6 +2817,8 @@ class AdvancedDialog(QDialog):
                     self.cfg[key] = value
             self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
             self.cfg["notify_enabled"] = self.notify_check.isChecked()
+            self.cfg["rotate_enabled"] = self.rotate_check.isChecked()
+            self.cfg["rotate_minutes"] = int(self.rotate_minutes_spin.value())
             self.cfg["notify_provider"] = str(self.notify_provider_box.currentData() or "serverchan")
             self.cfg["verify_tls"] = self.verify_check.isChecked()
             self.cfg["voice_enabled"] = self.voice_check.isChecked()
@@ -2734,6 +2835,19 @@ class AdvancedDialog(QDialog):
                 if answer != QMessageBox.Yes:
                     return
             self.cfg["blacklist"] = new_blacklist
+            chosen = str(self.account_combo.currentData() or "")
+            if chosen == "__new__":
+                phone, ok = QInputDialog.getText(self, "新增账号", "手机号（11 位）")
+                digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+                if ok and len(digits) >= 6:
+                    try:
+                        accounts_mod.load_account(digits)
+                        self.cfg["switch_to_account"] = digits
+                    except Exception as exc:
+                        QMessageBox.critical(self, "新增账号失败", str(exc))
+                        return
+            elif chosen and chosen != str(self.cfg.get("phone") or ""):
+                self.cfg["switch_to_account"] = chosen
         except (cfgmod.ConfigError, ValueError) as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return
