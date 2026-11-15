@@ -49,21 +49,20 @@ jobs:
 
       - name: Select Xcode 26 (fail fast)
         run: |
-          set -Eeuo pipefail
+          set -uo pipefail
           echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown} ($(uname -m))"
           ls -d "$XCODE_APP"
           sudo xcode-select -s "$XCODE_APP"
           xcode-select -p
-          # Capture the full output first: piping xcodebuild straight into `awk ... exit`
-          # makes awk close the pipe early, which aborts xcodebuild (SIGABRT, exit 134).
-          VERSION_OUTPUT="$(xcodebuild -version)"
-          printf '%s\n' "$VERSION_OUTPUT"
-          ACTUAL="$(printf '%s\n' "$VERSION_OUTPUT" | awk '/^Xcode /{print $2; exit}')"
-          echo "selected Xcode: $ACTUAL"
-          case "$ACTUAL" in
-            26.*) ;;
-            *) echo "::error::expected an Xcode 26.x toolchain, got '$ACTUAL'"; exit 1 ;;
-          esac
+          # Write tool output to a file and parse the file. Any `tool | awk ... exit`
+          # pipeline can abort the tool with SIGABRT (exit 134) once awk closes the pipe.
+          VERSION_FILE="$RUNNER_TEMP/xcode-version.txt"
+          xcodebuild -version > "$VERSION_FILE" 2>&1 || echo "xcodebuild -version exited $?" >> "$VERSION_FILE"
+          cat "$VERSION_FILE"
+          if ! grep -E '^Xcode 26\.' "$VERSION_FILE" > /dev/null; then
+            echo "::error::expected an Xcode 26.x toolchain; see $VERSION_FILE"
+            exit 1
+          fi
 
       - name: Report toolchain and simulator runtimes
         run: |
