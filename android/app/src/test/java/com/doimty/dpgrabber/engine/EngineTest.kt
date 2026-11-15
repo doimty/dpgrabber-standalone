@@ -1,460 +1,317 @@
 package com.doimty.dpgrabber.engine
 
-import com.doimty.dpgrabber.core.ApiClient
-import com.doimty.dpgrabber.core.AppConfig
-import com.doimty.dpgrabber.core.FakeTransport
-import com.doimty.dpgrabber.core.TestKit
-import org.json.JSONArray
+import com.doimty.dpgrabber.core.*
 import org.json.JSONObject
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArrayList
 
-/**
- * Engine tests with a stubbed transport. No real request is ever sent.
- * The fake clock is fixed so the de-dup math is deterministic; confirm
- * windows use small real-time values so deadline tests run fast.
- */
+/** 全部请求为内存脚本，不连接业务服务。 */
 class EngineTest {
+    private fun transport(): FakeTransport = FakeTransport().apply {
+        script("/login", 200, """{"code":0,"data":{"token":"base","shopId":105}}""")
+        script("/list-shop-account", 200, """{"code":0,"data":[{"accountId":"a","shopId":92}]}""")
+        script("/switch-account", 200, """{"code":0,"data":{"token":"shop"}}""")
+        script("/clerk/get", 200, """{"code":0,"clerk":{"id":7}}""")
+        script("/randomList", 200, """{"code":0,"list":[{"id":"order-1","totalAmount":2500,"userWechatId":"private-client"}]}""")
+    }
+    private val config = AppConfig(pollIntervalSec = 0.01, pollJitterSec = 0.0,
+        confirmWaitByShop = emptyMap(), confirmRetryDelaySec = 0.0)
 
-    private val fixedNowMs = 1_700_000_000_000L
+    @Test fun `成功仅一次历史并停止`() {
+        val transport = transport()
+        transport.script("/confirm", 200, """{"code":0}""")
+        val done = CountDownLatch(1)
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val logs = CopyOnWriteArrayList<String>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, text -> logs.add(text) },
+            onOutcome = { outcomes.add(it) }, onStateChange = { if (!it) done.countDown() })
+        assertTrue(engine.start("10000000000", "test"))
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertEquals(listOf(OutcomeType.SUCCESS), outcomes.map { it.type })
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        assertTrue(logs.none { it.contains("private-client") })
+    }
 
-    private fun loginScripts(transport: FakeTransport) {
-        transport.scriptJson(
-            "/s/duopei-account/login",
-            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "login-token") })
-        )
-        val shops = JSONArray().apply {
-            put(JSONObject().apply { put("shopId", 92); put("accountId", "a92") })
+    @Test fun `复用已有会话不再次登录`() {
+        val transport = transport()
+        transport.script("/confirm", 200, """{"code":0}""")
+        val client = TestKit.client(transport).apply { session = Session("shared", "92") }
+        val done = CountDownLatch(1)
+        val engine = ListenEngine(client, config, { _, _ -> }, onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertTrue(transport.calls.none { it.url.contains("/login") })
+    }
+
+    @Test fun `停止期间迟到的确认不能记成功或发最终回读`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val transport = transport()
+        transport.scriptDynamic("/confirm") {
+            entered.countDown()
+            try { release.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) { }
+            FakeTransport.Scripted(200, """{"code":0}""".toByteArray())
         }
-        transport.scriptJson(
-            "/s/duopei-account/list-shop-account",
-            TestKit.plain("code" to 0, "data" to shops)
-        )
-        transport.scriptJson(
-            "/s/duopei-account/switch-account",
-            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "shop-token") })
-        )
-        transport.scriptJson("/s/balance/getBalance", TestKit.plain("code" to 0))
-        transport.scriptJson(
-            "/s/c/clerk/get",
-            TestKit.plain("code" to 0, "clerk" to JSONObject().apply {
-                put("id", 7); put("shopId", 92); put("name", "测试店员")
-            })
-        )
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> },
+            onStateChange = { if (!it) finished.countDown() }, onOutcome = { outcomes.add(it) })
+        engine.start("10000000000", "test")
+        assertTrue(entered.await(3, TimeUnit.SECONDS))
+        engine.stop()
+        release.countDown()
+        assertTrue(finished.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertEquals(listOf(OutcomeType.UNKNOWN), outcomes.map { it.type })
+        assertTrue(transport.calls.none { it.url.contains("/order/get") })
     }
 
-    private fun orderJson(
-        id: String = "order-1",
-        totalAmount: Int = 2500,
-        wechat: String = "wx123",
-        memo: String = ""
-    ): JSONObject = JSONObject().apply {
-        put("id", id)
-        put("totalAmount", totalAmount)
-        put("userWechatId", wechat)
-        put("userMemo", memo)
-    }
-
-    private fun engineFor(
-        transport: FakeTransport,
-        config: AppConfig = AppConfig(pollIntervalSec = 0.05),
-        logs: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
-    ): ListenEngine {
-        val client = TestKit.client(transport)
-        return ListenEngine(
-            client = client,
-            config = config,
-            log = { level, text -> logs.add("[$level] $text") },
-            nowEpochMs = { fixedNowMs }
-        )
-    }
-
-    /** Wait until the engine stops (or the deadline passes). */
-    private fun awaitStop(engine: ListenEngine, timeoutMs: Long = 10_000): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (engine.running && System.currentTimeMillis() < deadline) {
-            Thread.sleep(50)
-        }
-        return !engine.running
-    }
-
-    @Test
-    fun `full loop grabs a passing order and stops`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        // One passing order: the confirm task starts immediately and the
-        // first confirm succeeds; no order/get is needed on this path.
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        transport.scriptJson("/s/c/order/confirm", TestKit.plain("code" to 0))
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        assertTrue("engine should stop after a successful grab", awaitStop(engine))
-        val confirmCalls = transport.calls.filter { it.url.contains("/s/c/order/confirm") }
-        assertEquals(1, confirmCalls.size)
-        assertTrue(confirmCalls[0].url.contains("id=order-1"))
-        assertTrue("no detail fetch on the fast path",
-            transport.calls.none { it.url.contains("/s/c/order/get") })
-        assertTrue(logs.any { it.contains("抢单成功") })
-        assertTrue(logs.any { it.contains("登录成功") })
-    }
-
-    @Test
-    fun `confirm retry then success`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        var confirms = 0
-        transport.scriptDynamic("/s/c/order/confirm") { _ ->
-            confirms++
-            val body = if (confirms == 1) {
-                TestKit.plain("code" to 2, "msg" to "请稍后再试")
-            } else {
-                TestKit.plain("code" to 0)
-            }
-            FakeTransport.Scripted(200, body.toString().toByteArray(Charsets.UTF_8))
-        }
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        assertTrue("engine should stop after a successful grab", awaitStop(engine))
-        assertEquals(2, transport.calls.count { it.url.contains("/s/c/order/confirm") })
-        assertTrue(logs.any { it.contains("抢单成功") })
-    }
-
-    @Test
-    fun `auth failure in confirm triggers re-login and a new task`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        var confirms = 0
-        transport.scriptDynamic("/s/c/order/confirm") { _ ->
-            confirms++
-            val body = if (confirms == 1) {
-                TestKit.plain("code" to 401)
-            } else {
-                TestKit.plain("code" to 0)
-            }
-            FakeTransport.Scripted(200, body.toString().toByteArray(Charsets.UTF_8))
-        }
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        assertTrue("engine should stop after a successful grab", awaitStop(engine))
-        val loginCalls = transport.calls.filter { it.url.contains("/s/duopei-account/login") }
-        assertTrue("login should have been called at least twice", loginCalls.size >= 2)
-        assertTrue(logs.any { it.contains("确认认证失败") })
-        assertTrue(logs.any { it.contains("抢单成功") })
-        assertEquals(2, transport.calls.count { it.url.contains("/s/c/order/confirm") })
-    }
-
-    @Test
-    fun `network error on confirm reads back and succeeds`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        var confirms = 0
-        transport.scriptDynamic("/s/c/order/confirm") { _ ->
-            confirms++
-            FakeTransport.Scripted(500, "{}".toByteArray(Charsets.UTF_8))
-        }
-        // Readback: confirmed (status 2, same clerk id 7 as the login stub).
-        transport.scriptJson(
-            "/s/c/order/get",
-            TestKit.plain("code" to 0, "status" to 2, "clerkId" to 7)
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        assertTrue("engine should stop after readback success", awaitStop(engine))
-        assertEquals(1, transport.calls.count { it.url.contains("/s/c/order/confirm") })
-        assertEquals(1, transport.calls.count { it.url.contains("/s/c/order/get") })
-        assertTrue(logs.any { it.contains("抢单成功") })
-    }
-
-    @Test
-    fun `readback pending returns to the loop and retries`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        var confirms = 0
-        transport.scriptDynamic("/s/c/order/confirm") { _ ->
-            confirms++
-            if (confirms == 1) {
-                FakeTransport.Scripted(500, "{}".toByteArray(Charsets.UTF_8))
-            } else {
-                FakeTransport.Scripted(
-                    200,
-                    TestKit.plain("code" to 0).toString().toByteArray(Charsets.UTF_8)
-                )
+    @Test fun `传输取消会调用cancelAll且停止后不再发请求`() {
+        val entered = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val done = CountDownLatch(1)
+        val transport = object : HttpTransport {
+            override fun cancelAll() { cancelled.countDown() }
+            override fun request(method: String, url: String, headers: Map<String, String>, body: ByteArray?, contentType: String?, timeoutMs: Long): HttpResponse {
+                entered.countDown()
+                try { cancelled.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) { }
+                return HttpResponse(200, """{"code":0}""".toByteArray())
             }
         }
-        transport.scriptJson(
-            "/s/c/order/get",
-            TestKit.plain("code" to 0, "status" to 0)
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        assertTrue("engine should stop after a successful grab", awaitStop(engine))
-        assertEquals(2, transport.calls.count { it.url.contains("/s/c/order/confirm") })
-        assertEquals(1, transport.calls.count { it.url.contains("/s/c/order/get") })
-        assertTrue(logs.any { it.contains("抢单成功") })
-    }
-
-    @Test
-    fun `readback unknown stops blind retry`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        transport.scriptDynamic("/s/c/order/confirm") { _ ->
-            FakeTransport.Scripted(500, "{}".toByteArray(Charsets.UTF_8))
-        }
-        transport.scriptJson(
-            "/s/c/order/get",
-            TestKit.plain("code" to 0, "status" to 9, "msg" to "奇怪")
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        Thread.sleep(600)
-        assertTrue("engine should still be running after unknown readback", engine.running)
-        assertEquals(1, transport.calls.count { it.url.contains("/s/c/order/confirm") })
-        assertTrue(logs.any { it.contains("停止盲重试") })
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> }, onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(entered.await(3, TimeUnit.SECONDS))
         engine.stop()
-        assertTrue(awaitStop(engine))
+        assertTrue(cancelled.await(1, TimeUnit.SECONDS))
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
     }
 
-    @Test
-    fun `readback clerk mismatch fails as taken by someone else`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        transport.scriptDynamic("/s/c/order/confirm") { _ ->
-            FakeTransport.Scripted(500, "{}".toByteArray(Charsets.UTF_8))
-        }
-        transport.scriptJson(
-            "/s/c/order/get",
-            TestKit.plain("code" to 0, "status" to 2, "clerkId" to 99)
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        Thread.sleep(600)
-        assertTrue("engine should still be running after readback fail", engine.running)
-        assertEquals(1, transport.calls.count { it.url.contains("/s/c/order/confirm") })
-        assertTrue(logs.any { it.contains("被其他人抢走") })
+    @Test fun `未知结果不会跨轮次盲目重发`() {
+        val transport = transport()
+        transport.script("/confirm", 500, "{}")
+        transport.script("/order/get", 200, """{"code":0,"data":{}}""")
+        val recorded = CountDownLatch(1)
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> }, onOutcome = { outcomes.add(it); recorded.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(recorded.await(3, TimeUnit.SECONDS))
         engine.stop()
-        assertTrue(awaitStop(engine))
+        assertTrue(engine.awaitStopped())
+        assertEquals(OutcomeType.UNKNOWN, outcomes.single().type)
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
     }
 
-    @Test
-    fun `deadline pending releases the order for a new task`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        // createTime present, so the 0.3s window (not the fallback) applies.
-        val orders = JSONArray().apply {
-            put(orderJson().apply { put("createTime", 1760000000000) })
+    @Test fun `成功历史持久化完成才通知且失败时停止不接下一单`() {
+        for (failPersistence in listOf(false, true)) {
+            val transport = transport()
+            transport.script("/confirm", 200, """{"code":0}""")
+            val events = CopyOnWriteArrayList<String>()
+            val done = CountDownLatch(1)
+            val engine = ListenEngine(TestKit.client(transport), config.copy(autoStopAfterGrab = !failPersistence), { _, _ -> },
+                onAttemptStarted = { events.add("unknown") },
+                onOutcome = { events.add("persist"); if (failPersistence) throw IllegalStateException("模拟磁盘失败") },
+                onSuccess = { events.add("notify") }, onStateChange = { if (!it) done.countDown() })
+            engine.start("10000000000", "test")
+            assertTrue(done.await(3, TimeUnit.SECONDS))
+            assertTrue(engine.awaitStopped())
+            assertEquals(if (failPersistence) listOf("unknown", "persist") else listOf("unknown", "persist", "notify"), events.toList())
+            assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
         }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        transport.scriptJson(
-            "/s/c/order/confirm",
-            TestKit.plain("code" to 2, "msg" to "稍后再试")
-        )
-        transport.scriptJson(
-            "/s/c/order/get",
-            TestKit.plain("code" to 0, "status" to 0)
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val config = AppConfig(
-            pollIntervalSec = 0.05,
-            randomConfirmWindowSec = 0.3,
-            confirmRetryDelaySec = 0.05
-        )
-        val engine = engineFor(transport, config, logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        Thread.sleep(1500)
-        assertTrue("engine should still be running", engine.running)
-        engine.stop()
-        assertTrue(awaitStop(engine))
-        assertTrue(logs.any { it.contains("本轮确认预算耗尽") })
-        // The order was released, so a later poll started a new task.
-        assertTrue(
-            "expected at least two confirm tasks after release",
-            logs.count { it.contains("尝试接单") } >= 2
-        )
-        assertTrue(transport.calls.count { it.url.contains("/s/c/order/confirm") } > 1)
     }
 
-    @Test
-    fun `deadline final readback ok succeeds`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        // createTime present, so the 0.3s window (not the fallback) applies.
-        val orders = JSONArray().apply {
-            put(orderJson().apply { put("createTime", 1760000000000) })
-        }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        transport.scriptJson(
-            "/s/c/order/confirm",
-            TestKit.plain("code" to 2, "msg" to "稍后再试")
-        )
-        transport.scriptJson(
-            "/s/c/order/get",
-            TestKit.plain("code" to 0, "status" to 2, "clerkId" to 7)
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val config = AppConfig(
-            pollIntervalSec = 0.05,
-            randomConfirmWindowSec = 0.3,
-            confirmRetryDelaySec = 0.05
-        )
-        val engine = engineFor(transport, config, logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        assertTrue("engine should stop after final readback success", awaitStop(engine))
-        assertTrue(transport.calls.count { it.url.contains("/s/c/order/confirm") } > 1)
-        assertTrue(logs.any { it.contains("抢单成功") })
+    @Test fun `预写unknown失败不发送确认`() {
+        val transport = transport()
+        val done = CountDownLatch(1)
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> },
+            onAttemptStarted = { throw IllegalStateException("模拟磁盘失败") },
+            onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertTrue(transport.calls.none { it.url.contains("/confirm") })
     }
 
-    @Test
-    fun `filtered order is skipped and confirm is never called`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        // Order below the min amount (25 yuan < min 100).
-        val orders = JSONArray().apply { put(orderJson(totalAmount = 2500)) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val config = AppConfig(pollIntervalSec = 0.05, minAmount = 100.0)
-        val engine = engineFor(transport, config, logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        Thread.sleep(600)
-        assertTrue("engine should still be running", engine.running)
-        engine.stop()
-        assertTrue(awaitStop(engine))
-        assertTrue(transport.calls.none { it.url.contains("/s/c/order/confirm") })
-        assertTrue(logs.any { it.contains("不符合要求") })
-    }
-
-    @Test
-    fun `auth failure on poll triggers re-login and polling continues`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        var polls = 0
-        transport.scriptDynamic("/s/c/order/randomList") { _ ->
-            polls++
-            if (polls == 1) {
-                FakeTransport.Scripted(401, """{"code":401}""".toByteArray(Charsets.UTF_8))
-            } else {
-                FakeTransport.Scripted(
-                    200,
-                    TestKit.plain("code" to 0, "list" to JSONArray()).toString()
-                        .toByteArray(Charsets.UTF_8)
-                )
+    @Test fun `确认明确稍后再试可重试且网络未知用回读确认归属`() {
+        for (networkFailure in listOf(false, true)) {
+            val transport = transport()
+            var confirms = 0
+            transport.scriptDynamic("/confirm") {
+                confirms++
+                FakeTransport.Scripted(if (networkFailure) 500 else 200,
+                    (if (networkFailure) "{}" else if (confirms == 1) """{"code":2,"msg":"稍后再试"}""" else """{"code":0}""").toByteArray())
             }
+            transport.script("/order/get", 200, """{"code":0,"status":2,"clerkId":7}""")
+            val done = CountDownLatch(1)
+            val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+            val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> },
+                onOutcome = { outcomes.add(it) }, onStateChange = { if (!it) done.countDown() })
+            engine.start("10000000000", "test")
+            assertTrue(done.await(3, TimeUnit.SECONDS))
+            assertTrue(engine.awaitStopped())
+            assertEquals(OutcomeType.SUCCESS, outcomes.single().type)
+            assertEquals(if (networkFailure) 1 else 2, confirms)
+            assertEquals(if (networkFailure) 1 else 0, transport.calls.count { it.url.contains("/order/get") })
         }
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        Thread.sleep(800)
-        assertTrue("engine should still be running after re-login", engine.running)
-        engine.stop()
-        assertTrue(awaitStop(engine))
-        val loginCalls = transport.calls.filter { it.url.contains("/s/duopei-account/login") }
-        assertTrue("login should have been called at least twice", loginCalls.size >= 2)
-        assertTrue(logs.any { it.contains("重新登录") || it.contains("登录态失效") })
     }
 
-    @Test
-    fun `confirm failure does not stop the engine`() {
-        val transport = FakeTransport()
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson()) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        transport.scriptJson(
-            "/s/c/order/confirm",
-            TestKit.plain("code" to 1, "msg" to "已被抢走")
-        )
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine = engineFor(transport, logs = logs)
-        assertTrue(engine.start("13800138000", "secret"))
-        // The failed grab returns to polling; the same order is de-duped,
-        // so no second confirm happens. Stop manually.
-        Thread.sleep(600)
-        assertTrue("engine should still be running after a failed grab", engine.running)
-        engine.stop()
-        assertTrue(awaitStop(engine))
-        assertEquals(1, transport.calls.count { it.url.contains("/s/c/order/confirm") })
-        assertTrue("no readback on a terminal reply",
-            transport.calls.none { it.url.contains("/s/c/order/get") })
-        assertTrue(logs.any { it.contains("被其他人抢走") })
+    @Test fun `过滤与持久阻断均不发送确认`() {
+        for (blocked in listOf(false, true)) {
+            val transport = transport()
+            val checked = CountDownLatch(1)
+            transport.scriptDynamic("/randomList") {
+                checked.countDown()
+                FakeTransport.Scripted(200, """{"code":0,"list":[{"id":"o","totalAmount":2500}]}""".toByteArray())
+            }
+            val engine = ListenEngine(TestKit.client(transport), config.copy(minAmount = if (blocked) 0.0 else 100.0), { _, _ -> },
+                isPersistentlyBlocked = { _, _ -> blocked })
+            engine.start("10000000000", "test")
+            assertTrue(checked.await(3, TimeUnit.SECONDS))
+            engine.stop()
+            assertTrue(engine.awaitStopped())
+            assertTrue(transport.calls.none { it.url.contains("/confirm") })
+        }
     }
 
-    @Test
-    fun `seen de-dup suppresses the same order within TTL`() {
-        val transport = FakeTransport()
-        val client = TestKit.client(transport)
-        loginScripts(transport)
-        val orders = JSONArray().apply { put(orderJson(id = "dup-1")) }
-        transport.scriptJson(
-            "/s/c/order/randomList",
-            TestKit.plain("code" to 0, "list" to orders)
-        )
-        // Order fails the filter (amount 25 < min 100) so it is skipped
-        // after being marked seen; a second poll must not re-log it.
-        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val engine2 = ListenEngine(
-            client = client,
-            config = AppConfig(pollIntervalSec = 0.05, minAmount = 100.0),
-            log = { _, text -> logs.add(text) },
-            nowEpochMs = { fixedNowMs }
-        )
-        assertTrue(engine2.start("13800138000", "secret"))
-        Thread.sleep(700)
-        engine2.stop()
-        assertTrue(awaitStop(engine2))
-        val detections = logs.count { it.contains("检测到新订单") }
-        assertEquals("the same order must only be detected once within TTL", 1, detections)
+    @Test fun `假时钟店铺等待无需真实sleep`() {
+        val transport = transport()
+        transport.script("/confirm", 200, """{"code":0}""")
+        val elapsed = java.util.concurrent.atomic.AtomicLong(0)
+        val done = CountDownLatch(1)
+        val engine = ListenEngine(TestKit.client(transport), config.copy(confirmWaitByShop = mapOf("92" to 5.0)), { _, _ -> },
+            nowEpochMs = { 1700000000000L + elapsed.get() },
+            monotonicNs = { elapsed.get() * 1000000 }, sleeper = { elapsed.addAndGet(it) },
+            onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertTrue(elapsed.get() >= 5000)
+    }
+
+    @Test fun `轮询认证失效刷新会话同步新店员归属`() {
+        val transport = transport()
+        val loginCount = java.util.concurrent.atomic.AtomicInteger()
+        transport.scriptDynamic("/login") {
+            val count = loginCount.incrementAndGet()
+            FakeTransport.Scripted(200, """{"code":0,"data":{"token":"base-$count","shopId":105}}""".toByteArray())
+        }
+        transport.scriptDynamic("/list-shop-account") {
+            val shop = if (loginCount.get() == 1) 92 else 105
+            FakeTransport.Scripted(200, """{"code":0,"data":[{"accountId":"a","shopId":$shop}]}""".toByteArray())
+        }
+        transport.scriptDynamic("/clerk/get") { call ->
+            val clerk = if (call.headers["sid"] == "92") 7 else 8
+            FakeTransport.Scripted(200, """{"code":0,"clerk":{"id":$clerk}}""".toByteArray())
+        }
+        val polls = java.util.concurrent.atomic.AtomicInteger()
+        transport.scriptDynamic("/randomList") {
+            if (polls.incrementAndGet() == 1) FakeTransport.Scripted(401, """{"code":401}""".toByteArray())
+            else FakeTransport.Scripted(200, """{"code":0,"list":[{"id":"o","totalAmount":2500}]}""".toByteArray())
+        }
+        transport.script("/confirm", 500, "{}")
+        transport.script("/order/get", 200, """{"code":0,"status":2,"clerkId":8}""")
+        val done = CountDownLatch(1)
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> },
+            onOutcome = { outcomes.add(it) }, onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertEquals(2, loginCount.get())
+        assertEquals("105", outcomes.single().shopId)
+        assertEquals(OutcomeType.SUCCESS, outcomes.single().type)
+    }
+
+    @Test fun `预算耗尽最终回读成功或pending保留unknown不重复发送`() {
+        for (confirmed in listOf(false, true)) {
+            val transport = transport()
+            transport.script("/confirm", 200, """{"code":2,"msg":"稍后再试"}""")
+            transport.script("/order/get", 200, if (confirmed) """{"code":0,"status":2,"clerkId":7}""" else """{"code":0,"status":0}""")
+            val elapsed = java.util.concurrent.atomic.AtomicLong()
+            val recorded = CountDownLatch(1)
+            val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+            val engine = ListenEngine(TestKit.client(transport), config.copy(randomConfirmFallbackSec = 0.3, confirmRetryDelaySec = 0.1), { _, _ -> },
+                monotonicNs = { elapsed.get() * 1000000 }, sleeper = { elapsed.addAndGet(it) },
+                onOutcome = { outcomes.add(it); recorded.countDown() })
+            engine.start("10000000000", "test")
+            assertTrue(recorded.await(3, TimeUnit.SECONDS))
+            if (!confirmed) engine.stop()
+            assertTrue(engine.awaitStopped())
+            assertEquals(if (confirmed) OutcomeType.SUCCESS else OutcomeType.UNKNOWN, outcomes.single().type)
+            assertEquals(1, transport.calls.count { it.url.contains("/order/get") })
+            assertTrue(transport.calls.count { it.url.contains("/confirm") } > 1)
+        }
+    }
+
+    @Test fun `autoStop关闭成功后继续监听且定时休息可取消`() {
+        val transport = transport()
+        transport.script("/confirm", 200, """{"code":0}""")
+        val success = CountDownLatch(1)
+        val rest = CountDownLatch(1)
+        val elapsed = java.util.concurrent.atomic.AtomicLong()
+        val engine = ListenEngine(TestKit.client(transport), config.copy(autoStopAfterGrab = false, runDurationSec = 0.1, restDurationSec = 5.0),
+            { _, text -> if (text.contains("定时休息")) rest.countDown() },
+            nowEpochMs = { 1700000000000L + elapsed.get() }, monotonicNs = { elapsed.get() * 1000000 },
+            sleeper = { elapsed.addAndGet(it) }, onSuccess = { success.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(success.await(3, TimeUnit.SECONDS))
+        assertTrue(rest.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.running)
+        engine.stop()
+        assertTrue(engine.awaitStopped())
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+    }
+
+    @Test fun `队首被屏蔽不遮挡后续订单且等待期间新黑名单生效`() {
+        val transport = transport()
+        transport.scriptDynamic("/randomList") {
+            FakeTransport.Scripted(200, """{"code":0,"list":[{"id":"filtered","totalAmount":500},{"id":"second","totalAmount":2500}]}""".toByteArray())
+        }
+        transport.script("/confirm", 200, """{"code":0}""")
+        val done = CountDownLatch(1)
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> }, onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        val confirm = transport.calls.single { it.url.contains("/confirm") }
+        assertTrue(confirm.url.contains("id=second"))
+        assertFalse(confirm.url.contains("filtered"))
+    }
+
+    @Test fun `非零成功文案只回查一次未知不重发`() {
+        val transport = transport()
+        transport.script("/confirm", 200, """{"code":2,"msg":"确认成功"}""")
+        transport.script("/order/get", 200, """{"code":0,"status":2}""")
+        val recorded = CountDownLatch(1)
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> }, onOutcome = { outcomes.add(it); recorded.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(recorded.await(3, TimeUnit.SECONDS))
+        engine.stop()
+        assertTrue(engine.awaitStopped())
+        assertEquals(OutcomeType.UNKNOWN, outcomes.single().type)
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        assertEquals(1, transport.calls.count { it.url.contains("/order/get") })
+    }
+
+    @Test fun `被他人接走记录skipped且资质拒绝failed`() {
+        for ((message, expected) in listOf("已被其他人抢走" to OutcomeType.SKIPPED, "资质不符合" to OutcomeType.FAILED)) {
+            val transport = transport()
+            transport.script("/confirm", 200, JSONObject().put("code", 1).put("msg", message).toString())
+            val recorded = CountDownLatch(1)
+            val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+            val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> }, onOutcome = { outcomes.add(it); recorded.countDown() })
+            engine.start("10000000000", "test")
+            assertTrue(recorded.await(3, TimeUnit.SECONDS))
+            engine.stop()
+            assertTrue(engine.awaitStopped())
+            assertEquals(expected, outcomes.single().type)
+            assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        }
     }
 }

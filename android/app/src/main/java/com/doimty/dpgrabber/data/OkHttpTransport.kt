@@ -13,10 +13,8 @@ import java.util.concurrent.TimeUnit
  *
  * The client itself enforces the protocol rules (host pinning, /s/ paths,
  * fixed headers); this class only performs the request. TLS verification
- * follows [verifyTls]: when false, certificate validation is skipped —
- * the same trade-off the PC reference tool makes for its listen session
- * (PROTOCOL.md section 10.3). The default is true and the UI warns
- * when it is off.
+ * 始终使用系统证书链和主机名验证。旧 verifyTls 参数仅保留配置兼容，
+ * 不允许将账号令牌发给未验证的服务器；禁止自动重定向和写请求重发。
  */
 class OkHttpTransport(verifyTls: Boolean = true) : HttpTransport {
 
@@ -25,13 +23,13 @@ class OkHttpTransport(verifyTls: Boolean = true) : HttpTransport {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-        if (!verifyTls) {
-            val trustAll = TrustAllCerts.trustManager
-            builder.sslSocketFactory(TrustAllCerts.socketFactory, trustAll)
-            builder.hostnameVerifier { _, _ -> true }
-        }
+        // 兼容旧配置参数，但所有构建均强制平台证书与主机名验证。
+        builder.followRedirects(false).followSslRedirects(false)
+        builder.retryOnConnectionFailure(false)
         builder.build()
     }
+
+    override fun cancelAll() = client.dispatcher.cancelAll()
 
     override fun request(
         method: String,

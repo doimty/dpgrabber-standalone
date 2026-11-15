@@ -9,7 +9,7 @@
 //   plain JSON, the payload is Base64-decoded and AES-CBC/PKCS#7-decrypted.
 //   The primary AES pair is tried first, then the alternate pair
 //   ("decrypt with whichever works", §10.6).
-// * Login flow (§3.2): phone + password -> token (sid "50") ->
+// * Login flow (§3.2): phone + password -> token + 实际 shopId ->
 //   list-shop-account -> switch-account per shop -> getBalance validation.
 //   Token is kept in memory only, never written to disk.
 //
@@ -17,6 +17,7 @@
 // use a stub so no real request is ever sent from a test.
 
 import Foundation
+import CoreFoundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -37,11 +38,14 @@ public protocol HTTPTransport: Sendable {
 
 /// URLSession-backed transport (production).
 public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
-    private let verifyTLS: Bool
+    private let session: URLSession
 
-    public init(verifyTLS: Bool = true) {
-        self.verifyTLS = verifyTLS
+    public init(verifyTLS: Bool = true, configuration: URLSessionConfiguration = .ephemeral) {
+        // 正式客户端始终校验证书；旧配置不能绕过系统信任链。
+        self.session = URLSession(configuration: configuration)
     }
+
+    deinit { session.invalidateAndCancel() }
 
     public func request(method: String, url: URL, headers: [String: String], body: Data?, timeout: TimeInterval) async throws -> (statusCode: Int, data: Data) {
         var request = URLRequest(url: url)
@@ -51,48 +55,19 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.httpBody = body
-        let session: URLSession
-        #if canImport(Security)
-        if verifyTLS {
-            session = URLSession(configuration: .ephemeral)
-        } else {
-            // Explicitly disabled by the user (config verify_tls=false):
-            // trust any server certificate. The UI warns about this.
-            let delegate = TrustAllDelegate()
-            session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        }
-        #else
-        // Linux (swift-corelibs-foundation): no Security framework, so
-        // certificate trust cannot be overridden; always verify.
-        _ = verifyTLS
-        session = URLSession(configuration: .ephemeral)
-        #endif
+        try Task.checkCancellation()
         do {
             let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
             let status = (response as? HTTPURLResponse)?.statusCode ?? 200
             return (status, data)
         } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
+                throw ApiError(.cancelled, "请求已取消")
+            }
             throw ApiError(.network, "request failed: \(error.localizedDescription)")
         }
     }
-
-    #if canImport(Security)
-    /// Trust-all delegate, only used when the user explicitly disabled
-    /// TLS verification (config verify_tls=false). Apple platforms only.
-    private final class TrustAllDelegate: NSObject, URLSessionDelegate {
-        func urlSession(
-            _ session: URLSession,
-            didReceive challenge: URLAuthenticationChallenge,
-            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-        ) {
-            if let trust = challenge.protectionSpace.serverTrust {
-                completionHandler(.useCredential, URLCredential(trust: trust))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
-        }
-    }
-    #endif
 }
 
 /// The API client. The live session lives in `session`.
@@ -123,7 +98,7 @@ public final class ApiClient: @unchecked Sendable {
         self.aesIVHex = aesIVHex
         self.aesKeyHexAlt = aesKeyHexAlt
         self.aesIVHexAlt = aesIVHexAlt
-        self.verifyTLS = verifyTLS
+        self.verifyTLS = true
         self.transport = transport ?? URLSessionTransport(verifyTLS: verifyTLS)
     }
 
@@ -253,6 +228,7 @@ public final class ApiClient: @unchecked Sendable {
             break
         }
 
+        guard !Task.isCancelled else { throw ApiError(.cancelled, "请求已取消") }
         let (status, raw): (Int, Data)
         do {
             (status, raw) = try await transport.request(
@@ -261,8 +237,12 @@ public final class ApiClient: @unchecked Sendable {
         } catch let error as ApiError {
             throw error
         } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
+                throw ApiError(.cancelled, "请求已取消")
+            }
             throw ApiError(.network, "request failed: \(error.localizedDescription)")
         }
+        guard !Task.isCancelled else { throw ApiError(.cancelled, "请求已取消") }
         if status == 401 || status == 403 {
             throw ApiError(.auth, "login state invalid (HTTP \(status))")
         }
@@ -274,17 +254,27 @@ public final class ApiClient: @unchecked Sendable {
 
     // MARK: - Login flow (PROTOCOL.md §3.2)
 
-    /// POST /s/duopei-account/login. Returns (token, sid "50").
+    /// 登录响应必须提供有效 shopId，不猜测默认店铺。
+    private func positiveShopID(_ value: Any?) -> Int? {
+        if let string = value as? String {
+            guard let id = Int(string), id > 0 else { return nil }
+            return id
+        }
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let id = number.doubleValue
+        guard id.isFinite, id > 0, id.rounded() == id, id < Double(Int.max) else { return nil }
+        return Int(id)
+    }
     public func loginAccount(phone: String, password: String) async throws -> DPGSession {
         let phone = phone.trimmingCharacters(in: .whitespaces)
-        let secret = password.trimmingCharacters(in: .whitespaces)
+        let secret = password.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !phone.isEmpty, !secret.isEmpty else {
             throw ApiError(.api, "phone and password are required")
         }
         let body: [String: Any] = [
             "method": "password",
             "phoneNumber": ["regionCode": "CN", "mobileDial": "86", "mobile": phone],
-            "password": secret,
+            "password": loginPasswordDigest(secret),
         ]
         let resp = try await request(
             method: "POST", path: "/s/duopei-account/login", session: nil,
@@ -299,41 +289,45 @@ public final class ApiClient: @unchecked Sendable {
               let token = data["token"] as? String, !token.isEmpty else {
             throw ApiError(.auth, "login response has no token")
         }
-        return DPGSession(token: token, sid: "50")
+        guard let sid = positiveShopID(data["shopId"]) else {
+            throw ApiError(.auth, "登录响应缺少有效 shopId")
+        }
+        return DPGSession(token: token, sid: String(sid))
     }
 
     /// Full manual login: login -> list shops -> switch per shop ->
     /// getBalance validation. Returns a usable session or throws ApiError.
     ///
-    /// Auth / IP / cancelled failures abort immediately; other per-shop
-    /// failures move on to the next shop (DPGAPIClient.m:298-361).
+    /// 基础令牌 AUTH、IP 与取消立即终止；候选店铺 AUTH/业务拒绝尝试下一店铺。
     public func sessionForAccount(phone: String, password: String, preferredShopID: Int = 92) async throws -> DPGSession {
         let base = try await loginAccount(phone: phone, password: password)
         let resp = try await request(
             method: "GET", path: "/s/duopei-account/list-shop-account", session: base,
-            extraHeaders: ["sid": "50"], timeout: 15
+            extraHeaders: ["sid": base.sid], timeout: 15
         )
         guard parseCode(resp) == 0 else {
             throw ApiError(.api, "shop list rejected")
         }
         let shops = (resp["data"] as? [[String: Any]]) ?? []
-        let shopID: ([String: Any]) -> Int = { ($0["shopId"] as? NSNumber)?.intValue ?? -1 }
+        let shopID: ([String: Any]) -> Int = { self.positiveShopID($0["shopId"]) ?? -1 }
         var ordered = shops.filter { shopID($0) == preferredShopID }
         ordered += shops.filter { shopID($0) != preferredShopID }
         var lastError: ApiError?
         for shop in ordered {
             guard let accountID = shop["accountId"].map({ "\($0)" }), !accountID.isEmpty,
-                  let sid = shop["shopId"].map({ "\($0)" }), !sid.isEmpty else {
+                  let numericSID = positiveShopID(shop["shopId"]) else {
                 continue
             }
+            let sid = String(numericSID)
             let switched: [String: Any]
             do {
                 switched = try await request(
                     method: "POST", path: "/s/duopei-account/switch-account", session: base,
                     body: ["accountId": accountID], bodyType: .form,
-                    extraHeaders: ["sid": "50"], timeout: 15
+                    extraHeaders: ["sid": base.sid], timeout: 15
                 )
             } catch let error as ApiError {
+                // 切换使用基础令牌，其 AUTH 失效不能误当候选店铺权限失败。
                 if error.kind == .auth || error.kind == .ip || error.kind == .cancelled {
                     throw error
                 }
@@ -348,10 +342,14 @@ public final class ApiClient: @unchecked Sendable {
                 let balance = try await request(
                     method: "GET", path: "/s/balance/getBalance", session: candidate, timeout: 15
                 )
-                if parseCode(balance) == 0 {
-                    self.session = candidate
-                    return candidate
+                guard parseCode(balance) == 0 else { throw ApiError(.api, "候选店铺余额权限被拒绝") }
+                let clerkResponse = try await clerkGet(session: candidate)
+                guard let clerk = extractClerk(clerkResponse), clerk.shopId == nil || String(clerk.shopId!) == sid else {
+                    throw ApiError(.api, "候选店铺无可用店员权限")
                 }
+                guard !Task.isCancelled else { throw ApiError(.cancelled, "登录已取消") }
+                self.session = candidate
+                return candidate
             } catch let error as ApiError {
                 if error.kind == .ip || error.kind == .cancelled {
                     throw error
@@ -363,26 +361,90 @@ public final class ApiClient: @unchecked Sendable {
         throw ApiError(.auth, "no usable shop session: \(lastError?.message ?? "all shops rejected")")
     }
 
+    private func requireSuccess(_ response: [String: Any]) throws -> [String: Any] {
+        guard parseCode(response) == 0 else {
+            throw ApiError(.api, "业务操作被拒绝：\(response["msg"] as? String ?? response["message"] as? String ?? "未知业务错误")")
+        }
+        return response
+    }
+
+    private func dateRangeQuery(startTime: String, endTime: String, includesTime: Bool) throws -> String {
+        let pattern = includesTime ? "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$" : "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = includesTime ? "yyyy-MM-dd HH:mm:ss" : "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard startTime.range(of: pattern, options: .regularExpression) != nil,
+              endTime.range(of: pattern, options: .regularExpression) != nil,
+              let start = formatter.date(from: startTime), formatter.string(from: start) == startTime,
+              let end = formatter.date(from: endTime), formatter.string(from: end) == endTime,
+              start <= end else {
+            throw ApiError(.api, includesTime ? "日期范围必须为有效 yyyy-MM-dd HH:mm:ss" : "日期范围必须为有效 yyyy-MM-dd")
+        }
+        let encodedStart = startTime.addingPercentEncoding(withAllowedCharacters: formSafe)!
+        let encodedEnd = endTime.addingPercentEncoding(withAllowedCharacters: formSafe)!
+        return "startTime=\(encodedStart)&endTime=\(encodedEnd)"
+    }
+
+    @discardableResult
+    public func updateStatus(online: Bool, updateAutoOnline: Bool = false) async throws -> [String: Any] {
+        try requireSuccess(await request(method: "POST", path: "/s/c/clerk/updateStatus",
+            body: ["status": online ? "1" : "2", "updateAutoOnline": updateAutoOnline ? "true" : "false"], bodyType: .form))
+    }
+
+    @discardableResult
+    public func updateRandomOrderSwitch(enabled: Bool) async throws -> [String: Any] {
+        try requireSuccess(await request(method: "POST", path: "/s/c/clerk/updateRandomOrderSwitch",
+            body: ["randomOrderSwitch": enabled ? "true" : "false"], bodyType: .form))
+    }
+
+    public func getItemSwitchList() async throws -> [String: Any] {
+        try requireSuccess(await request(method: "POST", path: "/s/c/clerk/getItemSwitchList",
+            body: [String: String](), bodyType: .form))
+    }
+
+    @discardableResult
+    public func updateItemSwitch(switchID: Int, enabledIDs: [Int]) async throws -> [String: Any] {
+        let encoded = try JSONSerialization.data(withJSONObject: enabledIDs)
+        let ids = String(decoding: encoded, as: UTF8.self)
+        return try requireSuccess(await request(method: "POST", path: "/s/c/clerk/updateItemSwitch",
+            body: ["switchId": String(switchID), "switchIds": ids], bodyType: .form))
+    }
+
+    public func statisticsClerkOrder(startTime: String, endTime: String) async throws -> [String: Any] {
+        let query = try dateRangeQuery(startTime: startTime, endTime: endTime, includesTime: false)
+        return try requireSuccess(await request(method: "GET", path: "/s/c/statistics/statisticsClerkOrder?\(query)"))
+    }
+
+    public func orderList(startTime: String, endTime: String, pageNo: Int = 1, pageSize: Int = 1) async throws -> [String: Any] {
+        guard pageNo > 0, pageSize > 0 else { throw ApiError(.api, "分页参数必须为正整数") }
+        let query = try dateRangeQuery(startTime: startTime, endTime: endTime, includesTime: true)
+        return try requireSuccess(await request(method: "GET", path: "/s/c/order/list?pageNo=\(pageNo)&pageSize=\(pageSize)&\(query)"))
+    }
+
     // MARK: - Business calls
 
     /// GET /s/c/clerk/get. Returns the raw decoded dict; callers use
     /// extractClerk() to find the clerk object.
     public func clerkGet(session: DPGSession? = nil) async throws -> [String: Any] {
-        try await request(method: "GET", path: "/s/c/clerk/get", session: session, timeout: 15)
+        try requireSuccess(await request(method: "GET", path: "/s/c/clerk/get", session: session, timeout: 15))
     }
 
     /// GET /s/c/order/randomList. Returns the order list (possibly empty).
-    /// A missing list is treated as empty, not fatal, so polling continues.
+    /// 缺少合法数组是响应错误，不能伪造成没有订单。
     public func randomList(pageSize: Int = 20, timeout: TimeInterval = 15) async throws -> [[String: Any]] {
         let resp = try await request(
             method: "GET",
             path: "/s/c/order/randomList?pageNo=1&pageSize=\(pageSize)",
             timeout: timeout
         )
+        _ = try requireSuccess(resp)
         if let list = resp["list"] as? [[String: Any]] { return list }
         if let data = resp["data"] as? [String: Any],
            let list = data["list"] as? [[String: Any]] { return list }
-        return []
+        throw ApiError(.api, "订单响应缺少合法 list 数组")
     }
 
     /// GET /s/c/order/get?id=... (DPGrabber reconcile form, used to verify
@@ -390,7 +452,7 @@ public final class ApiClient: @unchecked Sendable {
     /// dict; the order object is in `order`.
     public func orderGet(orderID: String, timeout: TimeInterval = 15) async throws -> [String: Any] {
         let encoded = orderID.addingPercentEncoding(withAllowedCharacters: formSafe) ?? orderID
-        return try await request(method: "GET", path: "/s/c/order/get?id=\(encoded)", timeout: timeout)
+        return try requireSuccess(await request(method: "GET", path: "/s/c/order/get?id=\(encoded)", timeout: timeout))
     }
 
     /// POST /s/c/order/confirm?id=... . Returns the decoded dict.

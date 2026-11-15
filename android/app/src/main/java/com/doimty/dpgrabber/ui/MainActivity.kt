@@ -17,7 +17,12 @@ import com.doimty.dpgrabber.core.ApiClient
 import com.doimty.dpgrabber.core.ApiError
 import com.doimty.dpgrabber.core.AppConfig
 import com.doimty.dpgrabber.data.CredentialStore
-import com.doimty.dpgrabber.data.OkHttpTransport
+import com.doimty.dpgrabber.data.SessionRepository
+import com.doimty.dpgrabber.data.HistoryStore
+import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import com.doimty.dpgrabber.databinding.ActivityMainBinding
 import com.doimty.dpgrabber.engine.LogLevel
 import com.doimty.dpgrabber.service.ListenService
@@ -32,6 +37,12 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var store: CredentialStore
+    @Volatile private var accountGeneration = 0L
+    private val networkExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var networkBusy = false
+    private var lastRunning = false
+    private var historyGeneration = 0L
+    private val historyListener: () -> Unit = { runOnUiThread { refreshHistory() } }
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
@@ -57,6 +68,11 @@ class MainActivity : AppCompatActivity() {
         refreshListenStatus()
 
         binding.loginButton.setOnClickListener { verifyLogin() }
+        binding.onlineButton.setOnClickListener { networkAction { it.updateStatus(1, false) } }
+        binding.offlineButton.setOnClickListener { networkAction { it.updateStatus(2, false) } }
+        binding.randomOnButton.setOnClickListener { networkAction { it.updateRandomOrderSwitch(true) } }
+        binding.randomOffButton.setOnClickListener { networkAction { it.updateRandomOrderSwitch(false) } }
+        binding.itemTypesButton.setOnClickListener { editItemTypes() }
         binding.saveSettingsButton.setOnClickListener { saveSettings() }
         binding.startButton.setOnClickListener { onStartClicked() }
         binding.stopButton.setOnClickListener {
@@ -72,6 +88,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         LogBus.addListener(logListener)
+        HistoryStore.addListener(historyListener)
         binding.logView.text = ""
         for (line in LogBus.snapshot()) appendLog(line)
         if (LogBus.snapshot().isEmpty()) {
@@ -80,11 +97,28 @@ class MainActivity : AppCompatActivity() {
         // Note: fields are NOT reloaded here — reloading would discard
         // unsaved edits when returning from the advanced settings screen.
         refreshListenStatus()
+        refreshHistory()
+        refreshAccountInfo()
+        binding.root.post(statusRefresh)
+    }
+
+    private val statusRefresh = object : Runnable {
+        override fun run() {
+            refreshListenStatus()
+            binding.root.postDelayed(this, 1000)
+        }
     }
 
     override fun onPause() {
         super.onPause()
         LogBus.removeListener(logListener)
+        HistoryStore.removeListener(historyListener)
+        binding.root.removeCallbacks(statusRefresh)
+    }
+
+    override fun onDestroy() {
+        networkExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -118,8 +152,6 @@ class MainActivity : AppCompatActivity() {
             text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
         }
         return current.copy(
-            phone = binding.phoneInput.text.toString().trim(),
-            password = binding.passwordInput.text.toString(),
             minAmount = binding.minAmountInput.text.toString().toDoubleOrNull()
                 ?: throw IllegalArgumentException("最低金额必须是数字"),
             maxAmount = binding.maxAmountInput.text.toString().toDoubleOrNull()
@@ -135,9 +167,18 @@ class MainActivity : AppCompatActivity() {
     private fun saveSettings(showToast: Boolean = true): Boolean {
         return try {
             val config = readSettingsIntoConfig()
+            val phone = binding.phoneInput.text.toString().trim()
+            val password = binding.passwordInput.text.toString()
+            if (phone != store.loadPhone() || password != store.loadPassword()) {
+                check(!ListenService.isRunning) { "修改账号前请停止监听并等待退出" }
+                accountGeneration++
+                SessionRepository.invalidate()
+            }
+            val persisted = store.saveAccount(phone, password)
             store.saveConfig(config)
-            store.saveAccount(config.phone, config.password)
-            if (showToast) Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
+            if (!persisted) Toast.makeText(this, "设置已保存；账号凭据仅在当前进程内存中，未持久保存", Toast.LENGTH_LONG).show()
+            else if (showToast) Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
+            refreshHistory()
             true
         } catch (e: Exception) {
             Toast.makeText(
@@ -151,57 +192,70 @@ class MainActivity : AppCompatActivity() {
 
     /** "登录验证": runs the full login flow once on a background thread. */
     private fun verifyLogin() {
+        if (!HistoryStore.persistenceHealthy) { Toast.makeText(this, "历史存储异常，平台操作已锁定", Toast.LENGTH_LONG).show(); return }
         val phone = binding.phoneInput.text.toString().trim()
         val password = binding.passwordInput.text.toString()
         if (phone.isEmpty() || password.isEmpty()) {
             Toast.makeText(this, R.string.need_login_first, Toast.LENGTH_SHORT).show()
             return
         }
+        if (ListenService.isRunning) {
+            Toast.makeText(this, "请先停止监听再验证登录", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (networkBusy) return
         binding.loginStatus.text = getString(R.string.login_checking)
-        binding.loginButton.isEnabled = false
-        Thread {
+        setNetworkBusy(true)
+        val generation = accountGeneration
+        var requestRevision = SessionRepository.revision
+        networkExecutor.execute {
             try {
                 val config = store.loadConfig()
-                val client = ApiClient(
-                    aesKeyHex = config.aesKeyHex,
-                    aesIvHex = config.aesIvHex,
-                    aesKeyHexAlt = config.aesKeyHexAlt,
-                    aesIvHexAlt = config.aesIvHexAlt,
-                    verifyTls = config.verifyTls,
-                    transport = OkHttpTransport(config.verifyTls)
-                )
-                val session = client.sessionForAccount(phone, password, config.shopId)
+                val client = SessionRepository.forAccount(config, phone, password)
+                val loginRevision = SessionRepository.revision
+                requestRevision = loginRevision
+                client.resumeRequests()
+                val session = client.session ?: client.sessionForAccount(phone, password, config.shopId)
                 val clerk = try {
                     ApiClient.extractClerk(client.clerkGet(session))
                 } catch (e: ApiError) {
                     null
                 }
-                store.saveAccount(phone, password)
+                client.checkActive()
+                if (generation != accountGeneration || loginRevision != SessionRepository.revision) return@execute
+                val persisted = store.saveAccount(phone, password)
                 val name = clerk?.optString("name", "") ?: ""
                 val id = clerk?.optInt("id", 0) ?: 0
                 runOnUiThread {
                     binding.loginButton.isEnabled = true
+                    if (generation != accountGeneration || loginRevision != SessionRepository.revision || client.isCancelled) return@runOnUiThread
                     binding.loginStatus.text = getString(R.string.login_success) +
                         "（sid=${session.sid}" +
-                        (if (name.isNotEmpty()) "，$name ID：$id" else "") + "）"
-                    Toast.makeText(this, R.string.login_success, Toast.LENGTH_SHORT).show()
+                        (if (name.isNotEmpty()) "，店员信息已确认" else "") + "）"
+                    refreshHistory()
+                    if (!persisted) Toast.makeText(this, "登录成功；凭据仅当前进程可用，未持久保存", Toast.LENGTH_LONG).show()
+                    else Toast.makeText(this, R.string.login_success, Toast.LENGTH_SHORT).show()
                 }
             } catch (e: ApiError) {
                 runOnUiThread {
                     binding.loginButton.isEnabled = true
+                    if (generation != accountGeneration || requestRevision != SessionRepository.revision) return@runOnUiThread
                     binding.loginStatus.text =
-                        getString(R.string.login_failed) + "：" + e.messageText
+                        getString(R.string.login_failed) + "：登录或会话校验失败"
                 }
             } catch (e: Exception) {
                 // Unexpected failure (e.g. malformed JSON): never leave
                 // the button disabled and the status stuck on "checking".
                 runOnUiThread {
                     binding.loginButton.isEnabled = true
+                    if (generation != accountGeneration || requestRevision != SessionRepository.revision) return@runOnUiThread
                     binding.loginStatus.text =
-                        getString(R.string.login_failed) + "：" + (e.message ?: e.toString())
+                        getString(R.string.login_failed) + "：请求未完成"
                 }
+            } finally {
+                runOnUiThread { setNetworkBusy(false); refreshAccountInfo() }
             }
-        }.apply { isDaemon = true; start() }
+        }
     }
 
     private fun onStartClicked() {
@@ -222,17 +276,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startListening() {
+        if (!HistoryStore.persistenceHealthy) { Toast.makeText(this, "历史存储异常，平台操作已锁定", Toast.LENGTH_LONG).show(); return }
         ListenService.start(this)
         refreshListenStatus()
     }
 
     private fun refreshListenStatus() {
-        binding.listenStatus.text = if (ListenService.isRunning) {
-            getString(R.string.status_running)
-        } else {
-            getString(R.string.status_idle)
+        binding.listenStatus.text = ListenService.state
+        if (lastRunning && !ListenService.isRunning) {
+            refreshHistory()
+            refreshAccountInfo()
         }
-        binding.startButton.isEnabled = !ListenService.isRunning
+        lastRunning = ListenService.isRunning
+        binding.startButton.isEnabled = !ListenService.isRunning && !networkBusy
         binding.stopButton.isEnabled = ListenService.isRunning
     }
 
@@ -248,11 +304,194 @@ class MainActivity : AppCompatActivity() {
             LogLevel.DEBUG -> "DEBUG"
         }
         binding.logView.append("[${line.time}] [$prefix] ${line.text}\n")
+        val logText = binding.logView.text.toString()
+        if (logText.length > 100_000) binding.logView.text = logText.takeLast(80_000)
         // Keep the newest line visible.
         val scroll = binding.logView.parent
         if (scroll is android.widget.ScrollView) {
             scroll.post { scroll.fullScroll(android.view.View.FOCUS_DOWN) }
         }
+    }
+
+    private fun setNetworkBusy(busy: Boolean) {
+        networkBusy = busy
+        listOf(binding.loginButton, binding.onlineButton, binding.offlineButton,
+            binding.randomOnButton, binding.randomOffButton, binding.itemTypesButton,
+            binding.saveSettingsButton).forEach { it.isEnabled = !busy }
+        binding.phoneInput.isEnabled = !busy
+        binding.passwordInput.isEnabled = !busy
+        binding.startButton.isEnabled = !busy && !ListenService.isRunning
+    }
+
+    private fun networkAction(action: (ApiClient) -> Unit) {
+        if (isDestroyed || networkBusy || ListenService.isRunning) return
+        if (!HistoryStore.persistenceHealthy) { Toast.makeText(this, "历史存储异常，平台操作已锁定", Toast.LENGTH_LONG).show(); return }
+        val client = try { SessionRepository.forAccount(store.loadConfig(), store.loadPhone(), store.loadPassword()) }
+        catch (_: Exception) { return }
+        if (client.session == null) {
+            Toast.makeText(this, "请先登录并停止监听后操作", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val revision = SessionRepository.revision
+        setNetworkBusy(true)
+        networkExecutor.execute {
+            try {
+                client.resumeRequests()
+                action(client)
+            } catch (_: Exception) {
+                runOnUiThread { if (revision == SessionRepository.revision) Toast.makeText(this, "操作失败，已恢复原状态", Toast.LENGTH_LONG).show() }
+            } finally {
+                runOnUiThread { setNetworkBusy(false); refreshAccountInfo() }
+            }
+        }
+    }
+
+    private fun refreshAccountInfo() {
+        if (isDestroyed || networkBusy || ListenService.isRunning) return
+        if (!HistoryStore.persistenceHealthy) { Toast.makeText(this, "历史存储异常，平台操作已锁定", Toast.LENGTH_LONG).show(); return }
+        val client = try { SessionRepository.forAccount(store.loadConfig(), store.loadPhone(), store.loadPassword()) }
+        catch (_: Exception) { return }
+        val session = client.session
+        if (session == null) {
+            binding.accountOverview.text = "账户/店铺状态：未登录"
+            binding.statisticsOverview.text = "本周统计未读取；续费率 —；续单率 —；续客率口径待确认"
+            return
+        }
+        val revision = SessionRepository.revision
+        val range = com.doimty.dpgrabber.core.platformWeekRange(System.currentTimeMillis())
+        setNetworkBusy(true)
+        binding.statisticsOverview.text = "正在读取本周统计；续费率 —；续单率 —"
+        networkExecutor.execute {
+            try {
+                client.resumeRequests()
+                val clerk = ApiClient.extractClerk(client.clerkGet(session))
+                    ?: throw IllegalArgumentException("缺少店员状态")
+                val status = clerk.opt("status")?.toString() ?: "未知"
+                val random = clerk.opt("randomOrderSwitch")?.toString() ?: "未知"
+                runOnUiThread { if (revision == SessionRepository.revision) binding.accountOverview.text = "店铺 ${session.sid} · 在线状态 $status · 随机单 $random" }
+            } catch (_: Exception) {
+                runOnUiThread { if (revision == SessionRepository.revision) binding.accountOverview.text = "账户状态读取失败，旧状态已清除" }
+            }
+            val text = try {
+                com.doimty.dpgrabber.core.statisticsText(client.statisticsClerkOrder(range.monday, range.today))
+            } catch (_: Exception) {
+                val count = try {
+                    client.orderList("${range.monday} 00:00:00", "${range.today} 23:59:59", pageSize = 1)
+                        .opt("total")?.toString()?.toLongOrNull()?.takeIf { it >= 0 }?.toString() ?: "—"
+                } catch (_: Exception) { "—" }
+                "本周订单 $count 单（订单列表兜底）\n续费率 —；续单率 —；续客率：口径待确认"
+            }
+            runOnUiThread {
+                if (revision == SessionRepository.revision) binding.statisticsOverview.text = text
+                setNetworkBusy(false)
+            }
+        }
+    }
+
+    private fun editItemTypes() = networkAction { client ->
+        val revision = SessionRepository.revision
+        val response = client.getItemSwitchList()
+        val data = response.optJSONObject("data") ?: response
+        val items = data.optJSONArray("itemSwitchList") ?: throw IllegalArgumentException()
+        val selected = data.optJSONArray("clerkItemSwitchIds") ?: org.json.JSONArray()
+        val ids = (0 until items.length()).map { items.getJSONObject(it).getInt("id") }
+        val names = (0 until items.length()).map { items.getJSONObject(it).optString("name", ids[it].toString()) }.toTypedArray()
+        val checked = BooleanArray(ids.size) { index -> (0 until selected.length()).any { selected.optString(it) == ids[index].toString() } }
+        runOnUiThread {
+            if (isDestroyed || revision != SessionRepository.revision || client.isCancelled) return@runOnUiThread
+            AlertDialog.Builder(this).setTitle("接单类型")
+                .setMultiChoiceItems(names, checked) { dialog, index, enabled ->
+                    val list = (dialog as AlertDialog).listView
+                    val before = !enabled
+                    if (networkBusy || ListenService.isRunning || revision != SessionRepository.revision) {
+                        checked[index] = before
+                        list.setItemChecked(index, before)
+                        return@setMultiChoiceItems
+                    }
+                    val chosen = ids.filterIndexed { i, _ -> if (i == index) enabled else checked[i] }
+                    list.isEnabled = false
+                    networkAction { api ->
+                        try { api.updateItemSwitch(ids[index], chosen); checked[index] = enabled }
+                        catch (e: Exception) {
+                            checked[index] = before
+                            runOnUiThread { list.setItemChecked(index, before) }
+                            throw e
+                        } finally { runOnUiThread { list.isEnabled = true } }
+                    }
+                }.setPositiveButton("完成", null).show()
+        }
+    }
+
+    private fun refreshHistory() {
+        if (isDestroyed) return
+        val request = ++historyGeneration
+        val account = HistoryStore.accountKey(store.loadPhone())
+        Thread {
+            val entries: List<HistoryStore.Entry>
+            val counts: Map<com.doimty.dpgrabber.engine.OutcomeType, Int>
+            try {
+                HistoryStore(this).use { history ->
+                    entries = history.entries(account, 100)
+                    counts = history.todayCounts(account)
+                }
+            } catch (_: Exception) {
+                HistoryStore.markUnavailable()
+                runOnUiThread { if (!isDestroyed) binding.todayOverview.text = "历史读取失败；平台操作已锁定，原文件保留待修复" }
+                return@Thread
+            }
+            runOnUiThread {
+                if (isDestroyed || request != historyGeneration || account != HistoryStore.accountKey(store.loadPhone())) return@runOnUiThread
+                val types = com.doimty.dpgrabber.engine.OutcomeType.entries
+                val labels = listOf("成功", "失败", "风控", "未知", "跳过")
+                binding.todayOverview.text = types.mapIndexed { index, type -> "${labels[index]} ${counts[type] ?: 0}" }.joinToString(" · ") + "\n仅当前账号；Asia/Shanghai 持久历史"
+                binding.historyList.removeAllViews()
+                entries.forEach { entry ->
+                    val text = TextView(this).apply {
+                        setPadding(8, 12, 8, 12)
+                        val label = when (entry.outcome) {
+                            com.doimty.dpgrabber.engine.OutcomeType.SUCCESS -> "成功"
+                            com.doimty.dpgrabber.engine.OutcomeType.FAILED -> "失败"
+                            com.doimty.dpgrabber.engine.OutcomeType.SKIPPED -> "跳过"
+                            com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN -> "未知"
+                            com.doimty.dpgrabber.engine.OutcomeType.RISK -> "风控"
+                        }
+                        this.text = "$label · 店铺 ${entry.shop} · ${entry.orderId.takeLast(8)} · ${entry.reason}"
+                        setOnLongClickListener {
+                            val wechat = entry.order.optString("userWechatId", "")
+                            val memo = entry.order.optString("userMemo", "")
+                            AlertDialog.Builder(this@MainActivity).setItems(if (entry.outcome == com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN) arrayOf("拉黑客户", "添加备注关键词", "复制订单号", "只读核验未知结果（不重新提交）") else arrayOf("拉黑客户", "添加备注关键词", "复制订单号")) { _, which ->
+                                val config = store.loadConfig()
+                                when (which) {
+                                    0 -> if (wechat.isNotBlank()) { store.saveConfig(config.copy(blacklist = (config.blacklist + wechat).distinct())); binding.blacklistInput.setText((config.blacklist + wechat).distinct().joinToString("\n")) }
+                                    1 -> if (memo.isNotBlank()) { store.saveConfig(config.copy(memoKeywords = (config.memoKeywords + memo).distinct())); binding.memoKeywordsInput.setText((config.memoKeywords + memo).distinct().joinToString("\n")) }
+                                    2 -> getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("订单号", entry.orderId))
+                                    3 -> verifyUnknown(entry)
+                                }
+                            }.show()
+                            true
+                        }
+                    }
+                    binding.historyList.addView(text)
+                }
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    private fun verifyUnknown(entry: HistoryStore.Entry) = networkAction { client ->
+        require(entry.account == HistoryStore.accountKey(store.loadPhone()) && client.session?.sid == entry.shop) { "请登录记录对应的账号与店铺" }
+        val clerk = ApiClient.extractClerk(client.clerkGet()) ?: throw IllegalStateException("无法核验店员身份")
+        val ownId = ApiClient.parseCode(org.json.JSONObject().put("code", clerk.opt("id"))) ?: 0
+        require(ownId > 0)
+        val verdict = com.doimty.dpgrabber.core.reconcileOrder(client.orderGet(entry.orderId), ownId)
+        client.checkActive()
+        val type = when (verdict.verdict) {
+            com.doimty.dpgrabber.core.ReconcileVerdict.OK -> com.doimty.dpgrabber.engine.OutcomeType.SUCCESS
+            com.doimty.dpgrabber.core.ReconcileVerdict.FAIL -> if (verdict.reason == "被其他人抢走") com.doimty.dpgrabber.engine.OutcomeType.SKIPPED else com.doimty.dpgrabber.engine.OutcomeType.FAILED
+            else -> com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN
+        }
+        val resultStore = HistoryStore(this)
+        try { resultStore.reconcile(entry, type, if (type == com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN) "仍未核实，未重新提交" else "只读核验：${verdict.reason}") }
+        finally { resultStore.close() }
     }
 
     private fun trimNumber(value: Double): String {

@@ -64,12 +64,12 @@ class ApiClient(
             val code = obj.get("code")
             return when (code) {
                 is Int -> code
-                is Long -> code.toInt()
-                is Double -> if (code % 1.0 == 0.0) code.toInt() else null
+                is Long -> if (code in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) code.toInt() else null
+                is Double -> if (code.isFinite() && code % 1.0 == 0.0 && code in Int.MIN_VALUE.toDouble()..Int.MAX_VALUE.toDouble()) code.toInt() else null
                 is String -> {
                     val trimmed = code.trim()
                     trimmed.toIntOrNull()
-                        ?: trimmed.toDoubleOrNull()?.takeIf { it % 1.0 == 0.0 }?.toInt()
+                        ?: trimmed.toDoubleOrNull()?.takeIf { it.isFinite() && it % 1.0 == 0.0 && it in Int.MIN_VALUE.toDouble()..Int.MAX_VALUE.toDouble() }?.toInt()
                 }
                 else -> null
             }
@@ -89,16 +89,20 @@ class ApiClient(
             candidates.add(decoded)
             for (cand in candidates) {
                 if (!cand.has("id") || cand.isNull("id")) continue
-                val id = when (val raw = cand.get("id")) {
-                    is Int -> raw
-                    is Long -> raw.toInt()
-                    is String -> raw.toIntOrNull() ?: continue
-                    else -> continue
-                }
+                val id = parseCode(JSONObject().put("code", cand.get("id"))) ?: continue
                 if (id > 0) return cand
             }
             return null
         }
+    }
+
+    @Volatile private var cancelled = false
+    val isCancelled: Boolean get() = cancelled
+    fun cancel() { cancelled = true; transport.cancelAll() }
+    /** 已取消的客户端不可复活；新任务从仓库取得新实例。 */
+    fun resumeRequests() { checkActive() }
+    fun checkActive() {
+        if (cancelled || Thread.currentThread().isInterrupted) throw ApiError(ApiError.Kind.CANCELLED, "请求已停止；已发出的写请求结果可能未知")
     }
 
     // -- decryption -----------------------------------------------------
@@ -117,7 +121,7 @@ class ApiClient(
                 lastError = e
             }
         }
-        throw ApiError(ApiError.Kind.API, "response decryption failed: $lastError")
+        throw ApiError(ApiError.Kind.API, "响应解密失败")
     }
 
     /**
@@ -132,7 +136,7 @@ class ApiClient(
         val outer = try {
             JSONObject(String(raw, Charsets.UTF_8))
         } catch (e: Exception) {
-            throw ApiError(ApiError.Kind.API, "response is not valid JSON: ${e.message}")
+            throw ApiError(ApiError.Kind.API, "响应不是有效JSON")
         }
         val envelope = if (outer.has("response") && !outer.isNull("response")) {
             outer.get("response")
@@ -162,11 +166,13 @@ class ApiClient(
         val code = parseCode(resolved)
             ?: throw ApiError(ApiError.Kind.API, "response has no valid business code")
         if (code == 401 || code == 403) {
-            throw ApiError(ApiError.Kind.AUTH, "login state invalid (code $code)")
+            val reason = resolved.optString("msg", resolved.optString("message", ""))
+            val permission = listOf("没有操作权限", "无操作权限", "不是店员", "非店员").any { reason.contains(it) }
+            throw ApiError(if (permission) ApiError.Kind.PERMISSION else ApiError.Kind.AUTH, "会话或店铺访问被拒绝")
         }
         val msg = resolved.optString("msg", resolved.optString("message", ""))
         if (code == 1 && msg.contains("IP")) {
-            throw ApiError(ApiError.Kind.IP, "IP control: $msg")
+            throw ApiError(ApiError.Kind.IP, "平台IP风控暂停")
         }
         return resolved
     }
@@ -188,6 +194,7 @@ class ApiClient(
         extraHeaders: Map<String, String> = emptyMap(),
         timeoutSec: Double = 15.0
     ): JSONObject {
+        checkActive()
         require(path.startsWith("/s/") && timeoutSec > 0) {
             "invalid request path or timeout"
         }
@@ -225,10 +232,15 @@ class ApiClient(
                 (timeoutSec * 1000).toLong().coerceAtLeast(100)
             )
         } catch (e: Exception) {
-            throw ApiError(ApiError.Kind.NETWORK, "request failed: ${e.message}")
+            checkActive()
+            throw ApiError(ApiError.Kind.NETWORK, "网络请求失败")
         }
+        checkActive()
         if (resp.statusCode == 401 || resp.statusCode == 403) {
-            throw ApiError(ApiError.Kind.AUTH, "login state invalid (HTTP ${resp.statusCode})")
+            try { decodeResponse(resp.body) } catch (e: ApiError) {
+                if (e.kind == ApiError.Kind.PERMISSION) throw e
+            }
+            throw ApiError(ApiError.Kind.AUTH, "会话失效 (HTTP ${resp.statusCode})")
         }
         if (resp.statusCode >= 400) {
             throw ApiError(ApiError.Kind.NETWORK, "HTTP ${resp.statusCode}")
@@ -258,8 +270,11 @@ class ApiClient(
     @Throws(ApiError::class)
     fun loginAccount(phone: String, password: String): Session {
         val cleanPhone = phone.trim()
-        val secret = password.trim()
-        if (cleanPhone.isEmpty() || secret.isEmpty()) {
+        val cleanPassword = password.trim()
+        val secret = if (cleanPassword.matches(Regex("(?i)[0-9a-f]{32}"))) cleanPassword.lowercase() else
+            java.security.MessageDigest.getInstance("MD5").digest(cleanPassword.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 255) }
+        if (cleanPhone.isEmpty() || cleanPassword.isEmpty()) {
             throw ApiError(ApiError.Kind.API, "phone and password are required")
         }
         val body = mapOf(
@@ -280,7 +295,7 @@ class ApiClient(
         if (resp.optInt("code", -1) != 0) {
             throw ApiError(
                 ApiError.Kind.AUTH,
-                "login rejected: ${resp.optString("msg", resp.optString("message", ""))}"
+                "登录被拒绝"
             )
         }
         val data = resp.optJSONObject("data")
@@ -288,7 +303,9 @@ class ApiClient(
         if (token.isEmpty()) {
             throw ApiError(ApiError.Kind.AUTH, "login response has no token")
         }
-        return Session(token = token, sid = "50")
+        val sid = data?.optString("shopId", "")?.trim()?.takeIf { it.toIntOrNull()?.let { id -> id > 0 } == true }
+            ?: throw ApiError(ApiError.Kind.AUTH, "登录响应缺少有效店铺身份")
+        return Session(token = token, sid = sid)
     }
 
     /**
@@ -298,11 +315,12 @@ class ApiClient(
      * failures move on to the next shop (DPGAPIClient.m:298-361).
      */
     @Throws(ApiError::class)
+    @Synchronized
     fun sessionForAccount(phone: String, password: String, preferredShopId: Int = 92): Session {
         val base = loginAccount(phone, password)
         val resp = request(
             "GET", "/s/duopei-account/list-shop-account", session = base,
-            extraHeaders = mapOf("sid" to "50"), timeoutSec = 15.0
+            extraHeaders = mapOf("sid" to base.sid), timeoutSec = 15.0
         )
         if (resp.optInt("code", -1) != 0) {
             throw ApiError(ApiError.Kind.API, "shop list rejected")
@@ -327,7 +345,7 @@ class ApiClient(
                 request(
                     "POST", "/s/duopei-account/switch-account", session = base,
                     body = mapOf("accountId" to accountId), bodyType = "form",
-                    extraHeaders = mapOf("sid" to "50"), timeoutSec = 15.0
+                    extraHeaders = mapOf("sid" to base.sid), timeoutSec = 15.0
                 )
             } catch (e: ApiError) {
                 if (e.kind == ApiError.Kind.AUTH || e.kind == ApiError.Kind.IP ||
@@ -344,14 +362,15 @@ class ApiClient(
             if (token.isEmpty()) continue
             val candidate = Session(token = token, sid = sid)
             try {
-                val balance = request(
-                    "GET", "/s/balance/getBalance", session = candidate, timeoutSec = 15.0
-                )
-                if (balance.optInt("code", -1) == 0) {
+                val probe = clerkGet(candidate)
+                val clerk = extractClerk(probe)
+                val actualShop = clerk?.opt("shopId")?.toString()
+                if (parseCode(probe) == 0 && clerk != null && (actualShop.isNullOrBlank() || actualShop == sid)) {
                     session = candidate
                     return candidate
                 }
             } catch (e: ApiError) {
+                // 只有候选店铺的店员探测允许 AUTH 拒绝；基础登录/列表/切换仍立即中止。
                 if (e.kind == ApiError.Kind.IP || e.kind == ApiError.Kind.CANCELLED) {
                     throw e
                 }
@@ -365,12 +384,44 @@ class ApiClient(
         )
     }
 
+    private fun successful(response: JSONObject): JSONObject {
+        if (parseCode(response) != 0) throw ApiError(ApiError.Kind.API, "平台拒绝操作")
+        return response
+    }
+
+    fun updateStatus(status: Int, updateAutoOnline: Boolean = false): JSONObject {
+        require(status == 1 || status == 2)
+        return successful(request("POST", "/s/c/clerk/updateStatus", body = mapOf(
+            "status" to status, "updateAutoOnline" to updateAutoOnline.toString()), bodyType = "form"))
+    }
+
+    fun updateRandomOrderSwitch(enabled: Boolean): JSONObject = successful(request(
+        "POST", "/s/c/clerk/updateRandomOrderSwitch", body = mapOf("randomOrderSwitch" to enabled.toString()), bodyType = "form"))
+
+    fun getItemSwitchList(): JSONObject = successful(request("POST", "/s/c/clerk/getItemSwitchList",
+        body = emptyMap<String, String>(), bodyType = "form"))
+
+    fun updateItemSwitch(switchId: Int, switchIds: List<Int>): JSONObject = successful(request(
+        "POST", "/s/c/clerk/updateItemSwitch", body = mapOf("switchId" to switchId,
+            "switchIds" to JSONArray(switchIds).toString()), bodyType = "form"))
+
+    fun statisticsClerkOrder(startTime: String, endTime: String): JSONObject {
+        require(Regex("\\d{4}-\\d{2}-\\d{2}").matches(startTime) && Regex("\\d{4}-\\d{2}-\\d{2}").matches(endTime))
+        return successful(request("GET", "/s/c/statistics/statisticsClerkOrder?startTime=${percentEncode(startTime)}&endTime=${percentEncode(endTime)}"))
+    }
+
+    fun orderList(startTime: String, endTime: String, pageNo: Int = 1, pageSize: Int = 20): JSONObject {
+        val pattern = Regex("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}")
+        require(pattern.matches(startTime) && pattern.matches(endTime) && pageNo > 0 && pageSize > 0)
+        return successful(request("GET", "/s/c/order/list?pageNo=$pageNo&pageSize=$pageSize&startTime=${percentEncode(startTime)}&endTime=${percentEncode(endTime)}"))
+    }
+
     // -- business calls -------------------------------------------------
 
     /** GET /s/c/clerk/get. Returns the raw decoded dict. */
     @Throws(ApiError::class)
     fun clerkGet(session: Session? = null): JSONObject =
-        request("GET", "/s/c/clerk/get", session = session, timeoutSec = 15.0)
+        successful(request("GET", "/s/c/clerk/get", session = session, timeoutSec = 15.0))
 
     /**
      * GET /s/c/order/randomList. Returns the order list (possibly empty).
@@ -382,11 +433,12 @@ class ApiClient(
             "GET", "/s/c/order/randomList?pageNo=1&pageSize=$pageSize",
             timeoutSec = timeoutSec
         )
+        successful(resp)
         val orders = resp.optJSONArray("list")
         if (orders != null) return orders
         val data = resp.optJSONObject("data")
         val nested = data?.optJSONArray("list")
-        return nested ?: JSONArray()
+        return nested ?: throw ApiError(ApiError.Kind.API, "订单列表字段缺失或格式错误")
     }
 
     /**
@@ -397,7 +449,7 @@ class ApiClient(
     @Throws(ApiError::class)
     fun orderGet(orderId: String, timeoutSec: Double = 15.0): JSONObject {
         val path = "/s/c/order/get?id=${percentEncode(orderId)}"
-        return request("GET", path, timeoutSec = timeoutSec)
+        return successful(request("GET", path, timeoutSec = timeoutSec))
     }
 
     /** POST /s/c/order/confirm?id=... . Returns the decoded dict. */

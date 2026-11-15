@@ -5,6 +5,8 @@ package com.doimty.dpgrabber.core
  * interface, so unit tests can stub it and never send a real request.
  */
 interface HttpTransport {
+    fun cancelAll() {}
+
     fun request(
         method: String,
         url: String,

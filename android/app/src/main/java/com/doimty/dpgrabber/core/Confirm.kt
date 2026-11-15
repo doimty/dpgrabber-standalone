@@ -16,12 +16,14 @@ import org.json.JSONObject
 val CONFIRMED_WORDS = listOf("已接单", "已确认", "接单成功", "确认成功")
 
 /** A confirm reply whose message contains one of these is terminally failed. */
-val TERMINAL_WORDS = listOf("取消", "已被", "不存在", "无权", "权限", "失效", "超时")
+val QUALIFICATION_WORDS = listOf("续费率", "达标", "资质", "资格", "额度", "次数不足", "上限", "本周订单")
+val TERMINAL_WORDS = listOf("取消", "已被", "不存在", "无权", "权限", "失效", "超时", "跑走", "跑掉") + QUALIFICATION_WORDS
 
 /** Human-readable reason for a terminal confirm failure (DPGTerminalReason). */
 fun terminalReason(message: String?): String {
     val text = message ?: ""
-    for (word in listOf("已被", "被其他", "他人抢", "别人抢", "抢走")) {
+    if (QUALIFICATION_WORDS.any { text.contains(it) }) return "接单资质不满足"
+    for (word in listOf("已被", "被其他", "他人抢", "别人抢", "抢走", "跑走", "跑掉")) {
         if (text.contains(word)) return "被其他人抢走"
     }
     if (text.contains("取消")) return "已取消"
@@ -29,7 +31,8 @@ fun terminalReason(message: String?): String {
     if (text.contains("无权") || text.contains("权限")) return "无确认权限"
     if (text.contains("失效")) return "订单已失效"
     if (text.contains("超时")) return "确认超时"
-    return if (text.isNotEmpty()) text else "平台拒绝确认"
+    if (listOf("资质", "资格", "不满足", "不符合").any { text.contains(it) }) return "接单资质不满足"
+    return "平台拒绝确认"
 }
 
 /** Outcome of classifying one confirm response. */
@@ -38,6 +41,8 @@ enum class ConfirmOutcome {
     OK,
     /** A terminal message; [reason] explains it. */
     FAIL,
+    /** Success-like wording with a nonzero code requires readback, not another write. */
+    VERIFY,
     /** Anything else: retry until the deadline. */
     RETRY
 }
@@ -52,12 +57,13 @@ fun classifyConfirm(result: JSONObject?): ConfirmClassification {
     if (result == null) return ConfirmClassification(ConfirmOutcome.RETRY, "")
     val code = ApiClient.parseCode(result)
     val message = result.optString("msg", result.optString("message", ""))
-    if (code == 0) return ConfirmClassification(ConfirmOutcome.OK, "")
-    if (CONFIRMED_WORDS.any { message.contains(it) }) {
-        return ConfirmClassification(ConfirmOutcome.OK, "")
-    }
     if (TERMINAL_WORDS.any { message.contains(it) }) {
         return ConfirmClassification(ConfirmOutcome.FAIL, terminalReason(message))
+    }
+    val negative = listOf("未确认成功", "未接单", "未成功", "没有确认成功", "没有接单成功", "尚未确认", "尚未接单").any { message.contains(it) }
+    if (code == 0 && !negative) return ConfirmClassification(ConfirmOutcome.OK, "")
+    if (!negative && CONFIRMED_WORDS.any { message.contains(it) }) {
+        return ConfirmClassification(ConfirmOutcome.VERIFY, "返回码未确认成功，需回查归属")
     }
     return ConfirmClassification(ConfirmOutcome.RETRY, message)
 }
@@ -72,6 +78,13 @@ fun confirmBudgetSeconds(order: JSONObject?, windowSec: Double, fallbackSec: Dou
     val budget = if (createMs > 0) windowSec else fallbackSec
     if (!budget.isFinite() || budget <= 0) return 20.0
     return budget
+}
+
+fun confirmWaitSeconds(order: JSONObject, sid: String, config: AppConfig, nowMs: Long): Double {
+    val wait = config.confirmWaitByShop[sid] ?: config.globalWaitSec
+    val created = normalizeMs(order.opt("createTime"))
+    val age = if (created > 0) maxOf(0.0, (nowMs - created) / 1000.0) else 0.0
+    return maxOf(0.0, wait - age)
 }
 
 /** Verdict of one order/get verification. */
@@ -101,23 +114,15 @@ fun reconcileOrder(response: JSONObject?, ownClerkId: Int): ReconcileResult {
     val message = payload.optString("msg", payload.optString("message", "")).ifEmpty {
         response?.optString("msg", "") ?: ""
     }
-    val status = payload.opt("status")?.let { raw ->
-        when (raw) {
-            is Number -> raw.toInt()
-            is String -> raw.toIntOrNull() ?: 0
-            else -> 0
-        }
-    } ?: 0
+    val status = payload.opt("status")?.let { ApiClient.parseCode(JSONObject().put("code", it)) }
+    if (TERMINAL_WORDS.any { message.contains(it) } || status == -1) return ReconcileResult(ReconcileVerdict.FAIL, terminalReason(message))
+    val negative = listOf("未确认成功", "未接单", "未成功", "没有确认成功", "尚未确认", "尚未接单").any { message.contains(it) }
+    if (negative) return ReconcileResult(ReconcileVerdict.UNKNOWN, "订单状态与文案未能确认成功")
     val confirmed = CONFIRMED_WORDS.any { message.contains(it) } || status == 2 || status == 3
     if (confirmed) {
-        val clerkId = payload.opt("clerkId")?.let { raw ->
-            when (raw) {
-                is Number -> raw.toInt()
-                is String -> raw.toIntOrNull() ?: 0
-                else -> 0
-            }
-        } ?: 0
-        if (ownClerkId > 0 && clerkId > 0 && clerkId != ownClerkId) {
+        val clerkId = payload.opt("clerkId")?.let { ApiClient.parseCode(JSONObject().put("code", it)) } ?: 0
+        if (ownClerkId <= 0 || clerkId <= 0) return ReconcileResult(ReconcileVerdict.UNKNOWN, "订单已接单，但无法核实归属")
+        if (clerkId != ownClerkId) {
             return ReconcileResult(ReconcileVerdict.FAIL, "被其他人抢走")
         }
         return ReconcileResult(ReconcileVerdict.OK, "")

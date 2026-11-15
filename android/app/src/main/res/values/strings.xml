@@ -56,12 +56,12 @@
     <string name="label_aes_iv">主 AES IV（十六进制）</string>
     <string name="label_aes_key_alt">备用 AES 密钥（十六进制）</string>
     <string name="label_aes_iv_alt">备用 AES IV（十六进制）</string>
-    <string name="label_verify_tls">验证服务器证书（建议开启）</string>
+    <string name="label_verify_tls">验证服务器证书（强制开启）</string>
     <string name="advanced_saved">高级设置已保存</string>
     <string name="advanced_invalid">高级设置有误：%1$s</string>
     <string name="advanced_hint_keys">密钥用于解密服务端响应；主密钥解密失败时自动尝试备用密钥。以能解密为准，上线前须以真实接口验证。</string>
 
     <!-- 杂项 -->
-    <string name="credentials_unencrypted_warning">注意：本机加密存储不可用，账号密码以普通方式保存，请注意设备安全。</string>
+    <string name="credentials_unencrypted_warning">本机加密存储不可用：凭据仅保留当前进程，退出后需重新输入，不会自动明文保存。旧凭据须恢复加密存储后安全迁移。</string>
     <string name="notification_permission_rationale">监听以前台服务运行，需要通知权限以显示运行状态。</string>
 </resources>

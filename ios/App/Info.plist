@@ -24,13 +24,6 @@
 	<true/>
 	<key>MinimumOSVersion</key>
 	<string>15.0</string>
-	<key>UIBackgroundModes</key>
-	<array>
-		<!-- Silent-audio keep-alive (see AudioKeepAlive.swift). Our own
-		     app declaring its own background mode: legal. iOS may still
-		     suspend the app; see README.md for the honest limits. -->
-		<string>audio</string>
-	</array>
 	<key>UIDeviceFamily</key>
 	<array>
 		<integer>1</integer>

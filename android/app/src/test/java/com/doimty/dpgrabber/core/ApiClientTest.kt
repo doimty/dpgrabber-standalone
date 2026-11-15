@@ -395,7 +395,7 @@ class LoginFlowTest {
         val transport = FakeTransport()
         transport.scriptJson(
             "/s/duopei-account/login",
-            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "login-token") })
+            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "login-token"); put("shopId", 50) })
         )
         val shops = org.json.JSONArray().apply {
             put(JSONObject().apply { put("shopId", 55); put("accountId", "a55") })
@@ -409,7 +409,7 @@ class LoginFlowTest {
             "/s/duopei-account/switch-account",
             TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "shop-token") })
         )
-        transport.scriptJson("/s/balance/getBalance", TestKit.plain("code" to 0))
+        transport.script("/s/c/clerk/get", 200, """{"code":0,"clerk":{"id":7}}""")
         return transport
     }
 
@@ -446,7 +446,7 @@ class LoginFlowTest {
         val transport = FakeTransport()
         transport.scriptJson(
             "/s/duopei-account/login",
-            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "t") })
+            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "t"); put("shopId", 50) })
         )
         val shops = org.json.JSONArray().apply {
             put(JSONObject().apply { put("shopId", 92); put("accountId", "bad") })
@@ -465,7 +465,7 @@ class LoginFlowTest {
             200,
             """{"code":0,"data":{"token":"good-token"}}"""
         )
-        transport.scriptJson("/s/balance/getBalance", TestKit.plain("code" to 0))
+        transport.script("/s/c/clerk/get", 200, """{"code":0,"clerk":{"id":7}}""")
         val client = TestKit.client(transport)
         val session = client.sessionForAccount("13800138000", "secret", 92)
         assertEquals("good-token", session.token)
@@ -543,10 +543,11 @@ class RandomListTest {
     }
 
     @Test
-    fun `missing list is empty not fatal`() {
+    fun `missing list is rejected not fabricated empty`() {
         val transport = FakeTransport()
         transport.scriptJson("/s/c/order/randomList", TestKit.plain("code" to 0))
         val client = TestKit.client(transport)
-        assertEquals(0, client.randomList().length())
+        try { client.randomList(); org.junit.Assert.fail("应拒绝缺失列表") }
+        catch (error: ApiError) { assertEquals(ApiError.Kind.API, error.kind) }
     }
 }

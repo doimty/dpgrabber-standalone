@@ -103,12 +103,23 @@
                 android:text="@string/label_verify_tls"
                 android:textSize="14sp" />
 
-            <Switch
+            <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/verifyTlsSwitch"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
         </LinearLayout>
 
+        <TextView style="@style/FieldLabel" android:text="店铺等待秒数：每行 sid=秒" />
+        <EditText android:id="@+id/shopWaitInput" style="@style/FieldInput" android:inputType="textMultiLine" android:minLines="4" />
+        <TextView style="@style/FieldLabel" android:text="其他店铺全局等待秒数（0–120）" />
+        <EditText android:id="@+id/globalWaitInput" style="@style/FieldInput" android:inputType="numberDecimal" />
+        <TextView style="@style/FieldLabel" android:text="连续运行秒数（0 不限制；休息不是多账号轮换）" />
+        <EditText android:id="@+id/runDurationInput" style="@style/FieldInput" android:inputType="numberDecimal" />
+        <TextView style="@style/FieldLabel" android:text="休息秒数" />
+        <EditText android:id="@+id/restDurationInput" style="@style/FieldInput" android:inputType="numberDecimal" />
+        <androidx.appcompat.widget.SwitchCompat android:id="@+id/autoStopSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="接单成功后自动停止（立即保存）" />
+        <androidx.appcompat.widget.SwitchCompat android:id="@+id/onlineAfterLoginSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="任务登录后上线（立即保存）" />
+        <TextView style="@style/FieldLabel" android:text="当前仅支持单账号闭环；多账号轮换未实现。TLS 始终校验。" />
         <Button
             android:id="@+id/saveAdvancedButton"
             style="@style/PrimaryButton"

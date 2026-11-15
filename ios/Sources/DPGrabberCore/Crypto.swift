@@ -17,6 +17,43 @@ public enum CryptoError: Error, Equatable {
     case decryptionFailed(String)
 }
 
+/// 登录协议使用 MD5，不用于本地密码存储；已有摘要保持原值，避免重复摘要。
+public func loginPasswordDigest(_ password: String) -> String {
+    if password.count == 32, password.allSatisfy({ $0.isASCII && $0.isHexDigit }) { return password }
+    var bytes = Array(password.utf8)
+    let bitLength = UInt64(bytes.count) * 8
+    bytes.append(0x80)
+    while bytes.count % 64 != 56 { bytes.append(0) }
+    for i in 0..<8 { bytes.append(UInt8(truncatingIfNeeded: bitLength >> (i * 8))) }
+    let shifts: [UInt32] = [7,12,17,22, 5,9,14,20, 4,11,16,23, 6,10,15,21]
+    let constants = (0..<64).map { UInt32(abs(sin(Double($0 + 1))) * 4294967296.0) }
+    var state: [UInt32] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476]
+    for offset in stride(from: 0, to: bytes.count, by: 64) {
+        let words: [UInt32] = (0..<16).map { i in
+            let j = offset + i * 4
+            return UInt32(bytes[j]) | UInt32(bytes[j+1]) << 8 | UInt32(bytes[j+2]) << 16 | UInt32(bytes[j+3]) << 24
+        }
+        var a = state[0], b = state[1], c = state[2], d = state[3]
+        for i in 0..<64 {
+            let f: UInt32
+            let g: Int
+            switch i {
+            case 0..<16: f = (b & c) | (~b & d); g = i
+            case 16..<32: f = (d & b) | (~d & c); g = (5 * i + 1) % 16
+            case 32..<48: f = b ^ c ^ d; g = (3 * i + 5) % 16
+            default: f = c ^ (b | ~d); g = (7 * i) % 16
+            }
+            let value = a &+ f &+ constants[i] &+ words[g]
+            let shift = shifts[(i / 16) * 4 + i % 4]
+            a = d; d = c; c = b
+            b = b &+ ((value << shift) | (value >> (32 - shift)))
+        }
+        state[0] &+= a; state[1] &+= b; state[2] &+= c; state[3] &+= d
+    }
+    return state.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        .map { String(format: "%02x", $0) }.joined()
+}
+
 /// Hex string -> bytes. Raises on bad input.
 public func hexDecode(_ text: String) throws -> [UInt8] {
     let clean = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -87,9 +124,10 @@ public func normalizeMs(_ value: Any?) -> Int {
     if let n = value as? NSNumber { num = n.doubleValue }
     else if let s = value as? String, let d = Double(s) { num = d }
     else { return 0 }
-    if num <= 0 { return 0 }
-    if num < 1e12 { return Int(num * 1000) }
-    return Int(num)
+    guard num.isFinite, num > 0 else { return 0 }
+    let milliseconds = num < 1e12 ? num * 1000 : num
+    guard milliseconds < Double(Int.max) else { return 0 }
+    return Int(milliseconds)
 }
 
 /// Order amount in cents -> yuan.
@@ -109,12 +147,14 @@ public func parseCode(_ object: Any?) -> Int? {
         // JSONSerialization produces a boolean NSNumber (ObjC type "c")
         // for true/false; reject those so a JSON bool is never read as 0/1.
         if String(cString: n.objCType) == "c" { return nil }
+        let value = n.doubleValue
+        guard value.isFinite, value.rounded() == value, value >= Double(Int.min), value < Double(Int.max) else { return nil }
         return n.intValue
     }
     if let s = code as? String {
         let trimmed = s.trimmingCharacters(in: .whitespaces)
         if let i = Int(trimmed) { return i }
-        if let d = Double(trimmed), d == d.rounded() { return Int(d) }
+        if let d = Double(trimmed), d.isFinite, d == d.rounded(), d >= Double(Int.min), d < Double(Int.max) { return Int(d) }
     }
     return nil
 }

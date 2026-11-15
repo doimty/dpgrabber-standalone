@@ -37,9 +37,10 @@ public struct OrderFilter {
             return (false, "订单缺少 id 字段")
         }
         let amount = amountYuan(fromCents: order["totalAmount"])
+        guard amount.isFinite, amount >= 0 else { return (false, "订单金额无效") }
         let wechat = (order["userWechatId"] as? String) ?? ""
         if !wechat.isEmpty, blacklist.contains(wechat) {
-            return (false, "客户在黑名单中: \(wechat)")
+            return (false, "客户在黑名单中（标识已脱敏）")
         }
         if amount < minAmount {
             return (false, String(format: "金额 %.2f 元低于最低金额", amount))
@@ -54,7 +55,7 @@ public struct OrderFilter {
         if !memo.isEmpty, !memoKeywords.isEmpty {
             let lowered = memo.lowercased()
             for keyword in memoKeywords where lowered.contains(keyword.lowercased()) {
-                return (false, "订单备注命中关键词[\(keyword)]")
+                return (false, "订单备注命中屏蔽关键词")
             }
         }
         return (true, "")

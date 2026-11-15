@@ -34,7 +34,7 @@ APP_FILES = [
     "CredentialStore.swift", "DPGrabberApp.swift", "LogStore.swift",
     "SettingsView.swift", "VoiceAnnouncer.swift",
 ]
-FRAMEWORKS = ["AVFoundation.framework", "Security.framework", "UserNotifications.framework"]
+FRAMEWORKS = ["AVFoundation.framework", "Combine.framework", "Security.framework", "UIKit.framework", "UserNotifications.framework"]
 
 
 def obj_id(seed: str) -> str:

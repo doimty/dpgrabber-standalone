@@ -6,6 +6,7 @@
 
 import SwiftUI
 
+@MainActor
 struct SettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.presentationMode) private var presentationMode
@@ -24,6 +25,7 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: 100)
                 }
+                .disabled(viewModel.connectionEditingDisabled)
                 HStack {
                     Text("请求超时（秒）")
                     Spacer()
@@ -35,8 +37,8 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: 100)
                 }
-                Toggle("校验服务器证书（TLS）", isOn: $viewModel.config.verifyTLS)
-                Text("关闭后将接受任意证书，仅用于排障；正常使用请保持开启。")
+                Text("服务器证书校验始终开启")
+                Text("正式版本不支持绕过 TLS 证书校验。")
                     .font(.footnote)
                     .foregroundColor(.secondary)
             }
@@ -61,6 +63,24 @@ struct SettingsView: View {
                     .font(.system(.body, design: .monospaced))
                 Button("恢复默认密钥") { viewModel.resetAESKeys() }
             }
+            .disabled(viewModel.connectionEditingDisabled)
+
+            Section(header: Text("店铺等待与定时休息")) {
+                Toggle("使用店铺等待表", isOn: $viewModel.config.useShopWait)
+                ForEach(viewModel.config.confirmWaitByShop.keys.sorted(), id: \.self) { sid in
+                    Stepper("店铺 \(sid)：\(String(format: "%.1f", viewModel.config.confirmWaitByShop[sid] ?? 0)) 秒",
+                        value: Binding(get: { viewModel.config.confirmWaitByShop[sid] ?? 0 },
+                                       set: { viewModel.setShopWait(sid, seconds: $0) }), in: 0...120, step: 0.5)
+                }
+                Stepper("其他店铺等待 \(String(format: "%.1f", viewModel.config.globalWaitSec)) 秒", value: $viewModel.config.globalWaitSec, in: 0...120, step: 0.5)
+                Toggle("运行后定时休息（与账号轮换独立）", isOn: $viewModel.config.runRestEnabled)
+                TextField("运行时长（秒）", text: doubleBinding(get: { viewModel.config.runDurationSec }, set: { viewModel.config.runDurationSec = $0 }))
+                    .keyboardType(.decimalPad)
+                TextField("休息时长（秒）", text: doubleBinding(get: { viewModel.config.restDurationSec }, set: { viewModel.config.restDurationSec = $0 }))
+                    .keyboardType(.decimalPad)
+                Text("当前仅支持单账号；多账号轮换尚未实现。进入后台将停止，不使用静音音频保活。")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
 
             Section(header: Text("其他")) {
                 HStack {
@@ -78,8 +98,7 @@ struct SettingsView: View {
 
             Section {
                 Button("保存设置") {
-                    viewModel.saveSettings()
-                    presentationMode.wrappedValue.dismiss()
+                    if viewModel.saveSettings() { presentationMode.wrappedValue.dismiss() }
                 }
             }
         }
@@ -103,7 +122,7 @@ struct SettingsView: View {
                 return value == value.rounded() && abs(value) < 1_000_000
                     ? String(Int(value)) : String(value)
             },
-            set: { set(Double($0) ?? get()) }
+            set: { text in if let value = Double(text), value.isFinite { set(value) } }
         )
     }
 }

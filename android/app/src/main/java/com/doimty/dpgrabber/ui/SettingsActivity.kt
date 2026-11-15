@@ -17,6 +17,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var store: CredentialStore
+    private var rollingBack = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,7 +35,32 @@ class SettingsActivity : AppCompatActivity() {
         binding.aesIvInput.setText(config.aesIvHex)
         binding.aesKeyAltInput.setText(config.aesKeyHexAlt)
         binding.aesIvAltInput.setText(config.aesIvHexAlt)
-        binding.verifyTlsSwitch.isChecked = config.verifyTls
+        binding.verifyTlsSwitch.isChecked = true
+        binding.verifyTlsSwitch.isEnabled = false
+        binding.shopWaitInput.setText(config.confirmWaitByShop.entries.joinToString("\n") { "${it.key}=${it.value}" })
+        binding.globalWaitInput.setText(trimNumber(config.globalWaitSec))
+        binding.runDurationInput.setText(trimNumber(config.runDurationSec))
+        binding.restDurationInput.setText(trimNumber(config.restDurationSec))
+        binding.autoStopSwitch.isChecked = config.autoStopAfterGrab
+        binding.onlineAfterLoginSwitch.isChecked = config.onlineAfterLogin
+        binding.autoStopSwitch.setOnCheckedChangeListener { _, checked ->
+            if (!rollingBack) try { store.saveConfig(store.loadConfig().copy(autoStopAfterGrab = checked)) }
+            catch (_: Exception) {
+                rollingBack = true
+                binding.autoStopSwitch.isChecked = !checked
+                rollingBack = false
+                Toast.makeText(this, "保存失败，已恢复原状态", Toast.LENGTH_LONG).show()
+            }
+        }
+        binding.onlineAfterLoginSwitch.setOnCheckedChangeListener { _, checked ->
+            if (!rollingBack) try { store.saveConfig(store.loadConfig().copy(onlineAfterLogin = checked)) }
+            catch (_: Exception) {
+                rollingBack = true
+                binding.onlineAfterLoginSwitch.isChecked = !checked
+                rollingBack = false
+                Toast.makeText(this, "保存失败，已恢复原状态", Toast.LENGTH_LONG).show()
+            }
+        }
 
         binding.saveAdvancedButton.setOnClickListener { save() }
     }
@@ -58,8 +84,22 @@ class SettingsActivity : AppCompatActivity() {
                 aesIvHex = binding.aesIvInput.text.toString().trim().lowercase(),
                 aesKeyHexAlt = binding.aesKeyAltInput.text.toString().trim().lowercase(),
                 aesIvHexAlt = binding.aesIvAltInput.text.toString().trim().lowercase(),
-                verifyTls = binding.verifyTlsSwitch.isChecked
+                verifyTls = true,
+                confirmWaitByShop = binding.shopWaitInput.text.toString().lines().filter { it.isNotBlank() }.associate { line ->
+                    val parts = line.split("=")
+                    require(parts.size == 2) { "店铺等待须为 sid=秒" }
+                    parts[0].trim() to (parts[1].trim().toDoubleOrNull() ?: throw IllegalArgumentException("等待必须为数字"))
+                },
+                globalWaitSec = binding.globalWaitInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("全局等待无效"),
+                runDurationSec = binding.runDurationInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("运行秒数无效"),
+                restDurationSec = binding.restDurationInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("休息秒数无效"),
+                autoStopAfterGrab = binding.autoStopSwitch.isChecked,
+                onlineAfterLogin = binding.onlineAfterLoginSwitch.isChecked
             ).validate()
+            if (updated.shopId != current.shopId || updated.aesKeyHex != current.aesKeyHex || updated.aesIvHex != current.aesIvHex || updated.aesKeyHexAlt != current.aesKeyHexAlt || updated.aesIvHexAlt != current.aesIvHexAlt) {
+                check(!com.doimty.dpgrabber.service.ListenService.isRunning) { "请先停止监听再修改连接设置" }
+                com.doimty.dpgrabber.data.SessionRepository.invalidate()
+            }
             store.saveConfig(updated)
             Toast.makeText(this, R.string.advanced_saved, Toast.LENGTH_SHORT).show()
             finish()

@@ -8,172 +8,168 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.doimty.dpgrabber.R
-import com.doimty.dpgrabber.core.ApiClient
 import com.doimty.dpgrabber.data.CredentialStore
-import com.doimty.dpgrabber.data.OkHttpTransport
+import com.doimty.dpgrabber.data.HistoryStore
+import com.doimty.dpgrabber.data.SessionRepository
 import com.doimty.dpgrabber.engine.ListenEngine
 import com.doimty.dpgrabber.engine.LogLevel
 import com.doimty.dpgrabber.ui.MainActivity
 
-/**
- * Foreground service hosting the listening engine (the keep-alive).
- *
- * The engine runs on its own worker thread and only stops on user stop,
- * a successful grab, or a fatal login failure. The service is foreground
- * with a persistent notification so Android does not kill it while the
- * screen is off; for longer background runs the user should also exempt
- * the app from battery optimization (see README).
- */
+/** dataSync 前台任务只在用户明确启动后运行，不承诺系统永不终止。 */
 class ListenService : Service() {
-
     companion object {
         const val ACTION_START = "com.doimty.dpgrabber.action.START"
         const val ACTION_STOP = "com.doimty.dpgrabber.action.STOP"
         const val CHANNEL_ID = "dpgrabber_listen"
+        const val SUCCESS_CHANNEL_ID = "dpgrabber_success"
         const val NOTIFICATION_ID = 1001
-
-        @Volatile
-        var isRunning: Boolean = false
+        @Volatile var isRunning = false
             private set
-
+        @Volatile var state = "已停止"
+            private set
         fun start(context: Context) {
-            val intent = Intent(context, ListenService::class.java).apply {
-                action = ACTION_START
-            }
-            androidx.core.content.ContextCompat.startForegroundService(context, intent)
+            androidx.core.content.ContextCompat.startForegroundService(context,
+                Intent(context, ListenService::class.java).setAction(ACTION_START))
         }
-
         fun stop(context: Context) {
-            val intent = Intent(context, ListenService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
+            if (isRunning) context.startService(Intent(context, ListenService::class.java).setAction(ACTION_STOP))
         }
     }
 
     private var engine: ListenEngine? = null
-    private var lastNotificationMs: Long = 0
+    private var generation = 0L
+    private var latestStartId = 0
+    private val main = Handler(Looper.getMainLooper())
+    private var lastNotificationMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        createChannel()
-    }
+    override fun onCreate() { super.onCreate(); createChannels() }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
         when (intent?.action) {
             ACTION_STOP -> {
-                stopEngine("已停止监听")
-                stopSelf()
-                return START_NOT_STICKY
+                state = "正在停止；已提交请求可能仍需核对"
+                engine?.stop()
+                updateNotification(state)
+                if (engine == null) cleanup(startId)
             }
             ACTION_START -> {
-                if (engine?.running == true) return START_STICKY
-                startForeground(NOTIFICATION_ID, buildNotification("正在启动…"))
-                startEngine()
-                return START_STICKY
+                // 不在旧工作线程退出前复用或恢复它的 transport。
+                if (engine != null) return START_NOT_STICKY
+                startForeground(NOTIFICATION_ID, buildNotification("正在启动"))
+                try { startEngine(startId) } catch (_: Exception) {
+                    LogBus.post(LogLevel.ERROR, "服务启动失败")
+                    cleanup(startId)
+                }
             }
+            else -> cleanup(startId)
         }
         return START_NOT_STICKY
     }
 
-    private fun startEngine() {
+    private fun startEngine(startId: Int) {
+        HistoryStore.requireHealthy()
         val store = CredentialStore(this)
         val config = store.loadConfig()
         val phone = store.loadPhone()
         val password = store.loadPassword()
         if (phone.isEmpty() || password.isEmpty()) {
             LogBus.post(LogLevel.ERROR, "请先填写手机号和密码并保存")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            cleanup(startId)
             return
         }
-        val client = ApiClient(
-            aesKeyHex = config.aesKeyHex,
-            aesIvHex = config.aesIvHex,
-            aesKeyHexAlt = config.aesKeyHexAlt,
-            aesIvHexAlt = config.aesIvHexAlt,
-            verifyTls = config.verifyTls,
-            transport = OkHttpTransport(config.verifyTls)
-        )
-        val engine = ListenEngine(
-            client = client,
-            config = config,
+        val client = SessionRepository.forAccount(config, phone, password)
+        val history = HistoryStore(this)
+        try { history.readableDatabase }
+        catch (error: Exception) { HistoryStore.markUnavailable(); history.close(); throw error }
+        val currentGeneration = ++generation
+        val accountKey = java.security.MessageDigest.getInstance("SHA-256").digest(phone.toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        val task = ListenEngine(client, config,
             log = { level, text ->
                 LogBus.post(level, text)
-                updateNotification(text)
+                main.post { if (generation == currentGeneration && engine != null) updateNotification("监听任务运行中") }
             },
-            onStateChange = { running ->
-                isRunning = running
-                if (!running) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+            configSnapshot = { store.loadConfig() },
+            onAttemptStarted = { value -> history.record(value) },
+            onOutcome = { value ->
+                try { history.record(value) } catch (error: Exception) {
+                    LogBus.post(LogLevel.ERROR, "历史写入失败，任务将停止，请人工核对")
+                    throw error
                 }
-            }
-        )
-        this.engine = engine
+            },
+            isPersistentlyBlocked = { sid, orderId -> orderId in history.blockedOrderIds(accountKey, sid) },
+            onSuccess = { main.post {
+                if (generation == currentGeneration) {
+                    getSystemService(NotificationManager::class.java).notify(1002,
+                        NotificationCompat.Builder(this, SUCCESS_CHANNEL_ID)
+                            .setSmallIcon(R.drawable.ic_notification).setContentTitle("接单成功")
+                            .setContentText("请打开应用核对订单").setAutoCancel(true).build())
+                }
+            } },
+            onStateChange = { active -> main.post {
+                if (generation == currentGeneration) {
+                    isRunning = active
+                    state = if (active) "正在监听" else "已停止"
+                    if (!active) {
+                        engine = null
+                        history.close()
+                        cleanup(startId)
+                    }
+                }
+            } })
+        engine = task
         isRunning = true
-        engine.start(phone, password)
-        LogBus.post(LogLevel.INFO, "监听服务已启动")
+        state = "正在启动"
+        task.start(phone, password)
     }
 
-    private fun stopEngine(message: String) {
-        engine?.stop()
-        engine = null
+    private fun cleanup(startId: Int) {
         isRunning = false
-        LogBus.post(LogLevel.INFO, message)
+        state = "已停止"
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelfResult(maxOf(startId, latestStartId))
     }
 
     override fun onDestroy() {
+        generation++
         engine?.stop()
         engine = null
         isRunning = false
+        state = "已停止"
         super.onDestroy()
     }
 
-    private fun createChannel() {
+    private fun createChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            getString(R.string.notification_channel_name),
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = getString(R.string.notification_channel_desc)
-        }
-        manager.createNotificationChannel(channel)
+        manager.createNotificationChannel(NotificationChannel(CHANNEL_ID,
+            getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel(SUCCESS_CHANNEL_ID,
+            "接单结果", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
     private fun buildNotification(text: String): Notification {
-        val openIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pending = PendingIntent.getActivity(
-            this, 0, openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
-            .setContentIntent(pending)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .build()
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val stop = PendingIntent.getService(this, 1,
+            Intent(this, ListenService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return NotificationCompat.Builder(this, CHANNEL_ID).setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(getString(R.string.app_name)).setContentText(text).setContentIntent(open)
+            .addAction(R.drawable.ic_notification, "停止", stop).setOngoing(true).setOnlyAlertOnce(true).build()
     }
 
     private fun updateNotification(text: String) {
-        // The engine can log several times a second while polling; updating
-        // the notification that often wastes battery, so throttle to one
-        // update per 2 s (the latest text is kept by the next call).
         val now = System.currentTimeMillis()
         if (now - lastNotificationMs < 2000) return
         lastNotificationMs = now
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, buildNotification(text))
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
     }
 }

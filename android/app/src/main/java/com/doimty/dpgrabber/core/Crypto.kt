@@ -1,6 +1,7 @@
 package com.doimty.dpgrabber.core
 
-import java.util.Base64
+import okio.ByteString.Companion.decodeBase64
+import okio.ByteString.Companion.toByteString
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -51,7 +52,8 @@ object Crypto {
         require(key.size == 16 || key.size == 32) { "AES key must be 16 or 32 bytes" }
         require(iv.size == 16) { "AES IV must be 16 bytes" }
         val cipherBytes = try {
-            Base64.getDecoder().decode(payloadB64.trim())
+            payloadB64.trim().decodeBase64()?.toByteArray()
+                ?: throw IllegalArgumentException("Base64 格式错误")
         } catch (e: IllegalArgumentException) {
             throw IllegalArgumentException("payload is not valid Base64: ${e.message}")
         }
@@ -69,6 +71,6 @@ object Crypto {
         val iv = hexDecode(ivHex)
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-        return Base64.getEncoder().encodeToString(cipher.doFinal(plaintext))
+        return cipher.doFinal(plaintext).toByteString().base64()
     }
 }

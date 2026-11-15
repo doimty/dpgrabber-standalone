@@ -1,96 +1,102 @@
 package com.doimty.dpgrabber.data
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.doimty.dpgrabber.core.AppConfig
 import org.json.JSONObject
 
-/**
- * Storage for the login account and the app config.
- *
- * * Phone + password go to EncryptedSharedPreferences (AndroidX Security,
- *   AES-256-GCM, key in the Android Keystore). If encrypted storage cannot
- *   be created on this device (e.g. a broken Keystore), it falls back to
- *   plain SharedPreferences MODE_PRIVATE and records that in [encrypted];
- *   the UI shows a warning in that case.
- * * The session token is never persisted anywhere (memory only).
- * * Other settings live in plain SharedPreferences as JSON.
- */
+/** 凭据只写加密存储；密钥不可用时仅在当前进程保留。 */
 class CredentialStore(context: Context) {
-
     private val appContext = context.applicationContext
+    private val settingsPrefs = appContext.getSharedPreferences("dpgrabber_settings", Context.MODE_PRIVATE)
+    private val legacyPrefs = appContext.getSharedPreferences("dpgrabber_credentials_plain", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences? = try {
+        val key = MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+        EncryptedSharedPreferences.create(appContext, "dpgrabber_credentials", key,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
+    } catch (_: Exception) { null }
+    val encrypted: Boolean get() = prefs != null
 
-    private val prefs: SharedPreferences
-    val encrypted: Boolean
+    init { try { migrateLegacy() } catch (_: Exception) { /* 保留未验证的旧字段。 */ } }
 
-    init {
-        var enc: SharedPreferences? = null
-        try {
-            val masterKey = MasterKey.Builder(appContext)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            enc = EncryptedSharedPreferences.create(
-                appContext,
-                "dpgrabber_credentials",
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
-        } catch (e: Exception) {
-            Log.w("CredentialStore", "EncryptedSharedPreferences unavailable, using plain prefs", e)
+    private fun readPair(source: SharedPreferences?): Pair<String, String>? = try {
+        completePair(source?.getString("phone", null), source?.getString("password", null))
+    } catch (_: Exception) { null }
+
+    private fun readConfigJson(): JSONObject? = try {
+        settingsPrefs.getString("config_json", null)?.let { JSONObject(it) }
+    } catch (_: Exception) { null }
+
+    @Synchronized
+    private fun migrateLegacy() {
+        val target = prefs ?: return
+        val raw = readConfigJson()
+        val pair = readPair(target) ?: readPair(legacyPrefs)
+            ?: completePair(raw?.optString("phone", ""), raw?.optString("password", "")) ?: return
+        // 一个来源必须同时具有完整账号与密码，绝不混合不同来源的半对凭据。
+        if (!target.edit().putString("phone", pair.first).putString("password", pair.second).commit()) return
+        if (readPair(target) != pair) return
+        removeLegacyFields(raw)
+    }
+
+    private fun removeLegacyFields(raw: JSONObject?) {
+        legacyPrefs.edit().remove("phone").remove("password").commit()
+        if (raw != null && (raw.has("phone") || raw.has("password"))) {
+            raw.remove("phone")
+            raw.remove("password")
+            settingsPrefs.edit().putString("config_json", raw.toString()).commit()
         }
-        encrypted = enc != null
-        prefs = enc ?: appContext.getSharedPreferences(
-            "dpgrabber_credentials_plain", Context.MODE_PRIVATE
-        )
     }
 
-    private val settingsPrefs: SharedPreferences by lazy {
-        appContext.getSharedPreferences("dpgrabber_settings", Context.MODE_PRIVATE)
+    fun saveAccount(phone: String, password: String): Boolean {
+        memoryPair = phone to password
+        val target = prefs ?: return false
+        return try {
+            val stored = target.edit().putString("phone", phone).putString("password", password).commit() &&
+                target.getString("phone", null) == phone && target.getString("password", null) == password
+            if (stored) removeLegacyFields(readConfigJson())
+            stored
+        } catch (_: Exception) { false }
     }
 
-    // -- account (encrypted when possible) ------------------------------
-
-    fun saveAccount(phone: String, password: String) {
-        prefs.edit()
-            .putString("phone", phone)
-            .putString("password", password)
-            .apply()
-    }
-
-    fun loadPhone(): String = prefs.getString("phone", "") ?: ""
-
-    fun loadPassword(): String = prefs.getString("password", "") ?: ""
+    fun loadPhone(): String = (memoryPair ?: readPair(prefs))?.first ?: ""
+    fun loadPassword(): String = (memoryPair ?: readPair(prefs))?.second ?: ""
 
     fun clearAccount() {
-        prefs.edit().remove("phone").remove("password").apply()
+        SessionRepository.invalidate()
+        memoryPair = "" to ""
+        try { prefs?.edit()?.remove("phone")?.remove("password")?.commit() } catch (_: Exception) { }
+        try { legacyPrefs.edit().remove("phone").remove("password").commit() } catch (_: Exception) { }
+        try {
+            readConfigJson()?.let { raw ->
+                raw.remove("phone"); raw.remove("password")
+                settingsPrefs.edit().putString("config_json", raw.toString()).commit()
+            }
+        } catch (_: Exception) { }
     }
-
-    // -- settings (plain prefs, JSON blob) -------------------------------
 
     fun saveConfig(config: AppConfig) {
-        settingsPrefs.edit()
-            .putString("config_json", config.toJson().toString())
-            .apply()
-    }
-
-    fun loadConfig(): AppConfig {
-        val raw = settingsPrefs.getString("config_json", null) ?: return AppConfig.defaults()
-        return try {
-            AppConfig.fromJson(JSONObject(raw)).validate()
-        } catch (e: Exception) {
-            Log.w("CredentialStore", "stored config invalid, using defaults", e)
-            AppConfig.defaults()
+        val previous = readConfigJson()
+        check(previous == null || (previous.optString("password", "").isBlank() && previous.optString("phone", "").isBlank())) {
+            "旧凭据尚未安全迁移，请恢复加密存储后保存"
         }
+        check(settingsPrefs.edit().putString("config_json", config.toJson().toString()).commit()) { "设置保存失败" }
     }
 
-    /** Test-only helper: write a config JSON string directly. */
-    @SuppressLint("ApplySharedPref")
+    fun loadConfig(): AppConfig = try {
+        AppConfig.fromJson(readConfigJson() ?: JSONObject()).copy(phone = "", password = "").validate()
+    } catch (_: Exception) { AppConfig.defaults() }
+
     fun saveConfigJsonForTest(rawJson: String) {
         settingsPrefs.edit().putString("config_json", rawJson).commit()
+    }
+
+    companion object {
+        @Volatile private var memoryPair: Pair<String, String>? = null
+        internal fun completePair(phone: String?, password: String?): Pair<String, String>? =
+            if (!phone.isNullOrBlank() && !password.isNullOrBlank()) phone to password else null
     }
 }

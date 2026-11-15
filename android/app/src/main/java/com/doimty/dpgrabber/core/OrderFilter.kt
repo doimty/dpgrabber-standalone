@@ -26,6 +26,7 @@ class OrderFilter(
         }
         if (orderIdOf(order.toMap()).isEmpty()) return false to "订单缺少 id 字段"
         val amount = amountYuanFromCents(order.opt("totalAmount"))
+        if (!amount.isFinite() || amount < 0) return false to "订单金额无效"
         val wechat = order.optString("userWechatId", "")
         if (wechat.isNotEmpty() && wechat in blacklist) {
             return false to "客户在黑名单中: $wechat"

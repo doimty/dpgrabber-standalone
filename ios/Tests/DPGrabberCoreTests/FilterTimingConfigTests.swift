@@ -58,15 +58,16 @@ final class FilterTimingConfigTests: XCTestCase {
 
     // MARK: - Confirm logic
 
-    func testClassifyConfirmCodeZeroWins() {
+    func testClassifyConfirmRequiresConsistentSuccess() {
         XCTAssertEqual(classifyConfirm(["code": 0]).outcome, .ok)
-        // code 0 wins over a terminal message.
-        XCTAssertEqual(classifyConfirm(["code": 0, "msg": "已被抢"]).outcome, .ok)
+        XCTAssertEqual(classifyConfirm(["code": 0, "msg": "已被抢"]).outcome, .fail)
+        XCTAssertEqual(classifyConfirm(["code": 1, "msg": "订单已被其他人确认成功"]).outcome, .fail)
+        XCTAssertEqual(classifyConfirm(["code": 1, "msg": "未确认成功"]).outcome, .retry)
     }
 
     func testClassifyConfirmConfirmedWords() {
         for word in CONFIRMED_WORDS {
-            XCTAssertEqual(classifyConfirm(["code": 2, "msg": "订单\(word)了"]).outcome, .ok)
+            XCTAssertEqual(classifyConfirm(["code": 2, "msg": "订单\(word)了"]).outcome, .verify)
         }
     }
 
@@ -104,11 +105,13 @@ final class FilterTimingConfigTests: XCTestCase {
     func testReconcileOrder() {
         // status 2/3 -> ok; clerk id must match when both are known.
         XCTAssertEqual(reconcileOrder(["status": 2, "clerkId": 7], ownClerkID: 7).verdict, .ok)
-        XCTAssertEqual(reconcileOrder(["status": 3], ownClerkID: 7).verdict, .ok)
+        XCTAssertEqual(reconcileOrder(["status": 3], ownClerkID: 7).verdict, .unknown)
         XCTAssertEqual(reconcileOrder(["status": 2, "clerkId": 99], ownClerkID: 7).verdict, .fail)
         XCTAssertEqual(reconcileOrder(["status": 2, "clerkId": 99], ownClerkID: 7).reason, "被他人接走")
-        // Confirmed message -> ok even without a status.
-        XCTAssertEqual(reconcileOrder(["msg": "已接单"], ownClerkID: 0).verdict, .ok)
+        // A confirmation message without verified ownership is not proof of our success.
+        XCTAssertEqual(reconcileOrder(["msg": "已接单"], ownClerkID: 0).verdict, .unknown)
+        XCTAssertEqual(reconcileOrder(["status": true, "clerkId": 7], ownClerkID: 7).verdict, .unknown)
+        XCTAssertEqual(reconcileOrder(["status": 2.5, "clerkId": 7], ownClerkID: 7).verdict, .unknown)
         // Terminal message or status -1 -> fail.
         XCTAssertEqual(reconcileOrder(["status": -1], ownClerkID: 0).verdict, .fail)
         XCTAssertEqual(reconcileOrder(["msg": "订单已被抢"], ownClerkID: 0).reason, "被其他人抢走")
@@ -135,7 +138,7 @@ final class FilterTimingConfigTests: XCTestCase {
         XCTAssertEqual(cfg.shopID, 92)
         XCTAssertEqual(cfg.minAmount, 10.0)
         XCTAssertEqual(cfg.maxAmount, 0.0)
-        XCTAssertEqual(cfg.pollIntervalSec, 0.5)
+        XCTAssertEqual(cfg.pollIntervalSec, 0.6)
         XCTAssertEqual(cfg.randomConfirmWindowSec, 20)
         XCTAssertEqual(cfg.randomConfirmFallbackSec, 20)
         XCTAssertEqual(cfg.confirmRetryDelaySec, 0.5)
@@ -209,7 +212,7 @@ final class FilterTimingConfigTests: XCTestCase {
         cfg.blacklist = ["wx1", " "]
         let data = try cfg.jsonData()
         let decoded = try DPGConfig.from(jsonData: data)
-        XCTAssertEqual(decoded.phone, "13800000000")
+        XCTAssertEqual(decoded.phone, "")
         XCTAssertEqual(decoded.minAmount, 20)
         XCTAssertEqual(decoded.memoKeywords, ["加急", "VIP"])
         XCTAssertEqual(decoded.blacklist, ["wx1"])
@@ -218,7 +221,7 @@ final class FilterTimingConfigTests: XCTestCase {
     func testConfigMissingKeysTakeDefaults() throws {
         let data = Data("{\"phone\": \"13800000000\"}".utf8)
         let cfg = try DPGConfig.from(jsonData: data)
-        XCTAssertEqual(cfg.phone, "13800000000")
+        XCTAssertEqual(cfg.phone, "")
         XCTAssertEqual(cfg.shopID, 92)
         XCTAssertEqual(cfg.aesKeyHex, defaultAESKeyHex)
     }
@@ -232,9 +235,117 @@ final class FilterTimingConfigTests: XCTestCase {
         cfg.password = "secret"
         try saveConfig(cfg, to: url)
         let loaded = try loadConfig(from: url)
-        XCTAssertEqual(loaded.phone, "13800000000")
-        XCTAssertEqual(loaded.password, "secret")
+        XCTAssertEqual(loaded.phone, "")
+        XCTAssertEqual(loaded.password, "")
+        let text = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+        XCTAssertFalse(text.contains("secret"))
+        XCTAssertFalse(text.contains("password"))
+        XCTAssertFalse(text.contains("13800000000"))
         try FileManager.default.removeItem(at: dir)
+    }
+
+    func testWaitUsesActualSIDAndTimestampUnits() {
+        let cfg = DPGConfig()
+        let now: Double = 1_800_000_000
+        XCTAssertEqual(orderWaitSeconds(order: [:], sid: "92", config: cfg, now: now), 5)
+        XCTAssertEqual(orderWaitSeconds(order: ["createTime": now - 2], sid: "92", config: cfg, now: now), 3)
+        XCTAssertEqual(orderWaitSeconds(order: ["createTime": (now - 2) * 1000], sid: "50", config: cfg, now: now), 1)
+        XCTAssertEqual(orderWaitSeconds(order: ["createTime": now + 100], sid: "105", config: cfg, now: now), 3)
+        XCTAssertEqual(orderWaitSeconds(order: ["createTime": now - 100], sid: "1391", config: cfg, now: now), 0)
+        XCTAssertEqual(orderWaitSeconds(order: [:], sid: "unknown", config: cfg, now: now), cfg.globalWaitSec)
+        XCTAssertEqual(normalizeMs(Double.nan), 0)
+        XCTAssertEqual(normalizeMs(Double.infinity), 0)
+        XCTAssertEqual(reconcileOrder([:], ownClerkID: 1).verdict, .unknown)
+    }
+
+    func testHistoryPersistenceIdempotencyAndShanghaiDay() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("history.json")
+        let store = try OrderHistoryStore(url: url)
+        let time = Date(timeIntervalSince1970: 1_800_000_000)
+        var row = OrderHistoryRecord(id: "run:attempt", accountID: "a", shopID: "92", orderID: "o", runID: "run", attemptID: "attempt", timestamp: time, amount: 10, wechatID: "wx", memo: "", outcome: .unknown, reason: "offline")
+        try store.put(row)
+        try store.put(row)
+        XCTAssertEqual(store.all.count, 1)
+        XCTAssertTrue(store.blocksConfirmation(accountID: "a", shopID: "92", orderID: "o"))
+        row.outcome = .success
+        try store.put(row)
+        let loaded = try OrderHistoryStore(url: url)
+        XCTAssertEqual(loaded.all.count, 1)
+        XCTAssertEqual(loaded.all.first?.outcome, .success)
+        XCTAssertEqual(loaded.today(now: time).count, 1)
+        XCTAssertEqual(loaded.today(now: time.addingTimeInterval(86400)).count, 0)
+    }
+
+    func testLegacyCredentialFieldsAreErasedOnLoad() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("config.json")
+        try Data("{\"phone\":\"offline\",\"password\":\"old-secret\",\"verify_tls\":false}".utf8).write(to: url)
+        let loaded = try loadConfig(from: url)
+        XCTAssertTrue(loaded.phone.isEmpty)
+        XCTAssertTrue(loaded.password.isEmpty)
+        XCTAssertTrue(loaded.verifyTLS)
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        XCTAssertNil(raw?["phone"])
+        XCTAssertNil(raw?["password"])
+    }
+
+    func testStoreAndWeeklyStatisticsKeepAccountAndMetricBoundaries() throws {
+        let store = OrderHistoryStore.inMemory()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.put(OrderHistoryRecord(id: "a:1", accountID: "a", shopID: "92", orderID: "1", runID: "r", attemptID: "1", timestamp: now, amount: 10, wechatID: "", memo: "", outcome: .success, reason: ""))
+        try store.put(OrderHistoryRecord(id: "b:1", accountID: "b", shopID: "92", orderID: "2", runID: "r", attemptID: "2", timestamp: now, amount: 10, wechatID: "", memo: "", outcome: .unknown, reason: ""))
+        XCTAssertEqual(store.entries(accountID: "a").count, 1)
+        XCTAssertEqual(store.todayCounts(accountID: "a", now: now)[.success], 1)
+        XCTAssertNil(store.todayCounts(accountID: "a", now: now)[.unknown])
+        XCTAssertFalse(store.blocksConfirmation(accountID: "a", shopID: "92", orderID: "2"))
+        let stats = WeeklyStatistics(raw: ["orderCount": 8, "continuedCount": 2, "continuedAmount": 6000, "orderAmount": 25000, "continuedUserCount": 1])
+        XCTAssertEqual(stats.orderCount, 8)
+        XCTAssertEqual(stats.feeRate ?? -1, 0.24, accuracy: 0.0001)
+        XCTAssertEqual(stats.orderRate ?? -1, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(stats.continuedUserCount, 1)
+        let empty = WeeklyStatistics(raw: [:], fallbackCount: 12)
+        XCTAssertEqual(empty.orderCount, 12)
+        XCTAssertNil(empty.feeRate)
+        XCTAssertNil(empty.orderRate)
+        XCTAssertTrue(empty.isCountFallback)
+    }
+
+    func testShopWaitTableRoundTripAndValidation() throws {
+        var cfg = DPGConfig()
+        cfg.confirmWaitByShop = ["92": 4.5, "105": 0]
+        let decoded = try DPGConfig.from(jsonData: cfg.jsonData())
+        XCTAssertEqual(decoded.confirmWaitByShop["92"], 4.5)
+        XCTAssertEqual(orderWaitSeconds(order: [:], sid: "105", config: decoded, now: 100), 0)
+        cfg.confirmWaitByShop = ["invalid": 3]
+        XCTAssertThrowsError(try cfg.validated())
+        cfg = DPGConfig(); cfg.requestTimeoutSec = .infinity
+        XCTAssertThrowsError(try cfg.validated())
+        cfg = DPGConfig(); cfg.minAmount = .infinity
+        XCTAssertThrowsError(try cfg.validated())
+        cfg = DPGConfig(); cfg.seenTTLSec = .nan
+        XCTAssertThrowsError(try cfg.validated())
+    }
+
+    func testPlatformWeekStartsMondayInShanghai() throws {
+        let formatter = ISO8601DateFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-11-15T01:00:00Z"))
+        let week = PlatformWeek(now: now)
+        XCTAssertEqual(week.startDate, "2026-11-09")
+        XCTAssertEqual(week.endDate, "2026-11-15")
+        XCTAssertEqual(week.startDateTime, "2026-11-09 00:00:00")
+        XCTAssertEqual(week.endDateTime, "2026-11-15 23:59:59")
+    }
+
+    func testQualificationAndGoneMessagesAreTerminal() {
+        for message in ["当前续费率24%，需要达标续费率30%", "本周订单已达上限", "订单跑走了", "订单跑掉了"] {
+            XCTAssertEqual(classifyConfirm(["code": 1, "msg": message]).outcome, .fail)
+        }
+        XCTAssertNil(parseCode(["code": Double.infinity]))
+        XCTAssertNil(parseCode(["code": "nan"]))
     }
 
     func testMaskPhone() {

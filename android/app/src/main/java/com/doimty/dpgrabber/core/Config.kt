@@ -29,7 +29,14 @@ data class AppConfig(
     val randomConfirmFallbackSec: Double = 20.0,
     /** Delay between confirm retries inside the window (seconds). */
     val confirmRetryDelaySec: Double = 0.5,
-    val pollIntervalSec: Double = 0.5,
+    val pollIntervalSec: Double = 0.6,
+    val pollJitterSec: Double = 0.2,
+    val confirmWaitByShop: Map<String, Double> = mapOf("92" to 5.0, "50" to 3.0, "105" to 3.0, "1391" to 3.0),
+    val globalWaitSec: Double = 0.0,
+    val runDurationSec: Double = 0.0,
+    val restDurationSec: Double = 0.0,
+    val autoStopAfterGrab: Boolean = true,
+    val onlineAfterLogin: Boolean = false,
     val memoMode: Int = 0,
     val memoKeywords: List<String> = emptyList(),
     val blacklist: List<String> = emptyList(),
@@ -62,6 +69,15 @@ data class AppConfig(
                     "confirm_retry_delay_sec", base.confirmRetryDelaySec
                 ),
                 pollIntervalSec = json.optDouble("poll_interval_sec", base.pollIntervalSec),
+                pollJitterSec = json.optDouble("poll_jitter_sec", base.pollJitterSec),
+                confirmWaitByShop = json.optJSONObject("confirm_wait_by_shop")?.let { waits ->
+                    waits.keys().asSequence().associateWith { waits.getDouble(it) }
+                } ?: base.confirmWaitByShop,
+                globalWaitSec = json.optDouble("global_wait_sec", base.globalWaitSec),
+                runDurationSec = json.optDouble("run_duration_sec", 0.0),
+                restDurationSec = json.optDouble("rest_duration_sec", 0.0),
+                autoStopAfterGrab = json.optBoolean("auto_stop_after_grab", true),
+                onlineAfterLogin = json.optBoolean("online_after_login", false),
                 memoMode = json.optInt("memo_mode", base.memoMode),
                 memoKeywords = json.optJSONArray("memo_keywords")?.toStringList() ?: base.memoKeywords,
                 blacklist = json.optJSONArray("blacklist")?.toStringList() ?: base.blacklist,
@@ -78,8 +94,7 @@ data class AppConfig(
 
     fun toJson(): JSONObject {
         val json = JSONObject()
-        json.put("phone", phone)
-        json.put("password", password)
+        json.put("schema_version", 2)
         json.put("shop_id", shopId)
         json.put("min_amount", minAmount)
         json.put("max_amount", maxAmount)
@@ -87,6 +102,13 @@ data class AppConfig(
         json.put("random_confirm_fallback_sec", randomConfirmFallbackSec)
         json.put("confirm_retry_delay_sec", confirmRetryDelaySec)
         json.put("poll_interval_sec", pollIntervalSec)
+        json.put("poll_jitter_sec", pollJitterSec)
+        json.put("confirm_wait_by_shop", JSONObject(confirmWaitByShop))
+        json.put("global_wait_sec", globalWaitSec)
+        json.put("run_duration_sec", runDurationSec)
+        json.put("rest_duration_sec", restDurationSec)
+        json.put("auto_stop_after_grab", autoStopAfterGrab)
+        json.put("online_after_login", onlineAfterLogin)
         json.put("memo_mode", memoMode)
         json.put("memo_keywords", JSONArray(memoKeywords))
         json.put("blacklist", JSONArray(blacklist))
@@ -108,7 +130,7 @@ data class AppConfig(
         Crypto.validateKeyIv(aesKeyHex, aesIvHex)
         Crypto.validateKeyIv(aesKeyHexAlt, aesIvHexAlt)
         require(shopId > 0) { "shop_id must be a positive integer" }
-        require(minAmount >= 0 && maxAmount >= 0) { "amounts must not be negative" }
+        require(minAmount.isFinite() && maxAmount.isFinite() && minAmount >= 0 && maxAmount >= 0) { "amounts must not be negative" }
         require(maxAmount == 0.0 || maxAmount >= minAmount) {
             "max_amount must be 0 (unlimited) or >= min_amount"
         }
@@ -121,12 +143,16 @@ data class AppConfig(
         require(confirmRetryDelaySec in 0.0..60.0) {
             "confirm_retry_delay_sec must be between 0 and 60"
         }
-        require(pollIntervalSec > 0) { "poll_interval_sec must be positive" }
+        require(pollIntervalSec.isFinite() && pollIntervalSec > 0) { "poll_interval_sec must be positive" }
+        require(pollJitterSec.isFinite() && pollJitterSec >= 0) { "轮询抖动必须为非负数" }
+        require(globalWaitSec.isFinite() && globalWaitSec in 0.0..120.0) { "全局等待必须为0–120秒" }
+        require(confirmWaitByShop.all { it.key.toIntOrNull()?.let { id -> id > 0 } == true && it.value.isFinite() && it.value in 0.0..120.0 }) { "店铺等待必须为0–120秒" }
+        require(runDurationSec.isFinite() && runDurationSec >= 0 && restDurationSec.isFinite() && restDurationSec >= 0) { "运行/休息时长必须为非负数" }
         require(memoMode == 0 || memoMode == 1) {
             "memo_mode must be 0 (ignore memos) or 1 (drop memo orders)"
         }
-        require(requestTimeoutSec > 0) { "request_timeout_sec must be positive" }
-        require(seenTtlSec > 0) { "seen_ttl_sec must be positive" }
+        require(requestTimeoutSec.isFinite() && requestTimeoutSec > 0 && requestTimeoutSec <= 300) { "request_timeout_sec must be positive" }
+        require(seenTtlSec.isFinite() && seenTtlSec > 0 && seenTtlSec <= 86400) { "seen_ttl_sec must be positive" }
         return copy(
             memoKeywords = memoKeywords.map { it.trim() }.filter { it.isNotEmpty() },
             blacklist = blacklist.map { it.trim() }.filter { it.isNotEmpty() },

@@ -127,18 +127,18 @@ class ConfirmLogicTest {
     }
 
     @Test
-    fun `classify code zero wins`() {
-        assertEquals(
-            ConfirmOutcome.OK,
-            classifyConfirm(TestKit.plain("code" to 0, "msg" to "已被抢")).outcome
-        )
+    fun `classify code zero requires no contradicting terminal message`() {
+        assertEquals(ConfirmOutcome.OK, classifyConfirm(TestKit.plain("code" to 0)).outcome)
+        assertEquals(ConfirmOutcome.FAIL, classifyConfirm(TestKit.plain("code" to 0, "msg" to "已被抢")).outcome)
+        assertEquals(ConfirmOutcome.FAIL, classifyConfirm(TestKit.plain("code" to 1, "msg" to "订单已被其他人确认成功")).outcome)
+        assertEquals(ConfirmOutcome.RETRY, classifyConfirm(TestKit.plain("code" to 1, "msg" to "未确认成功")).outcome)
     }
 
     @Test
     fun `classify confirmed words`() {
         for (msg in listOf("已接单", "已确认", "接单成功", "确认成功")) {
             assertEquals(
-                ConfirmOutcome.OK,
+                ConfirmOutcome.VERIFY,
                 classifyConfirm(TestKit.plain("code" to 2, "msg" to msg)).outcome
             )
         }
@@ -180,13 +180,13 @@ class ConfirmLogicTest {
     }
 
     @Test
-    fun `reconcile status 2 and 3 are ok`() {
+    fun `reconcile status 2 and 3 without ownership remain unknown`() {
         assertEquals(
-            ReconcileVerdict.OK,
+            ReconcileVerdict.UNKNOWN,
             reconcileOrder(TestKit.plain("status" to 2), 5).verdict
         )
         assertEquals(
-            ReconcileVerdict.OK,
+            ReconcileVerdict.UNKNOWN,
             reconcileOrder(TestKit.plain("status" to 3), 5).verdict
         )
     }
@@ -207,9 +207,9 @@ class ConfirmLogicTest {
     }
 
     @Test
-    fun `reconcile no clerk check when own id unknown`() {
+    fun `reconcile cannot prove success when own id unknown`() {
         assertEquals(
-            ReconcileVerdict.OK,
+            ReconcileVerdict.UNKNOWN,
             reconcileOrder(TestKit.plain("status" to 2, "clerkId" to 99), 0).verdict
         )
     }
@@ -234,7 +234,7 @@ class ConfirmLogicTest {
         )
         assertEquals(
             ReconcileVerdict.PENDING,
-            reconcileOrder(JSONObject(), 5).verdict
+            reconcileOrder(TestKit.plain("status" to "0"), 5).verdict
         )
     }
 
@@ -264,7 +264,7 @@ class ConfirmLogicTest {
             "status" to 0,
             "data" to JSONObject().apply { put("status", 3) }
         )
-        assertEquals(ReconcileVerdict.OK, reconcileOrder(fromData, 5).verdict)
+        assertEquals(ReconcileVerdict.UNKNOWN, reconcileOrder(fromData, 5).verdict)
     }
 }
 
@@ -278,7 +278,7 @@ class ConfigTest {
         assertEquals(20.0, cfg.randomConfirmWindowSec, 0.001)
         assertEquals(20.0, cfg.randomConfirmFallbackSec, 0.001)
         assertEquals(0.5, cfg.confirmRetryDelaySec, 0.001)
-        assertEquals(0.5, cfg.pollIntervalSec, 0.001)
+        assertEquals(0.6, cfg.pollIntervalSec, 0.001)
         assertEquals(0, cfg.memoMode)
         assertEquals(15.0, cfg.requestTimeoutSec, 0.001)
         assertEquals(60.0, cfg.seenTtlSec, 0.001)
@@ -360,7 +360,7 @@ class ConfigTest {
     @Test
     fun `json round trip`() {
         val cfg = AppConfig(
-            phone = "13800138000", shopId = 55, minAmount = 5.0,
+            shopId = 55, minAmount = 5.0,
             memoKeywords = listOf("vip"), blacklist = listOf("wx9")
         )
         val restored = AppConfig.fromJson(cfg.toJson()).validate()
