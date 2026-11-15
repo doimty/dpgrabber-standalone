@@ -1619,6 +1619,40 @@ class App(QMainWindow):
         grid.addWidget(lab, row, 0)
         grid.addWidget(widget, row, 1)
 
+    def _sync_wait_fields(self):
+        """当前店铺在店铺表里时，把等待两个框灰掉并显示实际生效值。"""
+        lo = getattr(self, "confirm_wait_min_spin", None)
+        hi = getattr(self, "confirm_wait_max_spin", None)
+        if lo is None or hi is None:
+            return
+        table = (self.cfg.get("confirm_wait_by_shop") or {})
+        shop = str(getattr(self, "_session_sid", "") or "")
+        target = None
+        if shop and isinstance(table, dict):
+            try:
+                target = float(table.get(shop))
+            except (TypeError, ValueError):
+                target = None
+        if target is None:
+            for spin in (lo, hi):
+                spin.setEnabled(True)
+            lo.setToolTip("0 不等待；可等于最大值")
+            hi.setToolTip("相同即固定等待")
+            return
+        try:
+            offset = float(self.cfg.get("auto_wait_offset", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            offset = 0.0
+        effective = max(0.0, target + offset) if shop in ("50", "105", "1391") else target
+        for spin in (lo, hi):
+            spin.setEnabled(False)
+            spin.setValue(float(effective))
+            uses_offset = shop in ("50", "105", "1391") and bool(offset)
+            spin.setToolTip("店铺 %s 由店铺表固定 %.1f 秒%s，此处修改无效"
+                            % (shop, effective,
+                               ("（偏移 %+.1f）" % offset) if uses_offset else ""))
+        return
+
     def _stats_snapshot(self):
         """success / failed / skipped / unknown counts for today."""
         counts = {"success": 0, "failed": 0, "skipped": 0, "unknown": 0}
@@ -1762,13 +1796,17 @@ class App(QMainWindow):
         self.memo_mode_box.addItems(["不检测备注", "有备注不抢"])
         self._form_row(grid, 3, "备注检测", self.memo_mode_box,
                        "有备注即跳过")
-        self.confirm_wait_min_spin = QSpinBox()
-        self.confirm_wait_min_spin.setRange(0, 120)
+        self.confirm_wait_min_spin = QDoubleSpinBox()
+        self.confirm_wait_min_spin.setRange(0.0, 120.0)
+        self.confirm_wait_min_spin.setDecimals(1)
+        self.confirm_wait_min_spin.setSingleStep(0.5)
         self.confirm_wait_min_spin.setSuffix(" 秒")
         self._form_row(grid, 4, "等待最小（秒）", self.confirm_wait_min_spin,
                        "0 不等待；可等于最大值")
-        self.confirm_wait_max_spin = QSpinBox()
-        self.confirm_wait_max_spin.setRange(0, 120)
+        self.confirm_wait_max_spin = QDoubleSpinBox()
+        self.confirm_wait_max_spin.setRange(0.0, 120.0)
+        self.confirm_wait_max_spin.setDecimals(1)
+        self.confirm_wait_max_spin.setSingleStep(0.5)
         self.confirm_wait_max_spin.setSuffix(" 秒")
         self._form_row(grid, 5, "等待最大（秒）", self.confirm_wait_max_spin,
                        "相同即固定等待")
@@ -2153,6 +2191,7 @@ class App(QMainWindow):
         self.password_edit.setText(self.cfg.get("password", ""))
         # 密码多半是 32 位哈希：载入后把光标归零，否则首字符被挤出可视区
         self.password_edit.setCursorPosition(0)
+        self._sync_wait_fields()
         self.min_amount_edit.setText(str(self.cfg.get("min_amount", 10.0)))
         self.max_amount_edit.setText(str(self.cfg.get("max_amount", 0.0)))
         self.poll_interval_edit.setText(str(self.cfg.get("poll_interval_sec", 0.5)))
@@ -2466,6 +2505,7 @@ class App(QMainWindow):
         self._clerk_name = str((clerk or {}).get("name") or "")
         self._clerk_id = str((clerk or {}).get("id") or "")
         self._session_sid = str(getattr(session, "sid", "") or "")
+        self._sync_wait_fields()
         self.cfg["clerk_name"] = self._clerk_name
         self.cfg["last_shop"] = self._session_sid
         try:
