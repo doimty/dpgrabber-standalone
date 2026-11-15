@@ -2350,38 +2350,55 @@ class App(QMainWindow):
         )
         self._login_thread.start()
 
+    def _publish_session(self, session, phone: str, announce: bool = True):
+        """做登录后的一切界面同步；界面登录和引擎登录都走这里。
+
+        The engine logs in by itself when the user presses 开始监听 without
+        logging in first; without this the hero kept saying 未登录 and the
+        account card never appeared ("各干各的").
+        """
+        clerk = None
+        try:
+            clerk = extract_clerk(self.client.clerk_get(session))
+        except ApiError:
+            clerk = None
+        self._clerk_name = str((clerk or {}).get("name") or "")
+        self._clerk_id = str((clerk or {}).get("id") or "")
+        self._session_sid = str(getattr(session, "sid", "") or "")
+        self.cfg["clerk_name"] = self._clerk_name
+        self.cfg["last_shop"] = self._session_sid
+        try:
+            accounts_mod.save_account(self.cfg, phone)
+        except Exception:
+            pass
+        self._fetch_avatar(clerk or {})
+        self._fetch_week_orders(session)
+        self._fetch_clerk_state(session, clerk or {})
+        if clerk:
+            label = "已登录：%s（ID：%s），店铺 sid=%s" % (
+                clerk.get("name") or "", clerk.get("id") or "", session.sid,
+            )
+        else:
+            label = "已登录，店铺 sid=%s" % session.sid
+        if announce:
+            self.log("success", label)
+        self.status_signal.emit(label)
+        self.login_state_signal.emit(label)
+
+    def _on_engine_session(self, session):
+        """Engine callback: an engine-side login must reach the UI as well."""
+        try:
+            self._publish_session(session, str(self.cfg.get("phone") or ""), announce=False)
+        except Exception:
+            pass
+
     def _login_worker(self, phone: str, password: str):
         try:
             session = self.client.session_for_account(
                 phone, password, int(self.cfg.get("shop_id", 0)),
             on_note=lambda note: self.log("info", note)
             )
-            clerk = None
-            try:
-                clerk = extract_clerk(self.client.clerk_get(session))
-            except ApiError:
-                clerk = None
-            self._clerk_name = str((clerk or {}).get("name") or "")
-            self._clerk_id = str((clerk or {}).get("id") or "")
-            self._session_sid = str(getattr(session, "sid", "") or "")
-            self.cfg["clerk_name"] = self._clerk_name
-            self.cfg["last_shop"] = self._session_sid
-            try:
-                accounts_mod.save_account(self.cfg, phone)
-            except Exception:
-                pass
-            self._fetch_avatar(clerk or {})
-            self._fetch_week_orders(session)
-            self._fetch_clerk_state(session, clerk or {})
-            if clerk:
-                label = "已登录：%s（ID：%s），店铺 sid=%s" % (
-                    clerk.get("name") or "", clerk.get("id") or "", session.sid,
-                )
-            else:
-                label = "已登录，店铺 sid=%s" % session.sid
-            self.log("success", label)
-            self.status_signal.emit(label)
-            self.login_state_signal.emit(label)
+            self._publish_session(session, phone)
         except ApiError as exc:
             self.log("error", "登录失败：%s" % exc.message)
             self.status_signal.emit("未登录")
@@ -2405,6 +2422,8 @@ class App(QMainWindow):
             params = inspect.signature(Engine.__init__).parameters
             if "on_outcome" in params:
                 kwargs["on_outcome"] = self._on_outcome
+            if "on_session" in params:
+                kwargs["on_session"] = self._on_engine_session
         except (TypeError, ValueError):
             pass
         return Engine(
