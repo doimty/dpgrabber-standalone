@@ -617,6 +617,8 @@ class MainActivity : AppCompatActivity() {
         val resultStore = HistoryStore(this)
         try { resultStore.reconcile(entry, type, if (type == com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN) "仍未核实，未重新提交" else "只读核验：${verdict.reason}") }
         finally { resultStore.close() }
+        // 核验结果写的是历史库，服务收不到 onOutcome；通知里的“待核验”需要主动重载。
+        ListenService.notifyHistoryChanged()
     }
 
     private fun trimNumber(value: Double): String {

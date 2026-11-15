@@ -3,6 +3,10 @@
     <string name="app_name">DPGrabber</string>
     <string name="notification_channel_name">监听运行状态</string>
     <string name="notification_channel_desc">抢单监听运行时的常驻通知</string>
+    <string name="notification_today_counts">成功 %1$d · 待核验 %2$d · 风控 %3$d</string>
+    <string name="notification_today_runtime">今日 %1$d 单 · 已运行 %2$s</string>
+    <string name="notification_today_detail">店铺 %1$s · 今日 %2$d 单 · 已运行 %3$s</string>
+    <string name="notification_stopping_hint">已提交请求可能仍需核对</string>
 
     <!-- 底部导航 -->
     <string name="tab_workbench">工作台</string>
