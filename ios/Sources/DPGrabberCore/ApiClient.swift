@@ -367,7 +367,7 @@ public final class ApiClient: @unchecked Sendable {
             let message: String
             if ["权限", "非店员", "不是店员", "无店员"].contains(where: { text.contains($0) }) {
                 detail = .permission; message = "没有操作权限，请检查店铺店员授权"
-            } else if ["未上线", "未在线", "已下线", "不在线", "离线"].contains(where: { text.contains($0) }) {
+            } else if ["未上线", "未在线", "已下线", "不在线", "离线", "先上线"].contains(where: { text.contains($0) }) {
                 detail = .shopOffline; message = "店铺未上线，请先上线"
             } else if ["续费率", "达标", "资质", "资格", "上限", "额度"].contains(where: { text.contains($0) }) {
                 detail = .qualification; message = "平台接单条件未达标"
