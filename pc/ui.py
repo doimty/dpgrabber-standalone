@@ -1608,7 +1608,7 @@ class App(QMainWindow):
         """success / failed / skipped / unknown counts for today."""
         counts = {"success": 0, "failed": 0, "skipped": 0, "unknown": 0}
         try:
-            entries = history_mod.load()
+            entries = history_mod.load_history()
         except Exception:
             entries = []
         today = time.strftime("%Y-%m-%d")
@@ -1681,7 +1681,7 @@ class App(QMainWindow):
         if label is None:
             return
         try:
-            entries = history_mod.load()
+            entries = history_mod.load_history()
         except Exception:
             entries = []
         if not entries:
