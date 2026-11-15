@@ -327,6 +327,8 @@ QScrollArea#sidebarScroll QScrollBar::sub-line:vertical { height: 0px; border: n
 QScrollArea#sidebarScroll QScrollBar::add-page:vertical,
 QScrollArea#sidebarScroll QScrollBar::sub-page:vertical { background: transparent; }
 QScrollArea#sidebarScroll > QWidget > QWidget { background: transparent; }
+QLabel#dialogBody { color: %(TEXT_DARK)s; font-size: 13px; }
+QLabel#dialogBodyError { color: #D9453D; font-size: 13px; }
 QLabel#dialogTitle { color: %(TEXT_DARK)s; font-size: 16px; font-weight: bold; }
 QPushButton#dialogClose {
     background: transparent; color: %(HINT)s; border: none;
@@ -2179,7 +2181,7 @@ class App(QMainWindow):
         try:
             updates = self._read_settings_from_widgets()
         except cfgmod.ConfigError as exc:
-            QMessageBox.critical(self, "设置有误", str(exc))
+            MessageDialog.show_error(self, "设置有误", str(exc))
             return
         updates["auto_stop_after_grab"] = self.auto_stop_check.isChecked()
         updates["online_after_login"] = self.online_check.isChecked()
@@ -2187,7 +2189,7 @@ class App(QMainWindow):
         try:
             self._save_cfg()
         except cfgmod.ConfigError as exc:
-            QMessageBox.critical(self, "保存失败", str(exc))
+            MessageDialog.show_error(self, "保存失败", str(exc))
             return
         self.log("success", "设置已保存")
 
@@ -2394,10 +2396,10 @@ class App(QMainWindow):
         phone = self.phone_edit.text().strip()
         password = self.password_edit.text()
         if not phone or not password:
-            QMessageBox.warning(self, "缺少信息", "请先填写手机号和密码")
+            MessageDialog.show_warning(self, "缺少信息", "请先填写手机号和密码")
             return
         if len(phone) != 11 or not phone.isdigit():
-            QMessageBox.warning(self, "手机号格式", "手机号应为 11 位数字")
+            MessageDialog.show_warning(self, "手机号格式", "手机号应为 11 位数字")
             return
         if self._login_thread is not None and self._login_thread.is_alive():
             return
@@ -2494,12 +2496,12 @@ class App(QMainWindow):
         try:
             updates = self._read_settings_from_widgets()
         except cfgmod.ConfigError as exc:
-            QMessageBox.critical(self, "设置有误", str(exc))
+            MessageDialog.show_error(self, "设置有误", str(exc))
             return
         phone = updates["phone"]
         password = updates["password"]
         if not phone or not password:
-            QMessageBox.warning(self, "缺少信息", "请先填写手机号和密码")
+            MessageDialog.show_warning(self, "缺少信息", "请先填写手机号和密码")
             return
         self.cfg.update(updates)
         self.engine = self._make_engine()
@@ -2544,6 +2546,102 @@ class App(QMainWindow):
         self.voice.stop()
         _prevent_sleep(False)
         event.accept()
+
+
+class MessageDialog(QDialog):
+    """主题化的提示/确认框，替掉 QMessageBox。
+
+    QMessageBox 是系统对话框，被我们的 QSS 染成白字浅底；这里自己搭一套，
+    按钮用 primary/secondary，中文标签，无边框 + DWM 圆角。
+    """
+
+    def __init__(self, parent, title: str, message: str,
+                 kind: str = "info", confirm: bool = False,
+                 confirm_text: str = "确定"):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self._drag_offset = None
+        self.setFixedWidth(460)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 12, 16, 14)
+        outer.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        title_label = QLabel(title)
+        title_label.setObjectName("dialogTitle")
+        header.addWidget(title_label)
+        header.addStretch(1)
+        close_btn = QPushButton("✕")
+        close_btn.setObjectName("dialogClose")
+        close_btn.setFixedSize(28, 28)
+        close_btn.clicked.connect(self.reject)
+        header.addWidget(close_btn)
+        outer.addLayout(header)
+
+        body = QLabel(message)
+        body.setWordWrap(True)
+        body.setObjectName("dialogBody" if kind != "error" else "dialogBodyError")
+        outer.addWidget(body)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        if confirm:
+            cancel = QPushButton("取消")
+            cancel.setObjectName("secondary")
+            cancel.clicked.connect(self.reject)
+            btns.addWidget(cancel)
+            ok = QPushButton(confirm_text)
+            ok.setObjectName("primary")
+            ok.setDefault(True)
+            ok.clicked.connect(self.accept)
+            btns.addWidget(ok)
+        else:
+            ok = QPushButton("知道了")
+            ok.setObjectName("primary")
+            ok.setDefault(True)
+            ok.clicked.connect(self.accept)
+            btns.addWidget(ok)
+        outer.addLayout(btns)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.adjustSize()
+        self.setFixedWidth(460)
+        _apply_windows_effects(self, dark=True)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.position().y() <= 44:
+            if not isinstance(self.childAt(event.position().toPoint()), QPushButton):
+                self._drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    @classmethod
+    def show_error(cls, parent, title: str, message: str) -> None:
+        cls(parent, title, message, "error").exec()
+
+    @classmethod
+    def show_warning(cls, parent, title: str, message: str) -> None:
+        cls(parent, title, message, "warning").exec()
+
+    @classmethod
+    def ask(cls, parent, title: str, message: str,
+            confirm_text: str = "确定") -> bool:
+        return cls(parent, title, message, "question",
+                   confirm=True, confirm_text=confirm_text).exec() == QDialog.Accepted
 
 
 class AskTextDialog(QDialog):
@@ -2931,7 +3029,7 @@ class AdvancedDialog(QDialog):
         try:
             accounts_mod.load_account(digits)
         except Exception as exc:
-            QMessageBox.critical(self, "新增账号失败", str(exc))
+            MessageDialog.show_error(self, "新增账号失败", str(exc))
             return
         meta = [m for m in accounts_mod.list_accounts() if m["phone"] == digits]
         insert_at = max(0, self.account_combo.count() - 1)
@@ -2962,13 +3060,12 @@ class AdvancedDialog(QDialog):
             new_blacklist = _lines(self.blacklist_text)
             old_blacklist = self.cfg.get("blacklist", [])
             if _blacklist_would_overwrite(old_blacklist, new_blacklist):
-                answer = QMessageBox.question(
+                if not MessageDialog.ask(
                     self, "黑名单可能被覆盖",
                     "检测到可能误覆盖已有黑名单（当前 %d 条，将改为 %d 条）。"
                     "确定要保存新的黑名单吗？" % (len(old_blacklist or []), len(new_blacklist)),
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-                )
-                if answer != QMessageBox.Yes:
+                    confirm_text="保存",
+                ):
                     return
             self.cfg["blacklist"] = new_blacklist
             chosen = str(self.account_combo.currentData() or "")
@@ -2982,15 +3079,15 @@ class AdvancedDialog(QDialog):
                         accounts_mod.load_account(digits)
                         self.cfg["switch_to_account"] = digits
                     except Exception as exc:
-                        QMessageBox.critical(self, "新增账号失败", str(exc))
+                        MessageDialog.show_error(self, "新增账号失败", str(exc))
                         return
             elif chosen and chosen != str(self.cfg.get("phone") or ""):
                 self.cfg["switch_to_account"] = chosen
         except (cfgmod.ConfigError, ValueError) as exc:
-            QMessageBox.critical(self, "保存失败", str(exc))
+            MessageDialog.show_error(self, "保存失败", str(exc))
             return
         except Exception as exc:          # never fail silently again
-            QMessageBox.critical(self, "保存失败", "%s: %s" % (type(exc).__name__, exc))
+            MessageDialog.show_error(self, "保存失败", "%s: %s" % (type(exc).__name__, exc))
             return
         self._on_saved(self.cfg)
         self.accept()
