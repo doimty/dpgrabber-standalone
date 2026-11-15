@@ -154,11 +154,98 @@
                                     android:text="@string/action_view_all" />
                             </LinearLayout>
 
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="14dp"
+                                android:orientation="horizontal">
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:id="@+id/todaySuccessCount"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:fontFamily="sans-serif-medium"
+                                        android:text="0"
+                                        android:textColor="?attr/colorPrimary"
+                                        android:textSize="24sp"
+                                        android:textStyle="bold" />
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginTop="2dp"
+                                        android:text="成功"
+                                        android:textColor="?attr/colorOnSurfaceVariant"
+                                        android:textSize="12sp" />
+                                </LinearLayout>
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="12dp"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:id="@+id/todayPendingCount"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:fontFamily="sans-serif-medium"
+                                        android:text="0"
+                                        android:textColor="?attr/colorPrimary"
+                                        android:textSize="24sp"
+                                        android:textStyle="bold" />
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginTop="2dp"
+                                        android:text="待核验"
+                                        android:textColor="?attr/colorOnSurfaceVariant"
+                                        android:textSize="12sp" />
+                                </LinearLayout>
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="12dp"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:id="@+id/todayRiskCount"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:fontFamily="sans-serif-medium"
+                                        android:text="0"
+                                        android:textColor="?attr/colorError"
+                                        android:textSize="24sp"
+                                        android:textStyle="bold" />
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginTop="2dp"
+                                        android:text="风控"
+                                        android:textColor="?attr/colorOnSurfaceVariant"
+                                        android:textSize="12sp" />
+                                </LinearLayout>
+                            </LinearLayout>
+
                             <TextView
                                 android:id="@+id/todayOverview"
-                                style="@style/CardMetric"
-                                android:layout_marginTop="10dp"
-                                android:text="今日成功：读取中" />
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:text="仅当前账号 · 按北京时间统计"
+                                android:textColor="?attr/colorOnSurfaceVariant"
+                                android:textSize="13sp" />
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
@@ -576,6 +663,51 @@
                             android:orientation="vertical"
                             android:padding="16dp">
 
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:id="@+id/accountAvatarText"
+                                    android:layout_width="48dp"
+                                    android:layout_height="48dp"
+                                    android:background="@drawable/bg_avatar"
+                                    android:gravity="center"
+                                    android:text="未"
+                                    android:textColor="?attr/colorPrimary"
+                                    android:textSize="16sp"
+                                    android:textStyle="bold" />
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="12dp"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:id="@+id/accountPhoneText"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="未登录"
+                                        android:textColor="?attr/colorOnSurface"
+                                        android:textSize="16sp" />
+
+                                    <TextView
+                                        android:id="@+id/accountStatusText"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginTop="2dp"
+                                        android:text="登录后验证店铺"
+                                        android:textColor="?attr/colorOnSurfaceVariant"
+                                        android:textSize="12sp" />
+                                </LinearLayout>
+                            </LinearLayout>
+
+                            <View style="@style/Divider" />
+
                             <TextView
                                 style="@style/CardTitle"
                                 android:text="@string/section_login" />
@@ -639,12 +771,34 @@
                                 android:layout_marginTop="14dp"
                                 android:text="@string/btn_login" />
 
-                            <com.google.android.material.button.MaterialButton
+                            <LinearLayout
                                 android:id="@+id/advancedSettingsButton"
-                                style="@style/BtnOutlined"
                                 android:layout_width="match_parent"
-                                android:layout_marginTop="10dp"
-                                android:text="@string/btn_advanced_settings" />
+                                android:layout_height="52dp"
+                                android:layout_marginTop="8dp"
+                                android:background="?attr/selectableItemBackground"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal"
+                                android:paddingStart="4dp"
+                                android:paddingEnd="4dp">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_advanced_settings"
+                                    android:textColor="?attr/colorOnSurface"
+                                    android:textSize="15sp" />
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:importantForAccessibility="no"
+                                    android:src="@drawable/ic_chevron_right"
+                                    app:tint="?attr/colorOnSurfaceVariant" />
+                            </LinearLayout>
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 

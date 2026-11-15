@@ -114,7 +114,8 @@ class UiReviewInstrumentedTest {
         capture("account-empty")
         val phone = device.findObject(By.res(PACKAGE, "phoneInput"))
         assertNotNull("“我的”页应包含手机号输入框", phone)
-        assertEquals("未登录时手机号应保持为空", "", phone!!.text)
+        // TextInputEditText 空态会把 hint 当作无障碍 text 暴露，故按“空或等于 hint”判定，存储层断言仍是权威依据。
+        assertTrue("未登录时手机号应保持为空", isEffectivelyEmpty("phoneInput", "11 位手机号"))
     }
 
     @Test(timeout = 240_000)
@@ -140,7 +141,8 @@ class UiReviewInstrumentedTest {
         awaitText("statisticsOverview", "本周订单 12 单")
         assertTrue(device.findObject(By.res(PACKAGE, "statisticsOverview")).text.contains("25.00%"))
         capture("weekly-statistics")
-        awaitText("todayOverview", "成功 1")
+        awaitTextExact("todaySuccessCount", "1")
+        assertTrue("今日概览应说明统计口径", textOf("todayOverview").contains("仅当前账号"))
         capture("history-summary")
         selectTab("接单规则")
         scrollTo("memoKeywordsInput")
@@ -191,7 +193,8 @@ class UiReviewInstrumentedTest {
         assertTrue("应实际展开系统输入法", device.wait(Until.hasObject(By.pkg("com.google.android.inputmethod.latin")), 3_000) ||
             device.executeShellCommand("dumpsys input_method").contains("mInputShown=true"))
         capture("phone-keyboard-expanded")
-        assertEquals(PHONE, device.findObject(By.res(PACKAGE, "phoneInput")).text)
+        // 该状态下 findObject(...).text 可能为 null，统一走 textOf 安全读取。
+        assertEquals(PHONE, textOf("phoneInput"))
         assertEquals("", store.loadPhone())
         device.pressBack()
     }
@@ -340,32 +343,67 @@ class UiReviewInstrumentedTest {
         device.waitForIdle(TAB_SETTLE_MS)
     }
 
-    /** 当前可见页的滚动容器：ScrollView 与 NestedScrollView 都满足 scrollable，隐藏页不参与匹配。 */
-    private fun pageScroller() = UiScrollable(UiSelector().scrollable(true).instance(0))
+    /**
+     * 当前可见页的滚动容器。页面容器是 NestedScrollView，内容不满一屏时 scrollable=false，
+     * 用 UiSelector().scrollable(true) 会匹配不到节点并让 UiScrollable 抛 UiObjectNotFoundException。
+     * 因此先按“当前可见的页容器 id”定位（隐藏页不参与，避免误取 GONE 容器），再回退到类名/scrollable。
+     */
+    private fun pageScroller(): UiScrollable {
+        for (page in PAGE_CONTAINERS) {
+            val selector = UiSelector().resourceId("$PACKAGE:id/$page")
+            if (isOnScreen(selector)) return UiScrollable(selector)
+        }
+        if (device.hasObject(By.clazz(NESTED_SCROLL_VIEW))) return UiScrollable(UiSelector().className(NESTED_SCROLL_VIEW).instance(0))
+        return UiScrollable(UiSelector().scrollable(true).instance(0))
+    }
+
+    /** 目标是否已在屏幕上可见（存在但不可见时仍需滚动）。 */
+    private fun isOnScreen(selector: UiSelector): Boolean = runCatching {
+        val target = device.findObject(selector)
+        if (!target.exists()) return@runCatching false
+        val bounds = target.visibleBounds
+        bounds.width() > 0 && bounds.height() > 0
+    }.getOrDefault(false)
 
     private fun scrollTop() {
-        pageScroller().scrollToBeginning(24)
+        runCatching { pageScroller().scrollToBeginning(24) }
         device.waitForIdle(1_000)
     }
 
     private fun scrollBottom() {
-        pageScroller().scrollToEnd(32)
+        runCatching { pageScroller().scrollToEnd(32) }
         device.waitForIdle(1_000)
     }
 
     private fun scrollTo(id: String) {
-        assertTrue("未能滚动至 $id", pageScroller().scrollIntoView(UiSelector().resourceId("$PACKAGE:id/$id")))
+        val selector = UiSelector().resourceId("$PACKAGE:id/$id")
+        // 目标已可见时直接返回：避免“内容已可见但容器不可滚”时 scrollIntoView 误抛。
+        if (isOnScreen(selector)) return
+        assertTrue("未能滚动至 $id", runCatching { pageScroller().scrollIntoView(selector) }.getOrDefault(false))
         device.waitForIdle(1_000)
     }
 
     private fun scrollToText(prefix: String) {
-        assertTrue("未能滚动至历史行", pageScroller().scrollIntoView(UiSelector().textStartsWith(prefix)))
+        val selector = UiSelector().textStartsWith(prefix)
+        if (isOnScreen(selector)) return
+        assertTrue("未能滚动至历史行", runCatching { pageScroller().scrollIntoView(selector) }.getOrDefault(false))
     }
 
     /** 静默滚动：控件缺失时返回 false，供入口缺失的取证分支继续执行。 */
-    private fun tryScrollTo(id: String): Boolean = runCatching {
-        pageScroller().scrollIntoView(UiSelector().resourceId("$PACKAGE:id/$id"))
-    }.getOrDefault(false)
+    private fun tryScrollTo(id: String): Boolean {
+        val selector = UiSelector().resourceId("$PACKAGE:id/$id")
+        if (isOnScreen(selector)) return true
+        return runCatching { pageScroller().scrollIntoView(selector) }.getOrDefault(false)
+    }
+
+    /** 安全读取控件文本：节点缺失或 text 为 null 时返回空串，避免 NPE。 */
+    private fun textOf(id: String): String = device.findObject(By.res(PACKAGE, id))?.text ?: ""
+
+    /** TextInputEditText 空态会把 hint 当作无障碍 text 暴露，故“空或等于 hint”都算未填写。 */
+    private fun isEffectivelyEmpty(id: String, hint: String): Boolean {
+        val t = textOf(id)
+        return t.isEmpty() || t == hint
+    }
 
     private fun click(id: String) {
         scrollTo(id)
@@ -379,6 +417,13 @@ class UiReviewInstrumentedTest {
     private fun awaitText(id: String, fragment: String) {
         scrollTo(id)
         assertTrue("$id 未出现期望文本：$fragment", device.wait(Until.hasObject(By.res(PACKAGE, id).textContains(fragment)), WAIT_MS))
+    }
+
+    /** 精确文本等待：计数类控件 text 为纯整数，不能用片段匹配；失败时打印实际值。 */
+    private fun awaitTextExact(id: String, expected: String) {
+        scrollTo(id)
+        if (device.wait(Until.hasObject(By.res(PACKAGE, id).text(expected)), WAIT_MS)) return
+        fail("$id 未出现期望文本：$expected（实际：\"${textOf(id)}\"）")
     }
 
     private fun capture(name: String) {
@@ -496,5 +541,7 @@ class UiReviewInstrumentedTest {
         private const val PASSWORD = "ui-fixture-not-a-real-password"
         private const val WAIT_MS = 10_000L
         private const val TAB_SETTLE_MS = 800L
+        private const val NESTED_SCROLL_VIEW = "androidx.core.widget.NestedScrollView"
+        private val PAGE_CONTAINERS = listOf("pageWorkbench", "pageRules", "pageHistory", "pageAccount")
     }
 }

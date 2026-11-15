@@ -10,6 +10,8 @@
     <color name="brand_on_primary">#FFFFFF</color>
     <color name="brand_primary_container">#DCE3FF</color>
     <color name="brand_on_primary_container">#00174B</color>
+    <color name="brand_secondary_container">#DCE3FF</color>
+    <color name="brand_on_secondary_container">#001B4D</color>
 
     <color name="surface">#FFFBFE</color>
     <color name="surface_container">#F3F3F7</color>

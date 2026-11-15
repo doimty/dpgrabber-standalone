@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
         }
         loadFieldsFromStore()
         refreshListenStatus()
+        refreshAccountHeader()
 
         binding.loginButton.setOnClickListener { verifyLogin() }
         binding.onlineButton.setOnClickListener { networkAction { it.updateStatus(1, false) } }
@@ -133,6 +134,7 @@ class MainActivity : AppCompatActivity() {
         // Note: fields are NOT reloaded here — reloading would discard
         // unsaved edits when returning from the advanced settings screen.
         refreshListenStatus()
+        refreshAccountHeader()
         refreshHistory()
         refreshAccountInfo()
         binding.root.post(statusRefresh)
@@ -215,6 +217,7 @@ class MainActivity : AppCompatActivity() {
             if (!persisted) Toast.makeText(this, "设置已保存；账号凭据仅在当前进程内存中，未持久保存", Toast.LENGTH_LONG).show()
             else if (showToast) Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
             refreshHistory()
+            refreshAccountHeader()
             true
         } catch (e: Exception) {
             Toast.makeText(
@@ -269,6 +272,7 @@ class MainActivity : AppCompatActivity() {
                         "（sid=${session.sid}" +
                         (if (name.isNotEmpty()) "，店员信息已确认" else "") + "）"
                     refreshHistory()
+                    refreshAccountHeader()
                     if (!persisted) Toast.makeText(this, "登录成功；凭据仅当前进程可用，未持久保存", Toast.LENGTH_LONG).show()
                     else Toast.makeText(this, R.string.login_success, Toast.LENGTH_SHORT).show()
                 }
@@ -319,13 +323,46 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshListenStatus() {
         binding.listenStatus.text = ListenService.state
-        if (lastRunning && !ListenService.isRunning) {
-            refreshHistory()
-            refreshAccountInfo()
+        val running = ListenService.isRunning
+        if (lastRunning != running) {
+            // Listening state drives the account header subtitle, so refresh it
+            // only on transitions instead of on every 1s tick (loadPhone() may
+            // fall back to EncryptedSharedPreferences decryption).
+            refreshAccountHeader()
+            if (lastRunning && !running) {
+                refreshHistory()
+                refreshAccountInfo()
+            }
         }
-        lastRunning = ListenService.isRunning
-        binding.startButton.isEnabled = !ListenService.isRunning && !networkBusy
-        binding.stopButton.isEnabled = ListenService.isRunning
+        lastRunning = running
+        binding.startButton.isEnabled = !running && !networkBusy
+        binding.stopButton.isEnabled = running
+    }
+
+    /**
+     * Account header on the "我的" page. Only masked phone numbers are ever
+     * written to the UI; the full number must never be displayed or logged.
+     */
+    private fun refreshAccountHeader() {
+        val phone = store.loadPhone()
+        if (phone.isEmpty()) {
+            setAccountHeader("未", "未登录", "登录后验证店铺")
+            return
+        }
+        val maskedPhone = if (phone.length >= 7) {
+            phone.take(3) + "****" + phone.takeLast(4)
+        } else {
+            "****" + phone.takeLast(2)
+        }
+        val status = if (ListenService.isRunning) "监听中" else "已登录"
+        setAccountHeader(phone.takeLast(2), maskedPhone, status)
+    }
+
+    /** Assigns only on change so repeated refreshes never flicker. */
+    private fun setAccountHeader(avatar: String, phone: String, status: String) {
+        if (binding.accountAvatarText.text.toString() != avatar) binding.accountAvatarText.text = avatar
+        if (binding.accountPhoneText.text.toString() != phone) binding.accountPhoneText.text = phone
+        if (binding.accountStatusText.text.toString() != status) binding.accountStatusText.text = status
     }
 
     private fun appendLog(line: LogBus.Line) {
@@ -474,9 +511,10 @@ class MainActivity : AppCompatActivity() {
             }
             runOnUiThread {
                 if (isDestroyed || request != historyGeneration || account != HistoryStore.accountKey(store.loadPhone())) return@runOnUiThread
-                val types = com.doimty.dpgrabber.engine.OutcomeType.entries
-                val labels = listOf("成功", "失败", "风控", "未知", "跳过")
-                binding.todayOverview.text = types.mapIndexed { index, type -> "${labels[index]} ${counts[type] ?: 0}" }.joinToString(" · ") + "\n仅当前账号；Asia/Shanghai 持久历史"
+                binding.todaySuccessCount.text = (counts[com.doimty.dpgrabber.engine.OutcomeType.SUCCESS] ?: 0).toString()
+                binding.todayPendingCount.text = (counts[com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN] ?: 0).toString()
+                binding.todayRiskCount.text = (counts[com.doimty.dpgrabber.engine.OutcomeType.RISK] ?: 0).toString()
+                binding.todayOverview.text = "仅当前账号 · 按北京时间统计"
                 binding.historyList.removeAllViews()
                 binding.historyEmptyHint.visibility = if (entries.isEmpty()) View.VISIBLE else View.GONE
                 entries.forEach { entry ->
