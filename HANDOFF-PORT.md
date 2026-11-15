@@ -398,3 +398,12 @@ CI 只保证**编译与单测通过**，功能对不对要我人工核。
 | 配置与默认值 | `pc/config.py` | `DEFAULT_CONFIG` / `validate` |
 | 每账号配置文件 | `pc/accounts.py` | `load_account` / `save_account` |
 | 历史条目结构 | `pc/ui.py` | `_history_entry_for_order` |
+
+## 11. 已知的红灯（交接前就存在）
+
+| 工作流 | 失败点 | 说明 |
+|---|---|---|
+| Android offline UI review | `./gradlew assembleDebug assembleDebugAndroidTest testDebugUnitTest` | instrumentation 断言 `AssertionError: 手机号未写入输入框` 失败；与 PC 端改动无关，接手方先修这个 |
+
+PC 端 `Build PC exe` 是绿的，可以直接出包。
+
