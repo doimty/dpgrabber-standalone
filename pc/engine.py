@@ -343,7 +343,7 @@ class Engine:
 
     # -- lifecycle ------------------------------------------------------
 
-    def start(self, phone: str, password: str) -> bool:
+    def start(self, phone: str, password: str, session=None) -> bool:
         if self.running:
             return False
         wait_error = confirm_wait_error(self.cfg)
@@ -351,6 +351,7 @@ class Engine:
             self.log("error", "确认等待配置无效，无法开始监听：%s" % wait_error)
             return False
         self.stop_event.clear()
+        self._initial_session = session
         self.running = True
         self.thread = threading.Thread(
             target=self._run, args=(phone, password), daemon=True,
@@ -413,11 +414,17 @@ class Engine:
 
     def _run(self, phone: str, password: str):
         try:
-            self.log("info", "正在登录…")
-            session = self.client.session_for_account(
-                phone, password, int(self.cfg.get("shop_id", 92))
-            )
-            self.log("success", "登录成功，店铺 sid=%s" % session.sid)
+            session = getattr(self, "_initial_session", None)
+            if session is not None and getattr(session, "token", ""):
+                # the UI already logged in for this account: reuse that session
+                # instead of paying for a second login + shop probe
+                self.log("info", "复用已登录会话，店铺 sid=%s" % getattr(session, "sid", "?"))
+            else:
+                self.log("info", "正在登录…")
+                session = self.client.session_for_account(
+                    phone, password, int(self.cfg.get("shop_id", 92))
+                )
+                self.log("success", "登录成功，店铺 sid=%s" % session.sid)
             try:
                 clerk = extract_clerk(self.client.clerk_get(session))
                 if clerk:
