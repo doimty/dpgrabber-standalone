@@ -87,6 +87,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QPlainTextEdit,
     QScrollArea,
     QPushButton,
@@ -2021,13 +2022,25 @@ class App(QMainWindow):
         item.setSizeHint(widget.sizeHint())
         self.history_list.addItem(item)
         self.history_list.setItemWidget(item, widget)
+        # 行是 setItemWidget 塞进去的子控件，右键事件不会冒泡到列表，
+        # 所以行本身和它的标签都要自己接 customContextMenuRequested
+        for target in [widget] + widget.findChildren(QLabel):
+            target.setContextMenuPolicy(Qt.CustomContextMenu)
+            target.customContextMenuRequested.connect(
+                lambda _pos, w=target, e=dict(entry): self._show_history_menu(
+                    w.mapToGlobal(_pos), e))
 
     def _on_history_context_menu(self, pos):
         """Right-click a row: blacklist its WeChat id or add its memo keyword."""
         item = self.history_list.itemAt(pos)
         if item is None:
             return
-        entry = item.data(Qt.UserRole) or {}
+        self._show_history_menu(self.history_list.mapToGlobal(pos),
+                                item.data(Qt.UserRole) or {})
+
+    def _show_history_menu(self, global_pos, entry: dict):
+        """菜单本体：行内控件右击时也走这里。"""
+        entry = dict(entry or {})
         wechat = str(entry.get("userWechatId") or "").strip()
         memo = str(entry.get("userMemo") or "").strip()
         menu = QMenu(self)
@@ -2044,7 +2057,7 @@ class App(QMainWindow):
             menu.addAction("该订单没有备注").setEnabled(False)
         menu.addSeparator()
         copy_action = menu.addAction("复制订单号")
-        chosen = menu.exec(self.history_list.mapToGlobal(pos))
+        chosen = menu.exec(global_pos)
         if chosen is None:
             return
         if chosen is black_action:
