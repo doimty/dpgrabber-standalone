@@ -54,8 +54,11 @@ jobs:
           ls -d "$XCODE_APP"
           sudo xcode-select -s "$XCODE_APP"
           xcode-select -p
-          xcodebuild -version
-          ACTUAL="$(xcodebuild -version | awk '/^Xcode /{print $2; exit}')"
+          # Capture the full output first: piping xcodebuild straight into `awk ... exit`
+          # makes awk close the pipe early, which aborts xcodebuild (SIGABRT, exit 134).
+          VERSION_OUTPUT="$(xcodebuild -version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          ACTUAL="$(printf '%s\n' "$VERSION_OUTPUT" | awk '/^Xcode /{print $2; exit}')"
           echo "selected Xcode: $ACTUAL"
           case "$ACTUAL" in
             26.*) ;;
@@ -158,8 +161,9 @@ jobs:
         run: |
           set -Eeuo pipefail
           cd ios
-          FLAGS="$(xcodebuild -project DPGrabber.xcodeproj -scheme DPGrabber \
-            -configuration Debug -showBuildSettings 2>/dev/null \
+          SETTINGS_OUTPUT="$(xcodebuild -project DPGrabber.xcodeproj -scheme DPGrabber \
+            -configuration Debug -showBuildSettings 2>/dev/null || true)"
+          FLAGS="$(printf '%s\n' "$SETTINGS_OUTPUT" \
             | awk -F' = ' '/SWIFT_ACTIVE_COMPILATION_CONDITIONS/{print $2; exit}')"
           echo "SWIFT_ACTIVE_COMPILATION_CONDITIONS=$FLAGS"
           case "$FLAGS" in
