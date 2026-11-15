@@ -61,6 +61,21 @@ QUALIFICATION_WORDS = ("续费率", "达标", "资质", "额度", "次数不足"
 #: 属于"暂时不可抢"，不是终态也不是可重试（实测 2026-11-15）。
 BUSY_WORDS = ("同时接单数超过限制", "接单数超过限制", "超过限制的")
 
+
+def busy_cap_from(message) -> int | None:
+    """从「同时接单数超过限制的2单」里取出这个账号当前等级的上限。
+
+    上限跟个人等级相关，不写死；解析失败返回 None。
+    """
+    import re as _re
+    m = _re.search(r"超过限制的\s*(\d+)\s*单", str(message or ""))
+    if not m:
+        m = _re.search(r"限制的\s*(\d+)", str(message or ""))
+    try:
+        return int(m.group(1)) if m else None
+    except (TypeError, ValueError):
+        return None
+
 TERMINAL_WORDS = (
     "取消", "已被", "不存在", "无权", "权限", "失效", "超时",
     # 平台原话「哎呀订单好像跑走了，再试试~」：订单已经不在了，重试只会拿到
@@ -764,8 +779,13 @@ class Engine:
             if outcome == "ok":
                 return self._grab_success(order, order_id, confirm_calls)
             if outcome == "busy":
-                self.log("warning",
-                         "⛔ 店铺同时接单名额已满，本次跳过: %s" % reason)
+                cap = busy_cap_from(reason)
+                if cap:
+                    self.log("warning",
+                             "⛔ 已达同时接单上限（%d 单），本次跳过；"
+                             "完成一单后可继续" % cap)
+                else:
+                    self.log("warning", "⛔ 同时接单数已满，本次跳过: %s" % reason)
                 return "busy", reason
             if outcome == "fail":
                 self.log("warning", "✗ 确认终态失败 %s: %s" % (number, reason))
