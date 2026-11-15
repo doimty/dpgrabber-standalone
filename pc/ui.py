@@ -2576,14 +2576,6 @@ class AdvancedDialog(QDialog):
         close_button.clicked.connect(self.reject)
         header.addWidget(close_button)
         outer.addLayout(header)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        content = QWidget()
-        root = QVBoxLayout(content)
-        root.setContentsMargins(0, 0, 0, 0)
-        scroll.setWidget(content)
-        outer.addWidget(scroll, 1)
 
         # 账号切换放在这里：登录卡保持干净，但能力还在
         account_row = QHBoxLayout()
@@ -2607,6 +2599,31 @@ class AdvancedDialog(QDialog):
         add_hint.setObjectName("hint")
         account_row.addWidget(add_hint, 1)
         outer.addLayout(account_row)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(content)
+        self._content = content
+        self._scroll = scroll
+        outer.addWidget(scroll, 1)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setObjectName("secondary")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("保存")
+        save_btn.setObjectName("primary")
+        save_btn.clicked.connect(self._save)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(save_btn)
+        outer.addLayout(btns)
+
+        self._fit_to_content()
+
 
         form = QWidget()
         grid = QGridLayout(form)
@@ -2658,7 +2675,7 @@ class AdvancedDialog(QDialog):
         kw_box = QVBoxLayout()
         kw_title = QLabel("备注关键词（一行一个）")
         kw_title.setObjectName("fieldLabel")
-        kw_box.addSpacing(8)
+        kw_box.addSpacing(4)
         kw_box.addWidget(kw_title)
         kw_hint = QLabel("命中任意一个就不抢")
         kw_hint.setObjectName("hint")
@@ -2666,14 +2683,14 @@ class AdvancedDialog(QDialog):
         self.keyword_text = QPlainTextEdit()
         self.keyword_text.setObjectName("listEdit")
         self.keyword_text.setPlaceholderText("例如：加急")
-        self.keyword_text.setFixedHeight(70)
+        self.keyword_text.setFixedHeight(58)
         _set_lines(self.keyword_text, self.cfg.get("memo_keywords", []))
         kw_box.addWidget(self.keyword_text)
         lists_row.addLayout(kw_box, 1)
         bl_box = QVBoxLayout()
         bl_title = QLabel("黑名单微信号（一行一个）")
         bl_title.setObjectName("fieldLabel")
-        bl_box.addSpacing(8)
+        bl_box.addSpacing(4)
         bl_box.addWidget(bl_title)
         bl_hint = QLabel("每行一个微信号，命中就不抢")
         bl_hint.setObjectName("hint")
@@ -2681,7 +2698,7 @@ class AdvancedDialog(QDialog):
         self.blacklist_text = QPlainTextEdit()
         self.blacklist_text.setObjectName("listEdit")
         self.blacklist_text.setPlaceholderText("例如：wechat123")
-        self.blacklist_text.setFixedHeight(70)
+        self.blacklist_text.setFixedHeight(58)
         _set_lines(self.blacklist_text, self.cfg.get("blacklist", []))
         bl_box.addWidget(self.blacklist_text)
         lists_row.addLayout(bl_box, 1)
@@ -2735,17 +2752,26 @@ class AdvancedDialog(QDialog):
         root.addWidget(path_label)
         root.addStretch(1)
 
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        cancel_btn = QPushButton("取消")
-        cancel_btn.setObjectName("secondary")
-        cancel_btn.clicked.connect(self.reject)
-        save_btn = QPushButton("保存")
-        save_btn.setObjectName("primary")
-        save_btn.clicked.connect(self._save)
-        btns.addWidget(cancel_btn)
-        btns.addWidget(save_btn)
-        root.addLayout(btns)
+
+    def _fit_to_content(self):
+        """把对话框高度调到内容高度，装得下就不出现滚动条。
+
+        sizeHint() 在 show 之前还没算好，所以 showEvent 里会再调一次。
+        """
+        content = getattr(self, "_content", None)
+        if content is None:
+            return
+        chrome = 150          # 标题 + 账号行 + 按钮行 + 边距
+        want = content.sizeHint().height() + chrome
+        screen = self.screen()
+        limit = screen.availableGeometry().height() - 60 if screen else 900
+        height = max(560, min(want, limit))
+        if height != self.height():
+            self.setFixedSize(880, height)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_to_content()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and event.position().y() <= 44:
