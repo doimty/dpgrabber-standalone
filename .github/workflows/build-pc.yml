@@ -32,10 +32,10 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
       - name: Build exe
-        run: pyinstaller --noconfirm --clean --onefile --windowed --icon pc/app.ico --name DPGrabberPC pc/dpgrabber_pc.py
+        run: pyinstaller --noconfirm --clean --onefile --windowed --icon pc/app.ico --name DPPP pc/dpgrabber_pc.py
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
-          name: DPGrabberPC-exe
-          path: dist/DPGrabberPC.exe
+          name: DPPP-exe
+          path: dist/DPPP.exe
           if-no-files-found: error
