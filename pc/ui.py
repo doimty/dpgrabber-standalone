@@ -1363,7 +1363,9 @@ class App(QMainWindow):
         self._reload_account_picker()
 
     def _on_add_account(self):
-        phone, ok = QInputDialog.getText(self, "新增账号", "手机号（11 位）")
+        dialog = AskTextDialog(self, "新增账号", "手机号（11 位）")
+        phone = dialog.value() if dialog.exec() == QDialog.Accepted else ""
+        ok = bool(phone)
         if not ok:
             return
         digits = "".join(ch for ch in str(phone) if ch.isdigit())
@@ -2544,6 +2546,88 @@ class App(QMainWindow):
         event.accept()
 
 
+class AskTextDialog(QDialog):
+    """Ask for one line of text, styled like the rest of the app.
+
+    QInputDialog 用的是系统按钮，被我们的 QSS 染成"白字浅底"，按钮直接看不见；
+    这里自己搭一个，无边框 + 主题按钮 + 中文标签。
+    """
+
+    def __init__(self, parent, title: str, label: str, text: str = ""):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self._drag_offset = None
+        self.setFixedWidth(420)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 12, 16, 14)
+        outer.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header_title = QLabel(title)
+        header_title.setObjectName("dialogTitle")
+        header.addWidget(header_title)
+        header.addStretch(1)
+        close_btn = QPushButton("✕")
+        close_btn.setObjectName("dialogClose")
+        close_btn.setFixedSize(28, 28)
+        close_btn.clicked.connect(self.reject)
+        header.addWidget(close_btn)
+        outer.addLayout(header)
+
+        field_label = QLabel(label)
+        field_label.setObjectName("fieldLabel")
+        outer.addWidget(field_label)
+
+        self.edit = QLineEdit(text)
+        self.edit.setMinimumHeight(34)
+        outer.addWidget(self.edit)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton("取消")
+        cancel.setObjectName("secondary")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("确定")
+        ok.setObjectName("primary")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        outer.addLayout(btns)
+
+        self.edit.returnPressed.connect(self.accept)
+
+    def value(self) -> str:
+        return self.edit.text().strip()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.adjustSize()
+        self.setFixedWidth(420)
+        _apply_windows_effects(self, dark=True)
+        self.edit.setFocus()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.position().y() <= 44:
+            child = self.childAt(event.position().toPoint())
+            if not isinstance(child, QPushButton):
+                self._drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+
 class AdvancedDialog(QDialog):
     """Advanced settings: memo keywords, blacklist, shop id, timeout,
     TLS, voice, auto-wait offset. Decryption keys are NOT shown here
@@ -2834,7 +2918,9 @@ class AdvancedDialog(QDialog):
         """选中「＋ 新增账号…」就立刻弹输入框，不再等保存。"""
         if str(self.account_combo.itemData(index) or "") != "__new__":
             return
-        phone, ok = QInputDialog.getText(self, "新增账号", "手机号（11 位）")
+        dialog = AskTextDialog(self, "新增账号", "手机号（11 位）")
+        phone = dialog.value() if dialog.exec() == QDialog.Accepted else ""
+        ok = bool(phone)
         digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
         if not ok or len(digits) < 6:
             # 取消：回到原来的账号
@@ -2887,7 +2973,9 @@ class AdvancedDialog(QDialog):
             self.cfg["blacklist"] = new_blacklist
             chosen = str(self.account_combo.currentData() or "")
             if chosen == "__new__":
-                phone, ok = QInputDialog.getText(self, "新增账号", "手机号（11 位）")
+                dialog = AskTextDialog(self, "新增账号", "手机号（11 位）")
+                phone = dialog.value() if dialog.exec() == QDialog.Accepted else ""
+                ok = bool(phone)
                 digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
                 if ok and len(digits) >= 6:
                     try:
