@@ -593,10 +593,18 @@ class Engine:
                         return
                     continue
                 self._consecutive_failures += 1
-                self.log("warning", "监听请求失败：%s" % exc.message)
-                if not self._sleep(self._poll_delay()):
+                fails = self._consecutive_failures
+                # 网络类失败会连续发生，逐条打日志会把日志刷爆；
+                # 只在第 1 次和每第 10 次说明一次。
+                if fails == 1 or fails % 10 == 0:
+                    self.log("warning", "监听请求失败（连续 %d 次）：%s"
+                             % (fails, exc.message))
+                if not self._sleep(self._failure_delay(fails)):
                     return
                 continue
+            if self._consecutive_failures:
+                self.log("info", "网络恢复，继续监听（此前连续失败 %d 次）"
+                         % self._consecutive_failures)
             self._consecutive_failures = 0
             if not orders:
                 if not self._sleep(self._poll_delay()):
@@ -651,6 +659,13 @@ class Engine:
                 self._continue_noted = True
                 self.log("info", "未开启「接到单后自动停止监听」，抢完继续轮询（只提示这一次）")
         return "ok", ""
+
+    def _failure_delay(self, fails: int) -> float:
+        """连续失败 n 次后的重试间隔：1 → 1.7 → 2.9 → … 封顶可配。"""
+        cap = float(self.cfg.get("poll_failure_max_sec", 20.0) or 20.0)
+        delay = min(cap, 1.0 * (1.7 ** max(0, int(fails) - 1)))
+        jittered = delay * (1.0 + self._rng.uniform(-0.2, 0.2))
+        return max(0.2, min(cap, jittered))     # 抖动后仍不超过上限
 
     def _sleep_retry(self, deadline_mono: float) -> bool:
         """Wait one confirm retry delay (capped at the deadline).
