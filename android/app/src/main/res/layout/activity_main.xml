@@ -700,7 +700,7 @@
                                         android:layout_width="wrap_content"
                                         android:layout_height="wrap_content"
                                         android:layout_marginTop="2dp"
-                                        android:text="登录后验证店铺"
+                                        android:text="手机号 + 密码登录"
                                         android:textColor="?attr/colorOnSurfaceVariant"
                                         android:textSize="12sp" />
                                 </LinearLayout>
@@ -722,6 +722,7 @@
                                 android:textSize="13sp"
                                 android:visibility="gone" />
 
+                            <!-- 未登录时由头像头展示账号状态，这里不重复；仅在登录过程/结果时显示。 -->
                             <TextView
                                 android:id="@+id/loginStatus"
                                 android:layout_width="match_parent"
@@ -729,7 +730,8 @@
                                 android:layout_marginTop="8dp"
                                 android:text="@string/login_not_logged_in"
                                 android:textColor="?attr/colorOnSurfaceVariant"
-                                android:textSize="14sp" />
+                                android:textSize="14sp"
+                                android:visibility="gone" />
 
                             <com.google.android.material.textfield.TextInputLayout
                                 android:id="@+id/phoneInputLayout"

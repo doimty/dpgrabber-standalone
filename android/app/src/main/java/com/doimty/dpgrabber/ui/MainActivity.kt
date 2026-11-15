@@ -68,6 +68,7 @@ class MainActivity : AppCompatActivity() {
         loadFieldsFromStore()
         refreshListenStatus()
         refreshAccountHeader()
+        updateLoginStatusVisibility()
 
         binding.loginButton.setOnClickListener { verifyLogin() }
         binding.onlineButton.setOnClickListener { networkAction { it.updateStatus(1, false) } }
@@ -244,6 +245,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (networkBusy) return
         binding.loginStatus.text = getString(R.string.login_checking)
+        updateLoginStatusVisibility()
         setNetworkBusy(true)
         val generation = accountGeneration
         var requestRevision = SessionRepository.revision
@@ -268,9 +270,9 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     binding.loginButton.isEnabled = true
                     if (generation != accountGeneration || loginRevision != SessionRepository.revision || client.isCancelled) return@runOnUiThread
-                    binding.loginStatus.text = getString(R.string.login_success) +
-                        "（sid=${session.sid}" +
-                        (if (name.isNotEmpty()) "，店员信息已确认" else "") + "）"
+                    // 成功结果不再向用户暴露 sid 等内部标识；"已验证"由头像头状态承载。
+                    binding.loginStatus.text = getString(R.string.login_success)
+                    updateLoginStatusVisibility()
                     refreshHistory()
                     refreshAccountHeader()
                     if (!persisted) Toast.makeText(this, "登录成功；凭据仅当前进程可用，未持久保存", Toast.LENGTH_LONG).show()
@@ -282,6 +284,7 @@ class MainActivity : AppCompatActivity() {
                     if (generation != accountGeneration || requestRevision != SessionRepository.revision) return@runOnUiThread
                     binding.loginStatus.text =
                         getString(R.string.login_failed) + "：登录或会话校验失败"
+                    updateLoginStatusVisibility()
                 }
             } catch (e: Exception) {
                 // Unexpected failure (e.g. malformed JSON): never leave
@@ -291,6 +294,7 @@ class MainActivity : AppCompatActivity() {
                     if (generation != accountGeneration || requestRevision != SessionRepository.revision) return@runOnUiThread
                     binding.loginStatus.text =
                         getString(R.string.login_failed) + "：请求未完成"
+                    updateLoginStatusVisibility()
                 }
             } finally {
                 runOnUiThread { setNetworkBusy(false); refreshAccountInfo() }
@@ -346,16 +350,28 @@ class MainActivity : AppCompatActivity() {
     private fun refreshAccountHeader() {
         val phone = store.loadPhone()
         if (phone.isEmpty()) {
-            setAccountHeader("未", "未登录", "登录后验证店铺")
-            return
-        }
-        val maskedPhone = if (phone.length >= 7) {
-            phone.take(3) + "****" + phone.takeLast(4)
+            // 未登录时头像头承载账号状态，副标题不再重复“未登录”。
+            setAccountHeader("未", "未登录", "手机号 + 密码登录")
         } else {
-            "****" + phone.takeLast(2)
+            val maskedPhone = if (phone.length >= 7) {
+                phone.take(3) + "****" + phone.takeLast(4)
+            } else {
+                "****" + phone.takeLast(2)
+            }
+            val status = if (ListenService.isRunning) "监听中" else "已登录"
+            setAccountHeader(phone.takeLast(2), maskedPhone, status)
         }
-        val status = if (ListenService.isRunning) "监听中" else "已登录"
-        setAccountHeader(phone.takeLast(2), maskedPhone, status)
+        updateLoginStatusVisibility()
+    }
+
+    /**
+     * “登录状态”行的显隐：未登录文案由头像头表达，这里不再重复；
+     * 只有“正在登录…/登录成功/登录失败…”这类过程与结果反馈才显示。
+     */
+    private fun updateLoginStatusVisibility() {
+        val text = binding.loginStatus.text?.toString().orEmpty()
+        val redundant = text.isBlank() || text == getString(R.string.login_not_logged_in)
+        binding.loginStatus.visibility = if (redundant) View.GONE else View.VISIBLE
     }
 
     /** Assigns only on change so repeated refreshes never flicker. */

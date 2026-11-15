@@ -187,10 +187,17 @@ jobs:
             -sdk iphonesimulator \
             SUPPORTED_PLATFORMS='iphoneos iphonesimulator' \
             ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=- \
             CONFIGURATION_BUILD_DIR=build/Debug-iphonesimulator \
             build
           test -d build/Debug-iphonesimulator/DPGrabber.app
+          # Recent simulator runtimes refuse to launch an app without a code
+          # signature (SBMainWorkspace denies the open request), so the simulator
+          # build is ad-hoc signed instead of unsigned. Print the signature for
+          # the record without failing the job on codesign's exit status.
+          /usr/bin/codesign -dv --verbose=2 build/Debug-iphonesimulator/DPGrabber.app 2>&1 | head -6 || true
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" build/Debug-iphonesimulator/DPGrabber.app/Info.plist
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" build/Debug-iphonesimulator/DPGrabber.app/Info.plist
 

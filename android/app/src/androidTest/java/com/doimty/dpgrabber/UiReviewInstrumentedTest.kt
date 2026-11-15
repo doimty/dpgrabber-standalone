@@ -190,6 +190,12 @@ class UiReviewInstrumentedTest {
         assertNotNull(phone)
         phone!!.click()
         phone.text = PHONE
+        // 赋值后立刻读取会拿到旧的无障碍节点（值尚未提交），改为等待式校验。
+        instrumentation.waitForIdleSync()
+        assertTrue(
+            "手机号未写入输入框",
+            device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput").text(PHONE)), WAIT_MS)
+        )
         assertTrue("应实际展开系统输入法", device.wait(Until.hasObject(By.pkg("com.google.android.inputmethod.latin")), 3_000) ||
             device.executeShellCommand("dumpsys input_method").contains("mInputShown=true"))
         capture("phone-keyboard-expanded")
@@ -270,7 +276,8 @@ class UiReviewInstrumentedTest {
         launchMain()
         selectTab("我的")
         click("loginButton")
-        awaitText("loginStatus", "登录失败")
+        // 超时路径要等网络超时回调，大字号档位（1.3x）下 10s 窗口不足，用专用超时。
+        awaitText("loginStatus", "登录失败", FAILURE_WAIT_MS)
         assertTrue(device.wait(Until.findObject(By.res(PACKAGE, "loginButton")), WAIT_MS).isEnabled)
         assertNull(currentClient().session)
         capture("login-error")
@@ -414,9 +421,15 @@ class UiReviewInstrumentedTest {
         instrumentation.waitForIdleSync()
     }
 
-    private fun awaitText(id: String, fragment: String) {
-        scrollTo(id)
-        assertTrue("$id 未出现期望文本：$fragment", device.wait(Until.hasObject(By.res(PACKAGE, id).textContains(fragment)), WAIT_MS))
+    /**
+     * 文本等待：不依赖控件“当前可滚动可见”（登录状态行在登录前是 GONE，滚动会失败），
+     * 先尽力滚动一次，再按文本片段轮询；只有需要交互的场景才用 scrollTo/click。
+     */
+    private fun awaitText(id: String, fragment: String, ms: Long = WAIT_MS) {
+        // 目标可能因 GONE/不可见而无法 scrollIntoView，失败不中断等待。
+        runCatching { scrollTo(id) }
+        if (device.wait(Until.hasObject(By.res(PACKAGE, id).textContains(fragment)), ms)) return
+        fail("$id 未出现期望文本：$fragment（实际：\"${textOf(id)}\"）")
     }
 
     /** 精确文本等待：计数类控件 text 为纯整数，不能用片段匹配；失败时打印实际值。 */
@@ -540,6 +553,8 @@ class UiReviewInstrumentedTest {
         private const val PHONE = "00000000000"
         private const val PASSWORD = "ui-fixture-not-a-real-password"
         private const val WAIT_MS = 10_000L
+        /** 登录失败要等网络超时回调，深色大字号档位需要更长窗口。 */
+        private const val FAILURE_WAIT_MS = 30_000L
         private const val TAB_SETTLE_MS = 800L
         private const val NESTED_SCROLL_VIEW = "androidx.core.widget.NestedScrollView"
         private val PAGE_CONTAINERS = listOf("pageWorkbench", "pageRules", "pageHistory", "pageAccount")

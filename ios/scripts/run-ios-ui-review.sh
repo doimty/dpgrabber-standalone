@@ -48,6 +48,7 @@ SETTLE_SECONDS="${UI_REVIEW_SETTLE_SECONDS:-8}"
 TABS="0 1 2 3"
 CREATED_UDIDS=""
 FAILURES=0
+LAUNCH_FAILURES=0
 
 log() { printf '[ui-review] %s\n' "$*"; }
 fail() { printf '::error::%s\n' "$*" >&2; exit 1; }
@@ -264,8 +265,22 @@ run_round() {
   device_name="DPGrabberReview-${runtime_key}-$$"
 
   log "=== round $runtime_name ($runtime_version) ==="
-  udid="$(xcrun simctl create "$device_name" "$(printf '%s' "$device_type" | cut -f2)" "$runtime_id" | tail -n 1 | tr -d '[:space:]')"
-  [ -n "$udid" ] || fail "simctl create returned no UDID for $runtime_name"
+  # The default device (newest iPhone) does not exist on older runtimes, so try
+  # the preferred type first and fall back to types that exist in most runtimes.
+  udid=""
+  local candidate
+  for candidate in "$(printf '%s' "$device_type" | cut -f2)" \
+                   "com.apple.CoreSimulator.SimDeviceType.iPhone-16" \
+                   "com.apple.CoreSimulator.SimDeviceType.iPhone-15" \
+                   "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation"; do
+    if udid="$(xcrun simctl create "$device_name" "$candidate" "$runtime_id" 2>/dev/null | tail -n 1 | tr -d '[:space:]')" \
+       && [ -n "$udid" ]; then
+      log "device type: $candidate"
+      break
+    fi
+    udid=""
+  done
+  [ -n "$udid" ] || fail "simctl create failed for $runtime_name with every known iPhone device type"
   CREATED_UDIDS="$CREATED_UDIDS $udid"
   log "device: $device_name ($udid) / type: $(printf '%s' "$device_type" | cut -f1)"
 
@@ -292,6 +307,7 @@ run_round() {
         -uiReviewTab "$tab" \
         > "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>&1 || launch_rc=$?
       if [ "$launch_rc" -ne 0 ]; then
+        LAUNCH_FAILURES=$((LAUNCH_FAILURES + 1))
         log "launch exited $launch_rc for $appearance tab$tab; launch log follows"
         head -c 2000 "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>/dev/null \
           | sed -E 's/[[:digit:]]{11}/<phone>/g' >&2 || true
@@ -322,7 +338,11 @@ run_round() {
     if [ "$invalid_count" -eq 0 ]; then
       unique_hashes="$(shasum -a 256 "$OUT/${runtime_key}-${appearance}"-tab*.png \
         | awk '{ print $1 }' | sort -u | wc -l | tr -d ' ')"
-      if [ "$unique_hashes" -eq 1 ]; then
+      if [ "$unique_hashes" -eq 1 ] && [ "$LAUNCH_FAILURES" -gt 0 ]; then
+        printf '::error::%s %s: identical screenshots and %s failed launch(es) - the app never came to the foreground, see *-launch.log\n' \
+          "$runtime_key" "$appearance" "$LAUNCH_FAILURES" >&2
+        FAILURES=$((FAILURES + 1))
+      elif [ "$unique_hashes" -eq 1 ]; then
         printf '::error::%s %s: all four tab screenshots are identical, -uiReviewTab (DEBUG only) is likely not applied\n' \
           "$runtime_key" "$appearance" >&2
         FAILURES=$((FAILURES + 1))
