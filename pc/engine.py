@@ -313,7 +313,7 @@ class Engine:
     """Poll loop running on a worker thread."""
 
     def __init__(self, client: ApiClient, cfg: dict, log, speak=None,
-                 on_grab=None, on_outcome=None, now=time.time,
+                 on_grab=None, on_outcome=None, on_session=None, now=time.time,
                  monotonic=time.monotonic, rng=None):
         self.client = client
         self.cfg = cfg
@@ -330,6 +330,7 @@ class Engine:
         # in 接单历史 too. Not called when the engine is stopped
         # mid-confirm ("cancelled" is not an order outcome). Optional.
         self.on_outcome = on_outcome
+        self.on_session = on_session
         self.now = now  # wall clock, epoch seconds
         self._monotonic = monotonic  # monotonic clock for the confirm deadline
         self._rng = rng if rng is not None else random  # uniform() source
@@ -425,6 +426,11 @@ class Engine:
                     phone, password, int(self.cfg.get("shop_id", 92))
                 )
                 self.log("success", "登录成功，店铺 sid=%s" % session.sid)
+            if self.on_session is not None:
+                try:
+                    self.on_session(session)
+                except Exception:
+                    pass
             try:
                 clerk = extract_clerk(self.client.clerk_get(session))
                 if clerk:
