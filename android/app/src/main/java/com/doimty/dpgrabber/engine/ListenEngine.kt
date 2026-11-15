@@ -312,8 +312,9 @@ class ListenEngine(
                         // 高频重试只会继续撞限流，故用更硬的 5/10/20/30 秒退避。
                         val delaySec = TRANSPORT_BACKOFF_SEC[minOf(transportBackoffStep, TRANSPORT_BACKOFF_SEC.size - 1)]
                         if (transportBackoffStep < TRANSPORT_BACKOFF_SEC.size - 1) transportBackoffStep++
+                        // 文案不带具体秒数：这样同一类错误只记一条（错误类型变化才再记）。
                         logFailureOnce(LogLevel.WARNING,
-                            "网络连接中断，${delaySec.toInt()} 秒后重试：${e.messageText}")
+                            "网络连接中断，正在退避重试（最长 30 秒）：${e.messageText}")
                         if (!sleepInterruptible(delaySec)) return
                         continue
                     }
