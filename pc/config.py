@@ -57,7 +57,9 @@ DEFAULT_CONFIG = {
     "poll_interval_sec": 0.6,
         "poll_jitter_sec": 0.2,
         # 连续失败时的退避上限（秒）：1 → 1.7 → 2.9 → … 封顶
-        "poll_failure_max_sec": 20.0,  # delay between empty polls (reference tool ListenDelay default)
+        "poll_failure_max_sec": 20.0,
+        # 店铺接单名额占满（如 92 店上限 2 单）后的冷却秒数
+        "busy_cooldown_sec": 60.0,  # delay between empty polls (reference tool ListenDelay default)
     "memo_mode": 0,            # 0 = ignore memos, 1 = drop orders that have any memo
     "memo_keywords": [],       # drop an order if its memo contains any of these (case-insensitive)
     "blacklist": [],           # WeChat ids; drop orders from these customers
