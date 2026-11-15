@@ -23,8 +23,8 @@
     <string name="login_failed">登录失败</string>
 
     <!-- 工作台 -->
-    <string name="badge_foreground">前台运行</string>
-    <string name="status_hint_default">保持 App 在前台，切到后台会安全停止。</string>
+    <string name="badge_foreground">可后台运行</string>
+    <string name="status_hint_default">开始后可切到后台，由常驻通知保持运行；被系统或省电策略清理时会自动停止，未决订单保留为未知。</string>
     <string name="title_today_overview">今日概览</string>
     <string name="title_shop_orders">店铺与接单</string>
     <string name="title_week_performance">本周表现</string>
