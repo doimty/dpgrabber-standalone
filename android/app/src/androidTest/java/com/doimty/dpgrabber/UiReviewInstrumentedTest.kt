@@ -363,8 +363,8 @@ class UiReviewInstrumentedTest {
             if (activity != null) {
                 activityFound = true
                 val resources = activity.resources
-                metadata.put("density", resources.displayMetrics.density).put("densityDpi", resources.displayMetrics.densityDpi)
-                    .put("fontScale", resources.configuration.fontScale)
+                metadata.put("density", resources.displayMetrics.density.toDouble()).put("densityDpi", resources.displayMetrics.densityDpi)
+                    .put("fontScale", resources.configuration.fontScale.toDouble())
                     .put("screenWidthDp", resources.configuration.screenWidthDp)
                     .put("night", resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES)
                     .put("activity", activity.javaClass.simpleName)
@@ -384,9 +384,9 @@ class UiReviewInstrumentedTest {
             .put("visible", visible && view.visibility == View.VISIBLE).put("clickable", view.isClickable)
             .put("longClickable", view.isLongClickable).put("enabled", view.isEnabled).put("focusable", view.isFocusable)
             .put("boundsPx", JSONArray(listOf(bounds.left, bounds.top, bounds.right, bounds.bottom)))
-            .put("widthDp", view.width / density).put("heightDp", view.height / density)
-            .put("minTouchTargetDp", minOf(view.width, view.height) / density)
-        if (view is TextView) item.put("textSizeSp", view.textSize / view.resources.displayMetrics.scaledDensity)
+            .put("widthDp", (view.width / density).toDouble()).put("heightDp", (view.height / density).toDouble())
+            .put("minTouchTargetDp", (minOf(view.width, view.height) / density).toDouble())
+        if (view is TextView) item.put("textSizeSp", (view.textSize / view.resources.displayMetrics.scaledDensity).toDouble())
             .put("lineCount", view.lineCount).put("ellipsized", (0 until (view.layout?.lineCount ?: 0)).any { view.layout.getEllipsisCount(it) > 0 })
         result.put(item)
         if (view is ViewGroup) for (i in 0 until view.childCount) collectMetrics(view.getChildAt(i), density, result)
