@@ -376,6 +376,7 @@ class MainActivity : AppCompatActivity() {
         val loggedIn = hasValidSession()
         binding.startButton.isEnabled = !running && !networkBusy && loggedIn
         binding.stopButton.isEnabled = running
+        applyShopControls()
         // 未登录时按钮禁用，同时说明原因，避免点了没反应。
         binding.statusHint.text = if (!running && !loggedIn) {
             getString(R.string.need_login_first)
@@ -693,16 +694,13 @@ class MainActivity : AppCompatActivity() {
         applyShopControls()
     }
 
-    /**
-     * 店铺状态控件：当前生效的那个按钮禁用，并标注「（当前）」，
-     * 这样深色模式下也不靠灰度的细微差别去猜。状态未知时不锁任何按钮。
-     */
+    /** 当前状态用文字标记；未知状态允许用户重试，监听中明确锁定状态写操作。 */
     private fun applyShopControls() {
-        val busy = networkBusy
-        binding.onlineButton.isEnabled = !busy && isOnline == false
-        binding.offlineButton.isEnabled = !busy && isOnline == true
-        binding.randomOnButton.isEnabled = !busy && randomEnabled == false
-        binding.randomOffButton.isEnabled = !busy && randomEnabled == true
+        val canChange = !networkBusy && !ListenService.isRunning && hasValidSession() && HistoryStore.persistenceHealthy
+        binding.onlineButton.isEnabled = canChange && isOnline != true
+        binding.offlineButton.isEnabled = canChange && isOnline != false
+        binding.randomOnButton.isEnabled = canChange && randomEnabled != true
+        binding.randomOffButton.isEnabled = canChange && randomEnabled != false
         setButtonCurrent(binding.onlineButton, getString(R.string.btn_online), isOnline == true)
         setButtonCurrent(binding.offlineButton, getString(R.string.btn_offline), isOnline == false)
         setButtonCurrent(binding.randomOnButton, getString(R.string.btn_random_on), randomEnabled == true)
@@ -837,14 +835,16 @@ class MainActivity : AppCompatActivity() {
         applyShopControls()
     }
 
-    /** 接口可能给数字或数字字符串（"1"、"1.0"），非数字一律视为未知。 */
+    /** 接口可能给数字或数字字符串；小数、非有限值和越界值不能截断成有效状态。 */
     private fun numericValue(value: Any?): Int? =
-        value?.toString()?.toDoubleOrNull()?.takeIf { it.isFinite() }?.toInt()
+        value?.toString()?.toDoubleOrNull()?.takeIf {
+            it.isFinite() && it >= Int.MIN_VALUE && it <= Int.MAX_VALUE && it == kotlin.math.floor(it)
+        }?.toInt()
 
     /** 只认 true/false 与 1/0（数字或字符串），其它取值不猜。 */
     private fun booleanValue(value: Any?): Boolean? = when (value) {
         is Boolean -> value
-        is Number -> value.toInt() != 0
+        is Number -> when (value.toDouble()) { 1.0 -> true; 0.0 -> false; else -> null }
         is String -> when (value.trim().lowercase(Locale.ROOT)) {
             "true", "1" -> true
             "false", "0" -> false

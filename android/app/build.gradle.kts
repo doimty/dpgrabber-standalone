@@ -17,6 +17,14 @@ android {
     }
 
     buildTypes {
+        // 独立包名用于无损复测；不覆盖旧云端调试签名的已安装应用及其历史。
+        create("preview") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+            resValue("string", "app_name", "DPGrabber 验证版")
+            matchingFallbacks += listOf("debug")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(

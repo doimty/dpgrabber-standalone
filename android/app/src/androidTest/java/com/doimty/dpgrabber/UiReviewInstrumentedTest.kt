@@ -202,15 +202,29 @@ class UiReviewInstrumentedTest {
         launchMain()
         selectTab("我的")
         scrollTop()
-        val phone = device.wait(Until.findObject(By.res(PACKAGE, "phoneInput")), WAIT_MS)
-        assertNotNull(phone)
-        phone!!.click()
+        // 先在主线程建立真实输入焦点并展开 IME；不直接 setText，输入仍走键盘事件。
+        // 避免 IME 重排后 UiObject2 的旧坐标将输入打到另一个位置。
+        scrollTo("phoneInput")
+        main!!.onActivity { activity ->
+            val input = activity.findViewById<android.widget.EditText>(R.id.phoneInput)
+            assertTrue("手机号输入框应允许获取焦点", input.requestFocus())
+            input.setSelection(input.text.length)
+            val ime = activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            ime.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
         instrumentation.waitForIdleSync()
-        // TextInputEditText 不接受 UiObject2.setText 的静默写入；用输入事件注入更可靠。
-        device.executeShellCommand("input text $PHONE")
+        assertTrue("手机号输入框应确实获得焦点", device.wait(
+            Until.hasObject(By.res(PACKAGE, "phoneInput").focused(true)), WAIT_MS))
+        instrumentation.sendStringSync(PHONE)
         instrumentation.waitForIdleSync()
+        main!!.onActivity { activity ->
+            assertEquals("键盘输入应进入实际手机号控件", PHONE,
+                activity.findViewById<android.widget.EditText>(R.id.phoneInput).text.toString())
+        }
+        scrollTo("phoneInput")
         assertTrue(
-            "手机号未写入输入框",
+            "手机号输入后应在无障碍树中可读",
             device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput").text(PHONE)), WAIT_MS)
         )
         assertTrue("应实际展开系统输入法", device.wait(Until.hasObject(By.pkg("com.google.android.inputmethod.latin")), 3_000) ||
@@ -250,10 +264,16 @@ class UiReviewInstrumentedTest {
         scrollTo("globalWaitInput")
         device.findObject(By.res(PACKAGE, "globalWaitInput")).apply { click(); text = "2" }
         device.pressBack()
-        scrollTo("autoStopSwitch")
         val before = store.loadConfig().autoStopAfterGrab
-        device.findObject(By.res(PACKAGE, "autoStopSwitch")).click()
-        assertEquals(!before, store.loadConfig().autoStopAfterGrab)
+        // 开关在长表单底部；先完整滚到底，避免大字号时点击到被遮挡的半个控件。
+        scrollBottom()
+        val autoStop = device.wait(Until.findObject(By.res(PACKAGE, "autoStopSwitch")), WAIT_MS)
+        assertNotNull("应能到达自动停止开关", autoStop)
+        autoStop!!.click()
+        assertTrue("开关视觉状态应随点击更新", device.wait(
+            Until.hasObject(By.res(PACKAGE, "autoStopSwitch").checked(!before)), WAIT_MS))
+        instrumentation.waitForIdleSync()
+        assertEquals("开关点击应即时保存到设置", !before, store.loadConfig().autoStopAfterGrab)
         scrollBottom()
         capture("settings-bottom-edited")
         click("saveAdvancedButton")
@@ -280,6 +300,49 @@ class UiReviewInstrumentedTest {
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
         assertTrue("返回主页后底部导航应就绪", device.wait(Until.hasObject(By.res(PACKAGE, "bottomNav")), WAIT_MS))
         assertNotNull("“我的”页高级设置入口不可达；直达设置截图仅证明页面本身，不抵消导航失败", entry)
+    }
+
+    @Test(timeout = 240_000)
+    fun shopControlsCanToggleRepeatedlyWithoutRelogin() {
+        caseName = "07-shop-controls"
+        store.saveAccount(PHONE, PASSWORD)
+        val fixture = injectFixture(Mode.SUCCESS)
+        launchMain()
+        selectTab("我的")
+        click("loginButton")
+        assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "profileCard")), WAIT_MS))
+        selectTab("工作台")
+        awaitText("accountOverview", "已上线")
+        repeat(2) {
+            click("offlineButton")
+            awaitText("accountOverview", "已下线")
+            click("randomOffButton")
+            awaitText("accountOverview", "随机单关闭")
+            click("onlineButton")
+            awaitText("accountOverview", "已上线")
+            click("randomOnButton")
+            awaitText("accountOverview", "随机单开启")
+        }
+        // 一次状态读取失败不得把两个方向全部禁用，也不得靠重新登录恢复。
+        fixture.failNextClerkRead = true
+        click("offlineButton")
+        awaitText("accountOverview", "店铺状态读取失败")
+        for (id in listOf("onlineButton", "offlineButton", "randomOnButton", "randomOffButton")) {
+            val button = device.wait(Until.findObject(By.res(PACKAGE, id)), WAIT_MS)
+            assertNotNull("未知状态仍应保留操作入口 $id", button)
+            assertTrue("未知状态不得锁死操作 $id", button!!.wait(Until.enabled(true), WAIT_MS))
+        }
+        click("onlineButton")
+        awaitText("accountOverview", "已上线")
+        capture("repeated-toggles-without-relogin")
+        assertEquals("多次切换和读取失败后只能有最初那次登录", 1,
+            fixture.requests.count { it.getString("path") == "/s/duopei-account/login" })
+        assertEquals("上线与下线应各执行三次", 6,
+            fixture.requests.count { it.getString("path") == "/s/c/clerk/updateStatus" })
+        assertEquals("随机单开关应各执行两次", 4,
+            fixture.requests.count { it.getString("path") == "/s/c/clerk/updateRandomOrderSwitch" })
+        assertTrue(SessionRepository.hasLiveSession())
+        assertFalse(ListenService.isRunning)
     }
 
     private fun openSettingsDirectly() {
@@ -529,6 +592,9 @@ class UiReviewInstrumentedTest {
         val release = CountDownLatch(if (gated) 1 else 0)
         val requests = CopyOnWriteArrayList<JSONObject>()
         val unknown = CopyOnWriteArrayList<String>()
+        @Volatile var failNextClerkRead = false
+        private var onlineStatus = 1
+        private var randomEnabled = true
 
         override fun cancelAll() { release.countDown() }
 
@@ -551,7 +617,28 @@ class UiReviewInstrumentedTest {
                 "/s/duopei-account/login" -> json("""{"code":0,"data":{"token":"ui-fixture-only-not-valid","shopId":50}}""")
                 "/s/duopei-account/list-shop-account" -> json("""{"code":0,"data":[{"shopId":92,"accountId":"ui-fixture-shop"}]}""")
                 "/s/duopei-account/switch-account" -> json("""{"code":0,"data":{"token":"ui-fixture-switched-not-valid"}}""")
-                "/s/c/clerk/get" -> json("""{"code":0,"clerk":{"id":90001,"shopId":92,"name":"离线合成店员","status":1,"randomOrderSwitch":true}}""")
+                "/s/c/clerk/get" -> {
+                    if (failNextClerkRead) {
+                        failNextClerkRead = false
+                        return json("""{"code":7,"msg":"合成状态读取失败"}""")
+                    }
+                    json(JSONObject().put("code", 0).put("clerk", JSONObject()
+                        .put("id", 90001).put("shopId", 92).put("name", "离线合成店员")
+                        .put("status", onlineStatus).put("randomOrderSwitch", randomEnabled)).toString())
+                }
+                "/s/c/clerk/updateStatus" -> {
+                    val form = body?.toString(Charsets.UTF_8).orEmpty().split("&")
+                        .associate { part -> part.substringBefore("=") to part.substringAfter("=", "") }
+                    onlineStatus = requireNotNull(form["status"]?.toIntOrNull())
+                    check(onlineStatus in 1..2)
+                    json("""{"code":0}""")
+                }
+                "/s/c/clerk/updateRandomOrderSwitch" -> {
+                    val value = body?.toString(Charsets.UTF_8).orEmpty().substringAfter("randomOrderSwitch=")
+                    check(value == "true" || value == "false")
+                    randomEnabled = value == "true"
+                    json("""{"code":0}""")
+                }
                 "/s/c/statistics/statisticsClerkOrder" -> json("""{"code":0,"data":{"orderCount":12,"orderAmount":240,"continuedAmount":60,"continuedCount":3,"continuedUserCount":2}}""")
                 else -> throw AssertionError("白名单没有响应：$key")
             }
@@ -561,7 +648,8 @@ class UiReviewInstrumentedTest {
 
         companion object {
             private val ALLOWED = setOf("POST /s/duopei-account/login", "GET /s/duopei-account/list-shop-account",
-                "POST /s/duopei-account/switch-account", "GET /s/c/clerk/get", "GET /s/c/statistics/statisticsClerkOrder")
+                "POST /s/duopei-account/switch-account", "GET /s/c/clerk/get", "GET /s/c/statistics/statisticsClerkOrder",
+                "POST /s/c/clerk/updateStatus", "POST /s/c/clerk/updateRandomOrderSwitch")
         }
     }
 
