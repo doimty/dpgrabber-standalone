@@ -1,38 +1,49 @@
 import SwiftUI
 import UIKit
 
+private let appAccent = Color(red: 0.02, green: 0.45, blue: 0.67)
+
+/// 仅调试构建可通过启动参数指定初始页，供离线截图验收使用；发布构建恒为工作台。
+private func initialTabForLaunch() -> Int {
+    #if DEBUG
+    let requested = UserDefaults.standard.integer(forKey: "uiReviewTab")
+    return (0...3).contains(requested) ? requested : 0
+    #else
+    return 0
+    #endif
+}
+
 @MainActor
 struct ContentView: View {
     @StateObject private var viewModel = AppViewModel()
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selectedTab = 0
+    @State private var selectedTab = initialTabForLaunch()
     @State private var showingSettings = false
     @State private var showingClearAccountAlert = false
+    @State private var showingCredentials = false
     @State private var historyFilter = HistoryFilter.all
 
-    private let accent = Color(red: 0.02, green: 0.45, blue: 0.67)
+    private let accent = appAccent
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            NavigationView { dashboard }
+            NavigationContainer { dashboard }
                 .tabItem { Label("工作台", systemImage: "square.grid.2x2.fill") }
                 .tag(0)
-            NavigationView { rulesPage }
+            NavigationContainer { rulesPage }
                 .tabItem { Label("规则", systemImage: "slider.horizontal.3") }
                 .tag(1)
-            NavigationView { historyPage }
+            NavigationContainer { historyPage }
                 .tabItem { Label("记录", systemImage: "clock.arrow.circlepath") }
                 .tag(2)
-            NavigationView { accountPage }
+            NavigationContainer { accountPage }
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
                 .tag(3)
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(accent)
+        .tint(accent)
         .sheet(isPresented: $showingSettings) {
-            NavigationView { SettingsView(viewModel: viewModel) }
-                .navigationViewStyle(StackNavigationViewStyle())
-                .accentColor(accent)
+            NavigationContainer { SettingsView(viewModel: viewModel) }
+                .tint(accent)
         }
         .alert(isPresented: Binding(
             get: { !showingSettings && viewModel.lastError != nil },
@@ -57,14 +68,19 @@ struct ContentView: View {
                 recentCard
             }
             .padding(20)
+            .padding(.bottom, 8)
         }
-        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+        .background(Color(UIColor.systemGroupedBackground))
         .navigationTitle("工作台")
-        .navigationBarItems(trailing: Button { selectedTab = 3 } label: {
-            Image(systemName: "person.crop.circle")
-                .font(.title2)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { selectedTab = 3 } label: {
+                    AccountAvatar(phone: viewModel.phone, size: 30)
+                }
                 .accessibilityLabel("管理账号")
-        })
+            }
+        }
     }
 
     private var statusTitle: String {
@@ -91,7 +107,7 @@ struct ContentView: View {
                     .foregroundColor(statusColor)
                     .padding(12)
                     .background(statusColor.opacity(0.10))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 6) {
                     Text("DPGRABBER · 前台工作台")
                         .font(.caption).foregroundColor(.secondary)
@@ -128,7 +144,7 @@ struct ContentView: View {
                     .padding(.vertical, 16)
                     .foregroundColor(.white)
                     .background(viewModel.isRunning ? Color(UIColor.systemRed) : accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(PlainButtonStyle())
             .disabled(!viewModel.isRunning && (viewModel.isBusy || !viewModel.isLoggedIn || !viewModel.storageReady))
@@ -149,8 +165,8 @@ struct ContentView: View {
         }
         .padding(20)
         .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 24))
-        .overlay(RoundedRectangle(cornerRadius: 24).stroke(statusColor.opacity(0.18), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(statusColor.opacity(0.18), lineWidth: 1))
     }
 
     private var todayCard: some View {
@@ -294,6 +310,7 @@ struct ContentView: View {
             }
         }
         .navigationTitle("接单规则")
+        .navigationBarTitleDisplayMode(.large)
     }
 
     private func amountField(_ title: String, placeholder: String, get: @escaping () -> Double, set: @escaping (Double) -> Void) -> some View {
@@ -357,6 +374,7 @@ struct ContentView: View {
         }
         .listStyle(InsetGroupedListStyle())
         .navigationTitle("订单记录")
+        .navigationBarTitleDisplayMode(.large)
         .navigationBarItems(trailing: NavigationLink(destination: RunLogView(store: viewModel.logStore)) {
             Image(systemName: "text.alignleft").accessibilityLabel("运行日志")
         })
@@ -365,36 +383,11 @@ struct ContentView: View {
     private var accountPage: some View {
         Form {
             Section {
-                HStack(spacing: 14) {
-                    Image(systemName: "person.crop.circle.fill").font(.system(size: 46)).foregroundColor(accent)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(viewModel.phone.isEmpty ? "尚未添加账号" : maskPhone(viewModel.phone)).font(.headline)
-                        Text(viewModel.accountSummary).font(.subheadline).foregroundColor(.secondary)
-                    }
-                }.padding(.vertical, 8)
+                ProfileHeader(phone: viewModel.phone,
+                              isLoggedIn: viewModel.isLoggedIn,
+                              summary: viewModel.accountSummary)
             }
-            Section(header: Text("账号管理"), footer: Text("账号仅保存在本机钥匙串中。修改账号前请先停止监听。当前支持单账号。")) {
-                TextField("手机号", text: $viewModel.phone)
-                    .keyboardType(.numberPad).textContentType(.username)
-                    .autocapitalization(.none).disableAutocorrection(true)
-                    .disabled(viewModel.accountEditingDisabled)
-                SecureField("密码", text: $viewModel.password)
-                    .textContentType(.password).disabled(viewModel.accountEditingDisabled)
-                Button { viewModel.login() } label: {
-                    HStack {
-                        Label(viewModel.isLoggingIn ? "正在验证…" : "登录并验证店铺", systemImage: "checkmark.shield")
-                        Spacer()
-                        if viewModel.isLoggingIn { ProgressView() }
-                    }
-                }.disabled(viewModel.accountEditingDisabled)
-                Toggle("登录后自动上线", isOn: $viewModel.config.onlineAfterLogin)
-                Button { viewModel.saveCredentials() } label: {
-                    Label("保存账号到本机", systemImage: "lock.shield")
-                }.disabled(viewModel.accountEditingDisabled)
-                Button(role: .destructive) { showingClearAccountAlert = true } label: {
-                    Label("清除已保存账号", systemImage: "trash")
-                }.disabled(viewModel.isStopping)
-            }
+            accountCredentialsSection
             Section(header: Text("应用设置")) {
                 Button { showingSettings = true } label: { Label("高级设置", systemImage: "gearshape") }
                 Button { viewModel.saveSettings() } label: { Label("保存当前设置", systemImage: "square.and.arrow.down") }
@@ -417,12 +410,53 @@ struct ContentView: View {
             }
         }
         .navigationTitle("我的")
+        .navigationBarTitleDisplayMode(.large)
         .confirmationDialog("清除已保存账号？", isPresented: $showingClearAccountAlert, titleVisibility: .visible) {
             Button("清除账号", role: .destructive) { viewModel.clearCredentials() }
             Button("取消", role: .cancel) { }
         } message: {
             Text("将停止当前任务，并从本机钥匙串删除手机号和密码。订单记录不会被删除。")
         }
+    }
+
+    @ViewBuilder
+    private var accountCredentialsSection: some View {
+        if viewModel.isLoggedIn {
+            Section(footer: Text("账号仅保存在本机钥匙串；修改前请先停止监听。当前支持单账号。")) {
+                DisclosureGroup("账号与登录", isExpanded: $showingCredentials) {
+                    accountCredentialControls
+                }
+            }
+        } else {
+            Section(header: Text("账号与登录"),
+                    footer: Text("账号仅保存在本机钥匙串；修改前请先停止监听。当前支持单账号。")) {
+                accountCredentialControls
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var accountCredentialControls: some View {
+        TextField("手机号", text: $viewModel.phone)
+            .keyboardType(.numberPad).textContentType(.username)
+            .autocapitalization(.none).disableAutocorrection(true)
+            .disabled(viewModel.accountEditingDisabled)
+        SecureField("密码", text: $viewModel.password)
+            .textContentType(.password).disabled(viewModel.accountEditingDisabled)
+        Button { viewModel.login() } label: {
+            HStack {
+                Label(viewModel.isLoggingIn ? "正在验证…" : "登录并验证店铺", systemImage: "checkmark.shield")
+                Spacer()
+                if viewModel.isLoggingIn { ProgressView() }
+            }
+        }.disabled(viewModel.accountEditingDisabled)
+        Toggle("登录后自动上线", isOn: $viewModel.config.onlineAfterLogin)
+        Button { viewModel.saveCredentials() } label: {
+            Label("保存账号到本机", systemImage: "lock.shield")
+        }.disabled(viewModel.accountEditingDisabled)
+        Button(role: .destructive) { showingClearAccountAlert = true } label: {
+            Label("清除已保存账号", systemImage: "trash")
+        }.disabled(viewModel.isStopping)
     }
 
     private var versionText: String {
@@ -485,7 +519,86 @@ private struct ClientCard<Content: View>: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct AccountAvatar: View {
+    let phone: String
+    let size: CGFloat
+
+    private var avatarText: String {
+        phone.isEmpty ? "未" : String(phone.suffix(2))
+    }
+
+    var body: some View {
+        Text(avatarText)
+            .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .foregroundColor(appAccent)
+            .frame(width: size, height: size)
+            .background(appAccent.opacity(0.12))
+            .clipShape(Circle())
+            .accessibilityLabel(phone.isEmpty ? "未登录账号" : "账号头像")
+    }
+}
+
+private struct ProfileHeader: View {
+    let phone: String
+    let isLoggedIn: Bool
+    let summary: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            AccountAvatar(phone: phone, size: 56)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(phone.isEmpty ? "未登录" : maskPhone(phone))
+                    .font(.title3.weight(.semibold))
+                statusBadge
+                Text(summary)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if isLoggedIn {
+            Label("店铺已验证", systemImage: "checkmark.seal.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundColor(appAccent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(appAccent.opacity(0.12))
+                .clipShape(Capsule())
+        } else {
+            Text("登录后验证店铺")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
+private struct NavigationContainer<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        Group {
+            if #available(iOS 16.0, *) {
+                NavigationStack { content }
+            } else {
+                NavigationView { content }
+                    .navigationViewStyle(StackNavigationViewStyle())
+            }
+        }
     }
 }
 

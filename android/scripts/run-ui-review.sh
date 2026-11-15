@@ -112,19 +112,34 @@ STAGE=install-apks
 "${ADB[@]}" install "$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk"
 "${ADB[@]}" install "$ANDROID_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
 
-# 安装不启动 Activity。先从 PackageManager 获取真实 UID，再隔离两族网络。
+# 安装不启动 Activity。先从 PackageManager 精确读取单个包的 UID，再隔离两族网络。
+# 任何歧义（包名不精确匹配、多 UID、系统 UID）都必须中止，不猜、不回退到免隔离。
 package_uid() {
-  "${ADB[@]}" shell dumpsys package "$1" | tr -d '\r' | python3 -c '
+  local package=$1 raw uid
+  raw=$("${ADB[@]}" shell cmd package list packages -U --user 0 "$package" | tr -d '\r')
+  printf '%s\n' "$raw" | tee "$REPORT/package-${package}-uid.txt" >&2
+  uid=$(printf '%s\n' "$raw" | python3 -c '
 import re, sys
-uids = set(re.findall(r"^\s*userId=(\d+)\s*$", sys.stdin.read(), re.M))
+package = sys.argv[1]
+uids = set()
+for line in sys.stdin:
+    match = re.match(r"^\s*package:(\S+)\s+uid:(\d+)\s*$", line)
+    if match and match.group(1) == package:
+        uids.add(int(match.group(2)))
 if len(uids) != 1:
-    sys.exit("无法唯一确认包 UID；拒绝运行测试。")
-uid = int(uids.pop())
+    sys.exit("无法唯一确认 " + package + " 的 UID；拒绝运行测试（诊断已保存）。")
+uid = uids.pop()
 if uid < 10000:
     sys.exit("目标 UID 不是普通应用；拒绝添加防火墙规则。")
 print(uid)
-'
+' "$package")
+  [[ -n "$uid" ]] || { printf '%s\n' "缺少 $package 的 UID" >&2; exit 1; }
+  [[ -n "$("${ADB[@]}" shell pm path "$package" | tr -d '\r')" ]] || {
+    printf '%s\n' "拒绝执行：$package 未安装或包路径不可读。" >&2; exit 1
+  }
+  printf '%s\n' "$uid"
 }
+STAGE=resolve-package-uids
 TARGET_UID=$(package_uid "$TARGET_PACKAGE")
 TEST_UID=$(package_uid "$TEST_PACKAGE")
 for table in iptables ip6tables; do
