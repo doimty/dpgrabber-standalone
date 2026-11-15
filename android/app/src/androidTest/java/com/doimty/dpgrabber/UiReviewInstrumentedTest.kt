@@ -110,6 +110,11 @@ class UiReviewInstrumentedTest {
         assertTrue("无账号操作不得调用任何端点", fixtures.all { it.requests.isEmpty() })
         scrollBottom()
         capture("home-bottom-empty-log")
+        selectTab("我的")
+        capture("account-empty")
+        val phone = device.findObject(By.res(PACKAGE, "phoneInput"))
+        assertNotNull("“我的”页应包含手机号输入框", phone)
+        assertEquals("未登录时手机号应保持为空", "", phone!!.text)
     }
 
     @Test(timeout = 240_000)
@@ -122,6 +127,7 @@ class UiReviewInstrumentedTest {
         LogBus.post(LogLevel.WARNING, "合成未知结果保留待核验；不会重新提交")
         LogBus.post(LogLevel.ERROR, "合成风控记录：仅展示，不发送业务请求")
         launchMain()
+        selectTab("我的")
         click("loginButton")
         assertTrue("登录请求必须进入受控替身", fixture.entered.await(8, TimeUnit.SECONDS))
         awaitText("loginStatus", "正在登录")
@@ -130,11 +136,16 @@ class UiReviewInstrumentedTest {
         fixture.release.countDown()
         awaitText("loginStatus", "登录成功")
         capture("login-verified")
+        selectTab("工作台")
         awaitText("statisticsOverview", "本周订单 12 单")
         assertTrue(device.findObject(By.res(PACKAGE, "statisticsOverview")).text.contains("25.00%"))
         capture("weekly-statistics")
         awaitText("todayOverview", "成功 1")
         capture("history-summary")
+        selectTab("接单规则")
+        scrollTo("memoKeywordsInput")
+        capture("rules-page")
+        selectTab("处理记录")
         for ((label, artifact) in listOf("成功" to "success", "失败" to "failed", "风控" to "risk", "跳过" to "skipped")) {
             scrollToText("$label · 店铺")
             capture("history-$artifact")
@@ -146,10 +157,9 @@ class UiReviewInstrumentedTest {
         assertTrue(device.wait(Until.hasObject(By.text("只读核验未知结果（不重新提交）")), WAIT_MS))
         capture("history-long-press-menu")
         device.pressBack()
-        scrollTo("memoKeywordsInput")
-        capture("home-filter-settings")
+        selectTab("我的")
         scrollBottom()
-        capture("home-bottom-with-logs")
+        capture("account-with-logs")
         click("clearLogButton")
         awaitText("logView", "暂无")
         capture("logs-cleared")
@@ -172,6 +182,7 @@ class UiReviewInstrumentedTest {
     fun phoneKeyboardContainsOnlySyntheticInput() {
         caseName = "05-keyboard"
         launchMain()
+        selectTab("我的")
         scrollTop()
         val phone = device.wait(Until.findObject(By.res(PACKAGE, "phoneInput")), WAIT_MS)
         assertNotNull(phone)
@@ -189,17 +200,19 @@ class UiReviewInstrumentedTest {
     fun settingsNavigationSaveReturnAndRecreation() {
         caseName = "06-settings"
         launchMain()
-        scrollTop()
-        device.pressMenu()
-        val entry = device.wait(Until.findObject(By.text("高级设置")), 2_000)
+        selectTab("我的")
+        // 入口位于“我的”页登录卡底部，窄屏需先滚动；缺失时不中断，继续取证。
+        tryScrollTo("advancedSettingsButton")
+        val entry = device.wait(Until.findObject(By.text("高级设置")), WAIT_MS)
         if (entry == null) {
             findings.put(JSONObject().put("code", "advanced-settings-entry-unreachable")
-                .put("detail", "真实主页按菜单键后未找到高级设置；随后以内部显式 Intent 验收设置页，不代表导航已通过"))
+                .put("detail", "“我的”页未找到可见的“高级设置”按钮；随后以内部显式 Intent 验收设置页，不代表导航已通过"))
             capture("missing-advanced-entry")
-            // 页面本身独立验收，不伪造主页入口或调用 onOptionsItemSelected。
+            // 页面本身独立验收，不伪造入口或调用 onOptionsItemSelected。
             openSettingsDirectly()
         } else {
             entry.click()
+            instrumentation.waitForIdleSync()
         }
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "shopIdInput")), WAIT_MS))
         capture("settings-top")
@@ -218,13 +231,17 @@ class UiReviewInstrumentedTest {
         scrollBottom()
         capture("settings-bottom-edited")
         click("saveAdvancedButton")
+        assertTrue("保存后应回到主界面", device.wait(Until.hasObject(By.res(PACKAGE, "bottomNav")), WAIT_MS))
+        scrollTop()
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
         assertEquals(9.0, store.loadConfig().requestTimeoutSec, 0.0)
         assertEquals(2.0, store.loadConfig().globalWaitSec, 0.0)
         capture("settings-saved-return-home")
         main!!.recreate()
-        assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
+        // 重建后底部导航默认回到工作台，必须回到“我的”才能继续验收账号区。
+        selectTab("我的")
         scrollTop()
+        assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
         capture("home-after-actual-recreate")
         // 第二次打开验证配置被实际加载，随后用系统返回键返回。
         openSettingsDirectly()
@@ -233,8 +250,10 @@ class UiReviewInstrumentedTest {
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "requestTimeoutInput").text("9")), WAIT_MS))
         capture("settings-persisted-top")
         device.pressBack()
+        scrollTop()
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
-        assertNotNull("主页高级设置入口不可达；直达设置截图仅证明页面本身，不抵消导航失败", entry)
+        assertTrue("返回主页后底部导航应就绪", device.wait(Until.hasObject(By.res(PACKAGE, "bottomNav")), WAIT_MS))
+        assertNotNull("“我的”页高级设置入口不可达；直达设置截图仅证明页面本身，不抵消导航失败", entry)
     }
 
     private fun openSettingsDirectly() {
@@ -246,6 +265,7 @@ class UiReviewInstrumentedTest {
         store.saveAccount(PHONE, PASSWORD)
         val fixture = injectFixture(mode)
         launchMain()
+        selectTab("我的")
         click("loginButton")
         awaitText("loginStatus", "登录失败")
         assertTrue(device.wait(Until.findObject(By.res(PACKAGE, "loginButton")), WAIT_MS).isEnabled)
@@ -300,7 +320,8 @@ class UiReviewInstrumentedTest {
 
     private fun launchMain() {
         main = ActivityScenario.launch(MainActivity::class.java)
-        assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
+        assertTrue("底部导航缺失：四页界面未加载", device.wait(Until.hasObject(By.res(PACKAGE, "bottomNav")), WAIT_MS))
+        assertTrue("工作台页应默认可见", device.wait(Until.hasObject(By.res(PACKAGE, "pageWorkbench")), WAIT_MS))
         main!!.onActivity { activity ->
             val config = activity.resources.configuration
             val night = config.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
@@ -310,26 +331,41 @@ class UiReviewInstrumentedTest {
         }
     }
 
+    /** 底部导航切页：同一时刻只有当前页 VISIBLE，切换后等待布局稳定再操作。 */
+    private fun selectTab(label: String) {
+        val tab = device.wait(Until.findObject(By.text(label)), WAIT_MS)
+        assertNotNull("底部导航缺少“$label”标签，无法到达目标页", tab)
+        tab!!.click()
+        instrumentation.waitForIdleSync()
+        device.waitForIdle(TAB_SETTLE_MS)
+    }
+
+    /** 当前可见页的滚动容器：ScrollView 与 NestedScrollView 都满足 scrollable，隐藏页不参与匹配。 */
+    private fun pageScroller() = UiScrollable(UiSelector().scrollable(true).instance(0))
+
     private fun scrollTop() {
-        UiScrollable(UiSelector().className("android.widget.ScrollView").instance(0)).scrollToBeginning(24)
+        pageScroller().scrollToBeginning(24)
         device.waitForIdle(1_000)
     }
 
     private fun scrollBottom() {
-        UiScrollable(UiSelector().className("android.widget.ScrollView").instance(0)).scrollToEnd(32)
+        pageScroller().scrollToEnd(32)
         device.waitForIdle(1_000)
     }
 
     private fun scrollTo(id: String) {
-        assertTrue("未能滚动至 $id", UiScrollable(UiSelector().className("android.widget.ScrollView").instance(0))
-            .scrollIntoView(UiSelector().resourceId("$PACKAGE:id/$id")))
+        assertTrue("未能滚动至 $id", pageScroller().scrollIntoView(UiSelector().resourceId("$PACKAGE:id/$id")))
         device.waitForIdle(1_000)
     }
 
     private fun scrollToText(prefix: String) {
-        assertTrue("未能滚动至历史行", UiScrollable(UiSelector().className("android.widget.ScrollView").instance(0))
-            .scrollIntoView(UiSelector().textStartsWith(prefix)))
+        assertTrue("未能滚动至历史行", pageScroller().scrollIntoView(UiSelector().textStartsWith(prefix)))
     }
+
+    /** 静默滚动：控件缺失时返回 false，供入口缺失的取证分支继续执行。 */
+    private fun tryScrollTo(id: String): Boolean = runCatching {
+        pageScroller().scrollIntoView(UiSelector().resourceId("$PACKAGE:id/$id"))
+    }.getOrDefault(false)
 
     private fun click(id: String) {
         scrollTo(id)
@@ -459,5 +495,6 @@ class UiReviewInstrumentedTest {
         private const val PHONE = "00000000000"
         private const val PASSWORD = "ui-fixture-not-a-real-password"
         private const val WAIT_MS = 10_000L
+        private const val TAB_SETTLE_MS = 800L
     }
 }
