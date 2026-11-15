@@ -74,6 +74,8 @@ class ListenEngine(
         private set
 
     private val stopFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** 宿主报告的致命故障（如历史写入失败）：只停止，不影响正常收尾通知。 */
+    private val aborted = java.util.concurrent.atomic.AtomicBoolean(false)
     private var thread: Thread? = null
     private val seen = LinkedHashMap<String, Long>()
     private val seenTtlMs: Long = (config.seenTtlSec * 1000).toLong()
@@ -99,6 +101,7 @@ class ListenEngine(
         if (running || thread?.isAlive == true) return false
         client.resumeRequests()
         stopFlag.set(false)
+        aborted.set(false)
         running = true
         onStateChange(true)
         thread = Thread({ run(phone, password) }, "dpgrabber-listen").apply {
@@ -113,6 +116,18 @@ class ListenEngine(
         running = false
         client.cancel()
         thread?.interrupt()
+    }
+
+    /**
+     * 宿主侧致命故障的安全出口（历史写入失败等）。
+     *
+     * 只置标志：循环在下一个检查点退出，本轮已提交的请求不再重发，
+     * 也不会再走到“抢单成功”的通知分支。不抛异常、不取消 transport，
+     * 因此在工作线程内部调用同样安全。
+     */
+    fun abort() {
+        aborted.set(true)
+        stopFlag.set(true)
     }
 
     /** 仅供后台调用，主线程不可等待工作线程退出。 */
@@ -174,13 +189,31 @@ class ListenEngine(
             pollLoop(phone, password)
         } catch (e: ApiError) {
             if (e.kind != ApiError.Kind.CANCELLED) log(LogLevel.ERROR, "启动失败：${e.messageText}")
-        } catch (_: Exception) {
-            log(LogLevel.ERROR, "任务异常停止，请核对历史中的未知结果")
+        } catch (error: Throwable) {
+            // 工作线程的最终兜底：任何 Throwable（含 Error、第三方库的
+            // 运行时异常）都收敛成“停止 + 脱敏日志”。未捕获异常会直接
+            // 杀死进程，因此这里绝不允许向外抛。
+            safeLog(LogLevel.ERROR, stopReason(error))
         } finally {
             running = false
             onStateChange(false)
-            log(LogLevel.INFO, "监听已停止")
+            safeLog(LogLevel.INFO, "监听已停止")
         }
+    }
+
+    /** 日志回调本身也不能让异常逃出工作线程。 */
+    private fun safeLog(level: LogLevel, text: String) {
+        try { log(level, text) } catch (_: Throwable) { }
+    }
+
+    /** 只输出脱敏的故障分类，绝不带订单号、手机号或令牌。 */
+    private fun stopReason(error: Throwable): String = when (error) {
+        is InterruptedException -> "任务被中断，已停止"
+        is SecurityException -> "缺少系统权限，任务已停止"
+        is java.io.IOException -> "本地读写失败，任务已停止，请核对历史中的未知结果"
+        is OutOfMemoryError -> "内存不足，任务已停止，请核对历史中的未知结果"
+        is Error -> "运行时故障，任务已停止，请核对历史中的未知结果"
+        else -> "任务异常停止，请核对历史中的未知结果"
     }
 
     private fun refreshSession(phone: String, password: String): Boolean {
@@ -334,7 +367,7 @@ class ListenEngine(
                     stop()
                     throw error
                 }
-                if (outcomeType == OutcomeType.SUCCESS) {
+                if (outcomeType == OutcomeType.SUCCESS && !aborted.get()) {
                     log(LogLevel.SUCCESS, "抢单成功，已保存历史，请去查看订单")
                     onSuccess()
                     if (configSnapshot().autoStopAfterGrab) stopFlag.set(true)

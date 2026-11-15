@@ -28,6 +28,7 @@ class ListenService : Service() {
         const val CHANNEL_ID = "dpgrabber_listen"
         const val SUCCESS_CHANNEL_ID = "dpgrabber_success"
         const val NOTIFICATION_ID = 1001
+        const val SUCCESS_NOTIFICATION_ID = 1002
         @Volatile var isRunning = false
             private set
         @Volatile var state = "已停止"
@@ -62,9 +63,19 @@ class ListenService : Service() {
             ACTION_START -> {
                 // 不在旧工作线程退出前复用或恢复它的 transport。
                 if (engine != null) return START_NOT_STICKY
-                startForeground(NOTIFICATION_ID, buildNotification("正在启动"))
-                try { startEngine(startId) } catch (_: Exception) {
-                    LogBus.post(LogLevel.ERROR, "服务启动失败")
+                // 前台通知/权限异常（如系统限制 dataSync 类型）同样是主线程崩溃源，
+                // 这里收敛成一次可读提示后停止，而不是让进程退出。
+                try {
+                    startForeground(NOTIFICATION_ID, buildNotification("正在启动"))
+                } catch (error: Throwable) {
+                    LogBus.post(LogLevel.ERROR, "前台通知不可用，任务未启动：" + failureText(error))
+                    cleanup(startId)
+                    return START_NOT_STICKY
+                }
+                try {
+                    startEngine(startId)
+                } catch (error: Throwable) {
+                    LogBus.post(LogLevel.ERROR, "服务启动失败：" + failureText(error))
                     cleanup(startId)
                 }
             }
@@ -94,26 +105,31 @@ class ListenService : Service() {
         val task = ListenEngine(client, config,
             log = { level, text ->
                 LogBus.post(level, text)
-                main.post { if (generation == currentGeneration && engine != null) updateNotification("监听任务运行中") }
+                postGuarded("监听状态通知") {
+                    if (generation == currentGeneration && engine != null) updateNotification("监听任务运行中")
+                }
             },
             configSnapshot = { store.loadConfig() },
             onAttemptStarted = { value -> history.record(value) },
             onOutcome = { value ->
-                try { history.record(value) } catch (error: Exception) {
+                try {
+                    history.record(value)
+                } catch (error: Throwable) {
+                    // 历史写入失败必须停止任务，但绝不能在后台线程向上抛：
+                    // 那个异常没有顶层捕获，会直接把进程杀掉（实机“闪退”）。
+                    // 语义保持不变：锁定平台操作 + 立即停止 + 不再接下一单。
+                    HistoryStore.markUnavailable()
                     LogBus.post(LogLevel.ERROR, "历史写入失败，任务将停止，请人工核对")
-                    throw error
+                    engine?.abort()
                 }
             },
             isPersistentlyBlocked = { sid, orderId -> orderId in history.blockedOrderIds(accountKey, sid) },
-            onSuccess = { main.post {
-                if (generation == currentGeneration) {
-                    getSystemService(NotificationManager::class.java).notify(1002,
-                        NotificationCompat.Builder(this, SUCCESS_CHANNEL_ID)
-                            .setSmallIcon(R.drawable.ic_notification).setContentTitle("接单成功")
-                            .setContentText("请打开应用核对订单").setAutoCancel(true).build())
+            onSuccess = {
+                postGuarded("接单成功通知") {
+                    if (generation == currentGeneration) notifySuccess()
                 }
-            } },
-            onStateChange = { active -> main.post {
+            },
+            onStateChange = { active -> postGuarded("监听状态收尾") {
                 if (generation == currentGeneration) {
                     isRunning = active
                     state = if (active) "正在监听" else "已停止"
@@ -170,6 +186,48 @@ class ListenService : Service() {
         val now = System.currentTimeMillis()
         if (now - lastNotificationMs < 2000) return
         lastNotificationMs = now
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+        try {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+        } catch (_: Throwable) {
+            LogBus.post(LogLevel.WARNING, "运行通知更新失败，监听继续")
+        }
+    }
+
+    /** 接单成功通知：channel、图标、权限任一环节失败都只降级为日志。 */
+    private fun notifySuccess() {
+        try {
+            createChannels()
+            getSystemService(NotificationManager::class.java).notify(SUCCESS_NOTIFICATION_ID,
+                NotificationCompat.Builder(this, SUCCESS_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_notification).setContentTitle("接单成功")
+                    .setContentText("请打开应用核对订单").setAutoCancel(true).build())
+        } catch (error: Throwable) {
+            LogBus.post(LogLevel.WARNING, "接单成功通知发送失败，监听继续：" + failureText(error))
+        }
+    }
+
+    /**
+     * 主线程回调兜底：任何 Throwable 只记脱敏日志，绝不让进程崩溃。
+     * 后台线程的异常有引擎兜底，主线程的 Handler 回调没有，必须在这里收回。
+     */
+    private fun postGuarded(what: String, block: () -> Unit) {
+        main.post {
+            try {
+                block()
+            } catch (_: Throwable) {
+                try { LogBus.post(LogLevel.WARNING, "后台回调异常，已忽略（$what）") } catch (_: Throwable) { }
+            }
+        }
+    }
+
+    /** 故障分类文案：只暴露类别，不含订单号、手机号或令牌。 */
+    private fun failureText(error: Throwable): String = when (error) {
+        is SecurityException -> "缺少系统授权"
+        is IllegalArgumentException -> "通知参数不被系统接受"
+        is IllegalStateException -> "服务状态不允许"
+        is java.io.IOException -> "本地读写失败"
+        is OutOfMemoryError -> "内存不足"
+        is Error -> "运行时故障"
+        else -> error.javaClass.simpleName.ifBlank { "未知异常" }
     }
 }

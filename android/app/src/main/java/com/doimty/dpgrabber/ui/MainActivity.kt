@@ -42,6 +42,8 @@ class MainActivity : AppCompatActivity() {
     private val networkExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var networkBusy = false
     private var lastRunning = false
+    /** 最近一次 saveAccount 是否真正写入本机加密存储。 */
+    @Volatile private var credentialPersisted = true
     private var historyGeneration = 0L
     private val historyListener: () -> Unit = { runOnUiThread { refreshHistory() } }
 
@@ -214,6 +216,7 @@ class MainActivity : AppCompatActivity() {
                 SessionRepository.invalidate()
             }
             val persisted = store.saveAccount(phone, password)
+            credentialPersisted = persisted
             store.saveConfig(config)
             if (!persisted) Toast.makeText(this, "设置已保存；账号凭据仅在当前进程内存中，未持久保存", Toast.LENGTH_LONG).show()
             else if (showToast) Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
@@ -265,6 +268,7 @@ class MainActivity : AppCompatActivity() {
                 client.checkActive()
                 if (generation != accountGeneration || loginRevision != SessionRepository.revision) return@execute
                 val persisted = store.saveAccount(phone, password)
+                credentialPersisted = persisted
                 val name = clerk?.optString("name", "") ?: ""
                 val id = clerk?.optInt("id", 0) ?: 0
                 runOnUiThread {
@@ -274,7 +278,11 @@ class MainActivity : AppCompatActivity() {
                     binding.loginStatus.text = getString(R.string.login_success)
                     updateLoginStatusVisibility()
                     refreshHistory()
+                    // 登录成功后工作台也要跟着变：头像头显示“已登录/监听中”，
+                    // 状态卡与“开始监听”按钮按会话启用；账户/店铺与统计由
+                    // 下方 finally 中的 refreshAccountInfo() 刷新。
                     refreshAccountHeader()
+                    refreshListenStatus()
                     if (!persisted) Toast.makeText(this, "登录成功；凭据仅当前进程可用，未持久保存", Toast.LENGTH_LONG).show()
                     else Toast.makeText(this, R.string.login_success, Toast.LENGTH_SHORT).show()
                 }
@@ -339,9 +347,25 @@ class MainActivity : AppCompatActivity() {
             }
         }
         lastRunning = running
-        binding.startButton.isEnabled = !running && !networkBusy
+        val loggedIn = hasValidSession()
+        binding.startButton.isEnabled = !running && !networkBusy && loggedIn
         binding.stopButton.isEnabled = running
+        // 未登录时按钮禁用，同时说明原因，避免点了没反应。
+        binding.statusHint.text = if (!running && !loggedIn) {
+            getString(R.string.need_login_first)
+        } else {
+            getString(R.string.status_hint_default)
+        }
     }
+
+    /**
+     * 登录态判定（会话优先）：只看 SessionRepository 里是否真的有可用会话，
+     * 不看本机是否存下了手机号。凭据未持久化、手机号为空但会话仍有效时
+     * 都算已登录；反之凭据存在但会话已失效则算未登录。
+     *
+     * 只读判定，不会构造客户端或触发会话重建，可安全用于每秒刷新。
+     */
+    private fun hasValidSession(): Boolean = SessionRepository.hasLiveSession()
 
     /**
      * Account header on the "我的" page. Only masked phone numbers are ever
@@ -349,19 +373,32 @@ class MainActivity : AppCompatActivity() {
      */
     private fun refreshAccountHeader() {
         val phone = store.loadPhone()
+        val loggedIn = hasValidSession()
+        val avatar: String
+        val phoneText: String
         if (phone.isEmpty()) {
             // 未登录时头像头承载账号状态，副标题不再重复“未登录”。
-            setAccountHeader("未", "未登录", "手机号 + 密码登录")
+            avatar = if (loggedIn) "已" else "未"
+            phoneText = if (loggedIn) "会话已登录" else "未登录"
         } else {
-            val maskedPhone = if (phone.length >= 7) {
-                phone.take(3) + "****" + phone.takeLast(4)
-            } else {
-                "****" + phone.takeLast(2)
-            }
-            val status = if (ListenService.isRunning) "监听中" else "已登录"
-            setAccountHeader(phone.takeLast(2), maskedPhone, status)
+            avatar = phone.takeLast(2)
+            phoneText = maskPhone(phone)
         }
+        // 取值顺序固定：正在监听 → 有会话 → 未登录。
+        val status = when {
+            ListenService.isRunning -> "监听中"
+            loggedIn && credentialPersisted -> "已登录"
+            loggedIn -> "已登录（本次会话；凭据未保存到本机）"
+            else -> "手机号 + 密码登录"
+        }
+        setAccountHeader(avatar, phoneText, status)
         updateLoginStatusVisibility()
+    }
+
+    private fun maskPhone(phone: String): String = if (phone.length >= 7) {
+        phone.take(3) + "****" + phone.takeLast(4)
+    } else {
+        "****" + phone.takeLast(2)
     }
 
     /**
@@ -406,7 +443,7 @@ class MainActivity : AppCompatActivity() {
             binding.saveSettingsButton).forEach { it.isEnabled = !busy }
         binding.phoneInput.isEnabled = !busy
         binding.passwordInput.isEnabled = !busy
-        binding.startButton.isEnabled = !busy && !ListenService.isRunning
+        binding.startButton.isEnabled = !busy && !ListenService.isRunning && hasValidSession()
     }
 
     private fun networkAction(action: (ApiClient) -> Unit) {
