@@ -128,7 +128,20 @@ def confirm_wait_for_order(cfg: dict, order: dict, shop_id=None, rng=None,
     minus the time already elapsed since createTime, never below 0. Falls back
     to the blind wait when the order carries no createTime.
     """
-    target = confirm_wait_seconds(cfg, shop_id, rng)
+    table = (cfg or {}).get("confirm_wait_by_shop") or {}
+    override = None
+    if isinstance(table, dict) and shop_id is not None:
+        try:
+            override = table.get(str(int(shop_id)))
+        except (TypeError, ValueError):
+            override = None
+    if override is not None:
+        try:
+            target = float(override)
+        except (TypeError, ValueError):
+            target = confirm_wait_seconds(cfg, shop_id, rng)
+    else:
+        target = confirm_wait_seconds(cfg, shop_id, rng)
     if target <= 0:
         return 0.0
     create_ms = normalize_ms(order.get("createTime")) if isinstance(order, dict) else 0
