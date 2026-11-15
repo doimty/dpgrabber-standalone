@@ -347,6 +347,7 @@ class Engine:
         self.now = now  # wall clock, epoch seconds
         self._monotonic = monotonic  # monotonic clock for the confirm deadline
         self._rng = rng if rng is not None else random  # uniform() source
+        self._continue_noted = False   # “继续轮询”提示只发一次的标记
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.running = False
@@ -645,7 +646,10 @@ class Engine:
         if self.cfg.get("auto_stop_after_grab", True):
             self.stop()
         else:
-            self.log("info", "已关闭「接到单自动停止监听」，继续轮询")
+            # 只在本次监听第一次抢到时说明一次，之后安静继续
+            if not getattr(self, "_continue_noted", False):
+                self._continue_noted = True
+                self.log("info", "未开启「接到单后自动停止监听」，抢完继续轮询（只提示这一次）")
         return "ok", ""
 
     def _sleep_retry(self, deadline_mono: float) -> bool:
