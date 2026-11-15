@@ -2596,6 +2596,7 @@ class AdvancedDialog(QDialog):
             if meta["phone"] == current_phone:
                 self.account_combo.setCurrentIndex(self.account_combo.count() - 1)
         self.account_combo.addItem("＋ 新增账号…", "__new__")
+        self.account_combo.activated.connect(self._on_account_activated)
         account_row.addWidget(self.account_combo)
         add_hint = QLabel("每个账号一份配置文件；切换后需要重新登录")
         add_hint.setObjectName("hint")
@@ -2828,6 +2829,31 @@ class AdvancedDialog(QDialog):
             "%s 测试推送已发送" % provider if ok else
             "%s 测试推送失败（检查密钥 / 网络 / 渠道）" % provider
         )
+
+    def _on_account_activated(self, index: int):
+        """选中「＋ 新增账号…」就立刻弹输入框，不再等保存。"""
+        if str(self.account_combo.itemData(index) or "") != "__new__":
+            return
+        phone, ok = QInputDialog.getText(self, "新增账号", "手机号（11 位）")
+        digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+        if not ok or len(digits) < 6:
+            # 取消：回到原来的账号
+            current = str(self.cfg.get("phone") or "")
+            back = self.account_combo.findData(current)
+            self.account_combo.setCurrentIndex(back if back >= 0 else 0)
+            return
+        try:
+            accounts_mod.load_account(digits)
+        except Exception as exc:
+            QMessageBox.critical(self, "新增账号失败", str(exc))
+            return
+        meta = [m for m in accounts_mod.list_accounts() if m["phone"] == digits]
+        insert_at = max(0, self.account_combo.count() - 1)
+        self.account_combo.insertItem(
+            insert_at, accounts_mod.label_for(meta[0]) if meta else digits, digits)
+        self.account_combo.setCurrentIndex(insert_at)
+        self.cfg["switch_to_account"] = digits
+        self.setToolTip("已新增账号 %s，配置文件：%s" % (digits, accounts_mod.path_for(digits)))
 
     def _save(self):
         try:
