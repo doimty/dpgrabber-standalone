@@ -15,6 +15,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.doimty.dpgrabber.R
 import com.doimty.dpgrabber.core.ApiClient
 import com.doimty.dpgrabber.core.ApiError
@@ -80,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        configureWindowInsets()
         store = CredentialStore(this)
 
         if (!store.encrypted) {
@@ -127,6 +131,28 @@ class MainActivity : AppCompatActivity() {
         binding.advancedSettingsButton.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+    }
+
+    /**
+     * 窗口边距由根布局统一处理。IME 的底部空间不能再次作为 BottomNavigationView
+     * 的 padding；否则底栏会被键盘高度撑大，将登录表单挤到 0 高并丢失输入焦点。
+     */
+    private fun configureWindowInsets() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val left = binding.root.paddingLeft
+        val top = binding.root.paddingTop
+        val right = binding.root.paddingRight
+        val bottom = binding.root.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            val keyboardVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            view.setPadding(left + bars.left, top + bars.top, right + bars.right,
+                bottom + maxOf(bars.bottom, ime.bottom))
+            binding.bottomNav.visibility = if (keyboardVisible) View.GONE else View.VISIBLE
+            WindowInsetsCompat.CONSUMED
+        }
+        ViewCompat.requestApplyInsets(binding.root)
     }
 
     /** Switches between the four bottom-navigation pages. */
