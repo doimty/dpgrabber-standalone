@@ -660,6 +660,8 @@ def _outcome_label(outcome: str, palette: dict | None = None):
     label = {
         "success": "成功", "failed": "失败", "risk": "风控",
         "unknown": "未知", "skipped": "跳过",
+        # 店铺接单名额占满（92 店上限 2 单）按跳过计
+        "busy": "跳过",
     }.get(key, "未知")
     p = palette or _DAY
     color = p.get("outcome_" + key, p.get("outcome_unknown", "#666666"))
