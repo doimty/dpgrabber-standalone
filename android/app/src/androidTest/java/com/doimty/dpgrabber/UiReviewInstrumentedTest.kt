@@ -189,8 +189,9 @@ class UiReviewInstrumentedTest {
         val phone = device.wait(Until.findObject(By.res(PACKAGE, "phoneInput")), WAIT_MS)
         assertNotNull(phone)
         phone!!.click()
-        phone.text = PHONE
-        // 赋值后立刻读取会拿到旧的无障碍节点（值尚未提交），改为等待式校验。
+        instrumentation.waitForIdleSync()
+        // TextInputEditText 不接受 UiObject2.setText 的静默写入；用输入事件注入更可靠。
+        device.executeShellCommand("input text $PHONE")
         instrumentation.waitForIdleSync()
         assertTrue(
             "手机号未写入输入框",

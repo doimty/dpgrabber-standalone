@@ -339,7 +339,7 @@ def main() -> int:
         ("MARKETING_VERSION", "1.0.1"),
         ("PRODUCT_BUNDLE_IDENTIFIER", "com.doimty.dpgrabber"),
         ("PRODUCT_NAME", "$(TARGET_NAME)"),
-        ("SUPPORTED_PLATFORMS", "iphoneos"),
+        ("SUPPORTED_PLATFORMS", "iphoneos iphonesimulator"),
         ("SWIFT_VERSION", "5.0"),
         ("TARGETED_DEVICE_FAMILY", "1"),
     ]
