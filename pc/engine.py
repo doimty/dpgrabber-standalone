@@ -161,6 +161,20 @@ def confirm_wait_for_order(cfg: dict, order: dict, shop_id=None, rng=None,
             target = float(override)
         except (TypeError, ValueError):
             target = confirm_wait_seconds(cfg, shop_id, rng)
+        else:
+            # 店铺表给的是平台倒计时基准，偏移是叠加在上面的微调。
+            # 老逻辑里偏移只在 confirm_wait_seconds 里加，被表覆盖后就失效了。
+            try:
+                offset = float((cfg or {}).get("auto_wait_offset", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                offset = 0.0
+            try:
+                sid = int(shop_id) if shop_id is not None else None
+            except (TypeError, ValueError):
+                sid = None
+            if offset and sid in AUTO_WAIT_OFFSET_SHOPS:
+                target += offset
+            target = max(0.0, target)
     else:
         target = confirm_wait_seconds(cfg, shop_id, rng)
     if target <= 0:
