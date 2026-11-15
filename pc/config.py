@@ -54,8 +54,8 @@ DEFAULT_CONFIG = {
     "random_confirm_fallback_sec": 20,
     # Delay between confirm retries inside the window (seconds).
     "confirm_retry_delay_sec": 0.5,
-    "poll_interval_sec": 0.5,
-        "poll_jitter_sec": 0.25,  # delay between empty polls (reference tool ListenDelay default)
+    "poll_interval_sec": 0.6,
+        "poll_jitter_sec": 0.2,  # delay between empty polls (reference tool ListenDelay default)
     "memo_mode": 0,            # 0 = ignore memos, 1 = drop orders that have any memo
     "memo_keywords": [],       # drop an order if its memo contains any of these (case-insensitive)
     "blacklist": [],           # WeChat ids; drop orders from these customers
@@ -63,7 +63,13 @@ DEFAULT_CONFIG = {
     # Random wait before the FIRST confirm attempt of a grab (seconds).
     # 0/0 = confirm immediately (current behavior). When max > 0, min must
     # be >= 3 and max - min >= 2 (enforced in validate()).
-    "confirm_wait_min": 0.0,
+    # 每个店铺的倒计时不同（竞品实测 92 店 5-7 秒，50/105/1391 是 3 秒），
+    # 等待时间按店铺覆盖；表里没有的店用 confirm_wait_min/max。
+    "confirm_wait_by_shop": {"92": 5.0, "50": 3.0, "105": 3.0, "1391": 3.0},
+        # 多账号顺序轮换：每个账号跑 rotate_minutes 分钟后自动换下一个
+        "rotate_enabled": False,
+        "rotate_minutes": 30,
+        "confirm_wait_min": 0.0,
     "confirm_wait_max": 0.0,
     # --- auto-wait offset (autoduopei /user/auto_wait_offset) ---
     # Added to the confirm wait above, but ONLY for shops 50 / 105 / 1391.
@@ -150,6 +156,17 @@ def confirm_wait_error(cfg: dict) -> str | None:
         return "confirm_wait_max must be >= confirm_wait_min"
     if min_w > 120 or max_w > 120:
         return "confirm_wait_min/max must be <= 120 seconds"
+    table = (cfg or {}).get("confirm_wait_by_shop")
+    if table is not None and not isinstance(table, dict):
+        return "confirm_wait_by_shop must be a mapping of shop id -> seconds"
+    if isinstance(table, dict):
+        for key, value in table.items():
+            try:
+                seconds = float(value)
+            except (TypeError, ValueError):
+                return "confirm_wait_by_shop[%s] must be a number" % key
+            if not (0 <= seconds <= 120):
+                return "confirm_wait_by_shop[%s] must be between 0 and 120" % key
     return None
 
 
@@ -188,6 +205,14 @@ def validate(cfg: dict) -> dict:
     if merged.get("notify_provider") not in ("bark", "serverchan", "pushplus", "webhook"):
         merged["notify_provider"] = "serverchan"
     merged["auto_stop_after_grab"] = bool(merged.get("auto_stop_after_grab", True))
+    merged["rotate_enabled"] = bool(merged.get("rotate_enabled", False))
+    try:
+        minutes = int(float(merged.get("rotate_minutes") or 30))
+    except (TypeError, ValueError):
+        raise ConfigError("rotate_minutes must be a number")
+    if not (5 <= minutes <= 600):
+        raise ConfigError("rotate_minutes must be between 5 and 600")
+    merged["rotate_minutes"] = minutes
     merged["notify_enabled"] = bool(merged.get("notify_enabled", False))
     merged["notify_key"] = str(merged.get("notify_key") or "")
     merged["notify_webhook"] = str(merged.get("notify_webhook") or "")
