@@ -415,12 +415,13 @@ class EngineConfirmWaitTests(unittest.TestCase):
         def log(level, message):
             logs.append((level, message))
 
-        # The order carries no createTime here, so the blind wait applies and
-        # the injected rng (0.05) picks the low end of 3..5.
+        # 表格覆盖全局值：把 92 店的固定等待改成 0.05 秒，测试才不用真等 5 秒
         order_without_create = _order()
         order_without_create.pop("createTime", None)
         stub = StubApiClient(polls=[[order_without_create]], confirms=[{"code": 0}])
-        engine = Engine(stub, cfg, log, rng=FakeRng(0.05))
+        tuned = dict(cfg)
+        tuned["confirm_wait_by_shop"] = {"92": 0.05}
+        engine = Engine(stub, tuned, log, rng=FakeRng(0.05))
         self.assertTrue(engine.start("13800138000", "secret"))
         self.assertTrue(_wait_stopped(engine))
         self.assertIn("确认前等待 0.05 秒", _log_text(logs))
@@ -946,6 +947,28 @@ class CreateTimeWaitTests(unittest.TestCase):
         self.assertAlmostEqual(
             confirm_wait_for_order(self._cfg(lo=5, hi=5, offset=-0.5), order, 92, None, self.NOW),
             4.5)
+
+
+class PerShopWaitTests(unittest.TestCase):
+    """confirm_wait_by_shop 覆盖全局等待；表外的店仍用全局值。"""
+
+    def test_table_shop_is_fixed(self):
+        from engine import confirm_wait_for_order
+        cfg = {"confirm_wait_min": 3, "confirm_wait_max": 5,
+               "confirm_wait_by_shop": {"92": 5.0, "50": 3.0}}
+        now = 1_700_000_000_000
+        self.assertAlmostEqual(
+            confirm_wait_for_order(cfg, {"createTime": now}, 92, None, now), 5.0)
+        self.assertAlmostEqual(
+            confirm_wait_for_order(cfg, {"createTime": now}, 50, None, now), 3.0)
+
+    def test_unknown_shop_falls_back_to_global(self):
+        from engine import confirm_wait_for_order
+        cfg = {"confirm_wait_min": 4, "confirm_wait_max": 4,
+               "confirm_wait_by_shop": {"92": 5.0}}
+        now = 1_700_000_000_000
+        self.assertAlmostEqual(
+            confirm_wait_for_order(cfg, {"createTime": now}, 777, None, now), 4.0)
 
 
 if __name__ == "__main__":
