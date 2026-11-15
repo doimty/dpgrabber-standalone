@@ -1093,14 +1093,14 @@ class App(QMainWindow):
         # Indent the title like the old UI (padx=14).
         # 13px above the title, 8px between the title and its card: the old
         # 2px bottom margin made every heading look like it sat on the card.
-        title_label.setContentsMargins(14, 10, 14, 0)
+        title_label.setContentsMargins(14, 6, 14, 0)
         card = QFrame()
         card.setObjectName("sidebarCard")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(13, 13, 13, 13)
         card_layout.setSpacing(4)
         wrapper = QVBoxLayout()
-        wrapper.setContentsMargins(12, 8, 12, 8)
+        wrapper.setContentsMargins(12, 4, 12, 4)
         wrapper.addWidget(card)
         parent_layout.addLayout(wrapper)
         return card, card_layout
@@ -2599,16 +2599,12 @@ class AdvancedDialog(QDialog):
         add_hint.setObjectName("hint")
         account_row.addWidget(add_hint, 1)
         outer.addLayout(account_row)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+
         content = QWidget()
         root = QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
-        scroll.setWidget(content)
         self._content = content
-        self._scroll = scroll
-        outer.addWidget(scroll, 1)
+        outer.addWidget(content)
 
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -2622,7 +2618,6 @@ class AdvancedDialog(QDialog):
         btns.addWidget(save_btn)
         outer.addLayout(btns)
 
-        self._fit_to_content()
 
 
         form = QWidget()
@@ -2737,37 +2732,38 @@ class AdvancedDialog(QDialog):
         self.notify_row.addWidget(self.notify_check)
         self.notify_row.addWidget(self.notify_provider_box)
         self.notify_row.addWidget(self.test_button)
+        self.notify_row.addSpacing(13)
+        self.voice_check = QCheckBox("语音播报")
+        self.voice_check.setChecked(bool(self.cfg.get("voice_enabled", True)))
+        self.voice_check.setToolTip("需要本机语音支持")
+        self.notify_row.addWidget(self.voice_check)
         self.notify_row.addStretch(1)
         root.addLayout(self.notify_row)
         self.test_label = QLabel("")
         self.test_label.setObjectName("hint")
         root.addWidget(self.test_label)
         self.test_result.connect(self._show_test_result)
-        self.voice_check = QCheckBox("语音播报（需要本机语音支持）")
-        self.voice_check.setChecked(bool(self.cfg.get("voice_enabled", True)))
-        root.addWidget(self.voice_check)
-        path_label = QLabel("配置文件：%s" % cfgmod.config_path())
-        path_label.setObjectName("hint")
-        path_label.setWordWrap(True)
-        root.addWidget(path_label)
         root.addStretch(1)
+        self.setToolTip("配置文件：%s" % cfgmod.config_path())
 
 
     def _fit_to_content(self):
-        """把对话框高度调到内容高度，装得下就不出现滚动条。
-
-        sizeHint() 在 show 之前还没算好，所以 showEvent 里会再调一次。
-        """
-        content = getattr(self, "_content", None)
-        if content is None:
-            return
-        chrome = 150          # 标题 + 账号行 + 按钮行 + 边距
-        want = content.sizeHint().height() + chrome
+        """按内容自适应：adjustSize 之后锁尺寸，避免每次布局都跳一下。"""
+        self.adjustSize()
+        width = max(880, self.width())
+        height = self.height()
         screen = self.screen()
-        limit = screen.availableGeometry().height() - 60 if screen else 900
-        height = max(560, min(want, limit))
-        if height != self.height():
-            self.setFixedSize(880, height)
+        if screen is not None:
+            limit = screen.availableGeometry().height() - 60
+            if height > limit:
+                # 只有超出屏幕才压文本框，仍然不放滚动条
+                for editor in (getattr(self, "keyword_text", None),
+                               getattr(self, "blacklist_text", None)):
+                    if editor is not None:
+                        editor.setFixedHeight(40)
+                self.adjustSize()
+                height = min(self.height(), limit)
+        self.setFixedSize(width, height)
 
     def showEvent(self, event):
         super().showEvent(event)
