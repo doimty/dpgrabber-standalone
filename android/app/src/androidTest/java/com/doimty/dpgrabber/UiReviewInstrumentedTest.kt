@@ -214,21 +214,31 @@ class UiReviewInstrumentedTest {
             ime.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
         }
         instrumentation.waitForIdleSync()
-        assertTrue("手机号输入框应确实获得焦点", device.wait(
-            Until.hasObject(By.res(PACKAGE, "phoneInput").focused(true)), WAIT_MS))
-        instrumentation.sendStringSync(PHONE)
-        instrumentation.waitForIdleSync()
+        // 必须等 IME 窗口真正出现后再输入；仅等主线程 idle 不代表 IME 已完成焦点重排。
+        val keyboardShown = device.wait(Until.hasObject(By.pkg("com.android.inputmethod.latin")), WAIT_MS) ||
+            device.wait(Until.hasObject(By.pkg("com.google.android.inputmethod.latin")), 3_000)
+        assertTrue("应实际展开系统输入法", keyboardShown)
         main!!.onActivity { activity ->
-            assertEquals("键盘输入应进入实际手机号控件", PHONE,
-                activity.findViewById<android.widget.EditText>(R.id.phoneInput).text.toString())
+            val input = activity.findViewById<android.widget.EditText>(R.id.phoneInput)
+            input.requestRectangleOnScreen(Rect(0, 0, input.width, input.height), true)
+            assertTrue("键盘展开后手机号输入框应能保持焦点", input.requestFocus())
         }
-        scrollTo("phoneInput")
-        assertTrue(
-            "手机号输入后应在无障碍树中可读",
-            device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput").text(PHONE)), WAIT_MS)
-        )
-        assertTrue("应实际展开系统输入法", device.wait(Until.hasObject(By.pkg("com.google.android.inputmethod.latin")), 3_000) ||
-            device.executeShellCommand("dumpsys input_method").contains("mInputShown=true"))
+        instrumentation.waitForIdleSync()
+        capture("phone-keyboard-ready")
+        try {
+            PHONE.forEachIndexed { index, digit ->
+                instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_0 + (digit - '0'))
+                instrumentation.waitForIdleSync()
+                assertTrue("第 ${index + 1} 个键盘事件应进入手机号控件", device.wait(
+                    Until.hasObject(By.res(PACKAGE, "phoneInput").text(PHONE.take(index + 1))), WAIT_MS))
+            }
+            main!!.onActivity { activity ->
+                assertEquals("键盘输入应进入实际手机号控件", PHONE,
+                    activity.findViewById<android.widget.EditText>(R.id.phoneInput).text.toString())
+            }
+        } finally {
+            capture("phone-keyboard-input-evidence")
+        }
         capture("phone-keyboard-expanded")
         // 该状态下 findObject(...).text 可能为 null，统一走 textOf 安全读取。
         assertEquals(PHONE, textOf("phoneInput"))
