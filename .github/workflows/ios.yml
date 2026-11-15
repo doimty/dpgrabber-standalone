@@ -82,11 +82,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           cd ios
-          TARGET="$(xcodebuild -project DPGrabber.xcodeproj -scheme DPGrabber \
-            -configuration Release -showBuildSettings 2>/dev/null \
-            | awk -F' = ' '/IPHONEOS_DEPLOYMENT_TARGET/{print $2; exit}')"
-          echo "IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
-          test "$TARGET" = "$IOS_MIN_DEPLOYMENT_TARGET"
+          # Read the project file directly: xcodebuild -showBuildSettings output
+          # formatting varies across Xcode versions, so parsing it is brittle.
+          grep -c "IPHONEOS_DEPLOYMENT_TARGET = ${IOS_MIN_DEPLOYMENT_TARGET};" DPGrabber.xcodeproj/project.pbxproj
+          test "$(grep -c "IPHONEOS_DEPLOYMENT_TARGET = ${IOS_MIN_DEPLOYMENT_TARGET};" DPGrabber.xcodeproj/project.pbxproj)" -ge 2
+          if grep -E "IPHONEOS_DEPLOYMENT_TARGET = [0-9]" DPGrabber.xcodeproj/project.pbxproj \
+            | grep -vE "IPHONEOS_DEPLOYMENT_TARGET = ${IOS_MIN_DEPLOYMENT_TARGET};"; then
+            echo "::error::a build configuration raised IPHONEOS_DEPLOYMENT_TARGET above ${IOS_MIN_DEPLOYMENT_TARGET}"
+            exit 1
+          fi
+          echo "every configuration keeps IPHONEOS_DEPLOYMENT_TARGET=${IOS_MIN_DEPLOYMENT_TARGET}"
 
       - name: Build unsigned app
         run: |
