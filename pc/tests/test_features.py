@@ -971,5 +971,29 @@ class PerShopWaitTests(unittest.TestCase):
             confirm_wait_for_order(cfg, {"createTime": now}, 777, None, now), 4.0)
 
 
+class TableOffsetTests(unittest.TestCase):
+    """店铺表 + auto_wait_offset：偏移叠加在表里的基准上（50/105/1391 才加）。"""
+
+    def _wait(self, cfg, shop, now_ms=1_700_000_000_000):
+        from engine import confirm_wait_for_order
+        return confirm_wait_for_order(cfg, {"createTime": now_ms}, shop, None, now_ms)
+
+    def test_offset_stacks_on_table_entry(self):
+        cfg = {"confirm_wait_by_shop": {"50": 3.0}, "auto_wait_offset": 0.5}
+        self.assertAlmostEqual(self._wait(cfg, 50), 3.5)
+
+    def test_negative_offset_moves_earlier(self):
+        cfg = {"confirm_wait_by_shop": {"50": 3.0}, "auto_wait_offset": -0.4}
+        self.assertAlmostEqual(self._wait(cfg, 50), 2.6)
+
+    def test_shop_92_keeps_table_value(self):
+        cfg = {"confirm_wait_by_shop": {"92": 5.0}, "auto_wait_offset": 0.5}
+        self.assertAlmostEqual(self._wait(cfg, 92), 5.0)
+
+    def test_offset_never_makes_wait_negative(self):
+        cfg = {"confirm_wait_by_shop": {"50": 1.0}, "auto_wait_offset": -3.0}
+        self.assertGreaterEqual(self._wait(cfg, 50), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
