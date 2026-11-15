@@ -104,7 +104,14 @@ class UiReviewInstrumentedTest {
         capture("home-top")
         assertEquals("", store.loadPhone())
         assertEquals("", store.loadPassword())
-        click("startButton")
+        // 未登录时“开始监听”为禁用态（MainActivity: startButton.isEnabled 依赖 hasValidSession()），
+        // 因此不能走 click() 的 enabled 等待；改为断言禁用 + 仍尝试点击，验证不会启动服务、不会发请求。
+        scrollTo("startButton")
+        val start = device.wait(Until.findObject(By.res(PACKAGE, "startButton")), WAIT_MS)
+        assertNotNull("工作台应包含“开始监听”按钮", start)
+        assertFalse("未登录时“开始监听”应保持禁用", start!!.isEnabled)
+        assertTrue("未登录时应说明禁用原因", textOf("statusHint").contains("请先登录"))
+        start.click()
         assertFalse(ListenService.isRunning)
         capture("start-without-account")
         assertTrue("无账号操作不得调用任何端点", fixtures.all { it.requests.isEmpty() })
