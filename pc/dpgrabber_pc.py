@@ -28,6 +28,12 @@ import accounts as accounts_mod
 import config as cfgmod
 
 
+def _resource(name: str) -> str:
+    """随 exe 一起打包的资源路径（PyInstaller 解包到 _MEIPASS）。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
 def _ensure_qapp():
     """Create (or reuse) the QApplication. Under a headless environment
     with no DISPLAY, fall back to the offscreen platform so the smoke
@@ -67,6 +73,15 @@ def main(argv=None) -> int:
     from ui import App, apply_theme
 
     qapp = _ensure_qapp()
+    # 窗口/任务栏图标：只靠 exe 内嵌图标时，无边框窗口在 Win11 上会回退成
+    # 通用文档图标，所以显式给应用设一个。
+    try:
+        from PySide6.QtGui import QIcon
+        icon_path = _resource("app.png")
+        if os.path.exists(icon_path):
+            qapp.setWindowIcon(QIcon(icon_path))
+    except Exception:
+        pass
     # Apply the saved theme before showing anything.
     theme_id = str(cfg.get("theme") or DEFAULT_THEME)
     if theme_id not in THEMES:
@@ -87,7 +102,7 @@ def main(argv=None) -> int:
 
     app = App(cfg)
     app.show()
-    app.log("info", "DPGrabber PC 已启动。请输入账号登录，或先在监听设置中保存配置。")
+    app.log("info", "DPPP 已启动。请输入账号登录，或先在监听设置中保存配置。")
     return qapp.exec()
 
 
