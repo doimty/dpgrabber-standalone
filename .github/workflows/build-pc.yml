@@ -32,7 +32,7 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
       - name: Build exe
-        run: pyinstaller --noconfirm --clean --onefile --windowed --icon pc/app.ico --name DPPP pc/dpgrabber_pc.py
+        run: pyinstaller --noconfirm --clean --onefile --windowed --icon pc/app.ico --add-data "pc/app.png;." --name DPPP pc/dpgrabber_pc.py
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
