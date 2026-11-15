@@ -57,6 +57,10 @@ CONFIRMED_WORDS = ("已接单", "已确认", "接单成功", "确认成功")
 #: retrying cannot change the standing of the account.
 QUALIFICATION_WORDS = ("续费率", "达标", "资质", "额度", "次数不足", "上限", "本周订单")
 
+#: 店铺 92 最多同时 2 单：名额占满后每 0.5 秒重试都是同一句，
+#: 属于"暂时不可抢"，不是终态也不是可重试（实测 2026-11-15）。
+BUSY_WORDS = ("同时接单数超过限制", "接单数超过限制", "超过限制的")
+
 TERMINAL_WORDS = (
     "取消", "已被", "不存在", "无权", "权限", "失效", "超时",
     # 平台原话「哎呀订单好像跑走了，再试试~」：订单已经不在了，重试只会拿到
@@ -109,6 +113,8 @@ def classify_confirm(result: dict):
         return "ok", ""
     if any(word in message for word in CONFIRMED_WORDS):
         return "ok", ""
+    if any(word in message for word in BUSY_WORDS):
+        return "busy", message
     if any(word in message for word in TERMINAL_WORDS):
         return "fail", terminal_reason(message)
     return "retry", message
@@ -268,6 +274,8 @@ _OUTCOME_MAP = {
     "fail": "failed",
     "unknown": "unknown",
     "pending": "skipped",
+    # 店铺名额满：归到 skipped，历史里显示"跳过"而不是"未知"
+    "busy": "skipped",
     "auth": "unknown",
     "ip": "risk",
     # "cancelled" maps to nothing: the engine was asked to stop, which is
@@ -629,7 +637,13 @@ class Engine:
                 self.log("info", "订单不符合要求：%s" % reason)
                 self.speak(reason)
                 continue  # re-poll immediately, as the reference tool does
-            self._handle_order(order, order_id, phone, password)
+            outcome = self._handle_order(order, order_id, phone, password)
+            if outcome == "busy":
+                cooldown = float(self.cfg.get("busy_cooldown_sec", 60) or 60)
+                self.log("info", "等待 %.0f 秒后继续（等店铺释放接单名额）" % cooldown)
+                if not self._sleep(cooldown):
+                    return
+                continue
 
     def _grab_success(self, order: dict, order_id: str, confirm_calls: int):
         """Success end of a confirm task: log, announce, auto-stop.
@@ -749,14 +763,19 @@ class Engine:
             outcome, reason = classify_confirm(result)
             if outcome == "ok":
                 return self._grab_success(order, order_id, confirm_calls)
+            if outcome == "busy":
+                self.log("warning",
+                         "⛔ 店铺同时接单名额已满，本次跳过: %s" % reason)
+                return "busy", reason
             if outcome == "fail":
                 self.log("warning", "✗ 确认终态失败 %s: %s" % (number, reason))
                 return "fail", reason
-            self.log(
-                "info",
-                "[confirm] retry %s confirm_calls=%d reason=%s"
-                % (number, confirm_calls, reason),
-            )
+            if confirm_calls == 1 or confirm_calls % 10 == 0:
+                self.log(
+                    "info",
+                    "[confirm] retry %s confirm_calls=%d reason=%s"
+                    % (number, confirm_calls, reason),
+                )
             if not self._sleep_retry(deadline_mono):
                 return "cancelled", ""
         if self.stop_event.is_set():
