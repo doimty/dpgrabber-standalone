@@ -2427,7 +2427,7 @@ class App(QMainWindow):
             return
         self.cfg.update(updates)
         self.engine = self._make_engine()
-        if self.engine.start(phone, password):
+        if self.engine.start(phone, password, session=self.client.session):
             self._listening = True
             _prevent_sleep(True)
             self.listen_state_signal.emit("正在监听")
