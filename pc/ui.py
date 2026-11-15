@@ -2888,7 +2888,7 @@ class AdvancedDialog(QDialog):
         except (TypeError, ValueError):
             self.auto_wait_offset_spin.setValue(0.0)
         grid.addWidget(self.auto_wait_offset_spin, auto_row, 1)
-        h = QLabel("仅适用于店铺 50 / 105 / 1391；正值延后、负值提前")
+        h = QLabel("叠加在当前店铺等待之上（仅 50 / 105 / 1391）；正值延后、负值提前")
         h.setObjectName("hint")
         grid.addWidget(h, auto_row, 2)
         root.addWidget(form)
