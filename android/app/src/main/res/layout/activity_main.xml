@@ -1,205 +1,732 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:background="?attr/colorSurface"
+    android:fitsSystemWindows="true">
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/credentialsWarning"
+        <com.google.android.material.appbar.AppBarLayout
+            android:id="@+id/appBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/credentials_unencrypted_warning"
-            android:textColor="#B00020"
-            android:textSize="13sp"
-            android:visibility="gone" />
+            android:background="?attr/colorSurface"
+            app:elevation="0dp">
 
-        <TextView
-            style="@style/SectionTitle"
-            android:text="@string/section_login" />
+            <com.google.android.material.appbar.MaterialToolbar
+                android:id="@+id/toolbar"
+                android:layout_width="match_parent"
+                android:layout_height="?attr/actionBarSize"
+                android:background="?attr/colorSurface"
+                app:title="@string/tab_workbench"
+                app:titleTextAppearance="@style/ToolbarTitle"
+                app:titleTextColor="?attr/colorOnSurface" />
+        </com.google.android.material.appbar.AppBarLayout>
 
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_phone" />
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
 
-        <EditText
-            android:id="@+id/phoneInput"
-            style="@style/FieldInput"
-            android:hint="@string/hint_phone"
-            android:inputType="phone"
-            android:maxLines="1" />
+            <!-- ==================== 工作台 ==================== -->
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/pageWorkbench"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:scrollbars="none">
 
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_password" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="8dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="24dp">
 
-        <EditText
-            android:id="@+id/passwordInput"
-            style="@style/FieldInput"
-            android:hint="@string/hint_password"
-            android:inputType="textPassword"
-            android:maxLines="1" />
+                    <!-- A. 状态卡 -->
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
 
-        <Button
-            android:id="@+id/loginButton"
-            style="@style/PrimaryButton"
-            android:text="@string/btn_login" />
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
 
-        <TextView
-            android:id="@+id/loginStatus"
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <View
+                                    android:layout_width="10dp"
+                                    android:layout_height="10dp"
+                                    android:background="@drawable/bg_status_dot" />
+
+                                <TextView
+                                    android:id="@+id/listenStatus"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="8dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/status_idle"
+                                    android:textColor="?attr/colorOnSurface"
+                                    android:textSize="17sp"
+                                    android:textStyle="bold" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:background="@drawable/bg_pill"
+                                    android:paddingStart="10dp"
+                                    android:paddingTop="4dp"
+                                    android:paddingEnd="10dp"
+                                    android:paddingBottom="4dp"
+                                    android:text="@string/badge_foreground"
+                                    android:textColor="?attr/colorOnPrimaryContainer"
+                                    android:textSize="11sp" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/statusHint"
+                                style="@style/CardBody"
+                                android:layout_marginTop="8dp"
+                                android:text="@string/status_hint_default" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="14dp"
+                                android:orientation="horizontal">
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/startButton"
+                                    style="@style/BtnFilled"
+                                    android:layout_width="0dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_start_listen" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/stopButton"
+                                    style="@style/BtnOutlined"
+                                    android:layout_width="0dp"
+                                    android:layout_marginStart="10dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_stop_listen" />
+                            </LinearLayout>
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- B. 今日概览卡 -->
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    style="@style/CardTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/title_today_overview" />
+
+                                <TextView
+                                    android:id="@+id/openHistoryLink"
+                                    style="@style/CardLink"
+                                    android:text="@string/action_view_all" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/todayOverview"
+                                style="@style/CardMetric"
+                                android:layout_marginTop="10dp"
+                                android:text="今日成功：读取中" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- C. 店铺与接单卡 -->
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/title_shop_orders" />
+
+                            <TextView
+                                android:id="@+id/accountOverview"
+                                style="@style/CardBody"
+                                android:layout_marginTop="8dp"
+                                android:text="账户/店铺状态：未读取" />
+
+                            <View style="@style/Divider" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal">
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/onlineButton"
+                                    style="@style/BtnTonal"
+                                    android:layout_width="0dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_online" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/offlineButton"
+                                    style="@style/BtnOutlined"
+                                    android:layout_width="0dp"
+                                    android:layout_marginStart="10dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_offline" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:orientation="horizontal">
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/randomOnButton"
+                                    style="@style/BtnTonal"
+                                    android:layout_width="0dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_random_on" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/randomOffButton"
+                                    style="@style/BtnOutlined"
+                                    android:layout_width="0dp"
+                                    android:layout_marginStart="10dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_random_off" />
+                            </LinearLayout>
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/itemTypesButton"
+                                style="@style/BtnOutlined"
+                                android:layout_width="match_parent"
+                                android:layout_marginTop="10dp"
+                                android:text="@string/btn_item_types" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- D. 本周表现卡 -->
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/title_week_performance" />
+
+                            <TextView
+                                android:id="@+id/statisticsOverview"
+                                style="@style/CardMetric"
+                                android:layout_marginTop="10dp"
+                                android:text="续费率 / 续单率：未读取；续客率：口径待确认" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- E. 最近活动卡 -->
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    style="@style/CardTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/title_recent_activity" />
+
+                                <TextView
+                                    android:id="@+id/openHistoryLink2"
+                                    style="@style/CardLink"
+                                    android:text="@string/action_view_all" />
+                            </LinearLayout>
+
+                            <TextView
+                                style="@style/CardBody"
+                                android:layout_marginTop="6dp"
+                                android:text="@string/recent_activity_hint" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+                </LinearLayout>
+            </androidx.core.widget.NestedScrollView>
+
+            <!-- ==================== 接单规则 ==================== -->
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/pageRules"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="8dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="24dp">
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/title_amount_range" />
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/minAmountInputLayout"
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:hint="@string/label_min_amount">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/minAmountInput"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:inputType="numberDecimal"
+                                    android:maxLines="1" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/maxAmountInputLayout"
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:hint="@string/label_max_amount">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/maxAmountInput"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:inputType="numberDecimal"
+                                    android:maxLines="1" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/pollIntervalInputLayout"
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:hint="@string/label_poll_interval">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/pollIntervalInput"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:inputType="numberDecimal"
+                                    android:maxLines="1" />
+                            </com.google.android.material.textfield.TextInputLayout>
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/title_memo_filter" />
+
+                            <TextView
+                                style="@style/CardBody"
+                                android:layout_marginTop="12dp"
+                                android:text="@string/label_memo_mode" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
+                                android:background="@drawable/bg_spinner"
+                                android:gravity="center_vertical"
+                                android:minHeight="48dp"
+                                android:orientation="horizontal"
+                                android:paddingStart="12dp"
+                                android:paddingEnd="12dp">
+
+                                <Spinner
+                                    android:id="@+id/memoModeSpinner"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:background="@null"
+                                    android:entries="@array/memo_mode_options"
+                                    android:minHeight="48dp" />
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:importantForAccessibility="no"
+                                    android:src="@drawable/ic_chevron_down"
+                                    app:tint="?attr/colorOnSurfaceVariant" />
+                            </LinearLayout>
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/memoKeywordsInputLayout"
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:hint="@string/label_memo_keywords">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/memoKeywordsInput"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:gravity="top|start"
+                                    android:inputType="textMultiLine"
+                                    android:minLines="2" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <TextView
+                                style="@style/CardBody"
+                                android:layout_marginTop="6dp"
+                                android:text="@string/hint_memo_keywords" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/title_blacklist" />
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/blacklistInputLayout"
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:hint="@string/label_blacklist">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/blacklistInput"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:gravity="top|start"
+                                    android:inputType="textMultiLine"
+                                    android:minLines="2" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <TextView
+                                style="@style/CardBody"
+                                android:layout_marginTop="6dp"
+                                android:text="@string/hint_blacklist" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/saveSettingsButton"
+                        style="@style/BtnFilled"
+                        android:layout_width="match_parent"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginBottom="12dp"
+                        android:text="@string/btn_save_settings" />
+                </LinearLayout>
+            </androidx.core.widget.NestedScrollView>
+
+            <!-- ==================== 处理记录 ==================== -->
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/pageHistory"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="8dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="24dp">
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/section_history" />
+
+                            <TextView
+                                android:id="@+id/historySummary"
+                                style="@style/CardBody"
+                                android:layout_marginTop="6dp"
+                                android:text="@string/history_summary_default" />
+
+                            <View style="@style/Divider" />
+
+                            <TextView
+                                android:id="@+id/historyEmptyHint"
+                                style="@style/CardBody"
+                                android:layout_marginTop="12dp"
+                                android:text="@string/history_empty_hint" />
+
+                            <LinearLayout
+                                android:id="@+id/historyList"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="4dp"
+                                android:orientation="vertical" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+                </LinearLayout>
+            </androidx.core.widget.NestedScrollView>
+
+            <!-- ==================== 我的 ==================== -->
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/pageAccount"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="8dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="24dp">
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/section_login" />
+
+                            <TextView
+                                android:id="@+id/credentialsWarning"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:text="@string/credentials_unencrypted_warning"
+                                android:textColor="@color/danger"
+                                android:textSize="13sp"
+                                android:visibility="gone" />
+
+                            <TextView
+                                android:id="@+id/loginStatus"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:text="@string/login_not_logged_in"
+                                android:textColor="?attr/colorOnSurfaceVariant"
+                                android:textSize="14sp" />
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/phoneInputLayout"
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:hint="@string/hint_phone">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/phoneInput"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:inputType="phone"
+                                    android:maxLines="1" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/passwordInputLayout"
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:hint="@string/hint_password"
+                                app:endIconMode="password_toggle">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/passwordInput"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:inputType="textPassword"
+                                    android:maxLines="1" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/loginButton"
+                                style="@style/BtnFilled"
+                                android:layout_width="match_parent"
+                                android:layout_marginTop="14dp"
+                                android:text="@string/btn_login" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/advancedSettingsButton"
+                                style="@style/BtnOutlined"
+                                android:layout_width="match_parent"
+                                android:layout_marginTop="10dp"
+                                android:text="@string/btn_advanced_settings" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    style="@style/CardTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/section_log" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/clearLogButton"
+                                    style="@style/BtnText"
+                                    android:layout_width="wrap_content"
+                                    android:text="@string/btn_clear_log" />
+                            </LinearLayout>
+
+                            <ScrollView
+                                android:id="@+id/logScroll"
+                                android:layout_width="match_parent"
+                                android:layout_height="220dp"
+                                android:layout_marginTop="8dp"
+                                android:background="@drawable/bg_log"
+                                android:padding="12dp">
+
+                                <TextView
+                                    android:id="@+id/logView"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:minHeight="160dp"
+                                    android:text="@string/log_empty"
+                                    android:textColor="?attr/colorOnSurfaceVariant"
+                                    android:textIsSelectable="true"
+                                    android:textSize="12sp"
+                                    android:typeface="monospace" />
+                            </ScrollView>
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/CardSurface">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <TextView
+                                style="@style/CardTitle"
+                                android:text="@string/title_about" />
+
+                            <TextView
+                                style="@style/CardBody"
+                                android:layout_marginTop="8dp"
+                                android:text="@string/about_text" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+                </LinearLayout>
+            </androidx.core.widget.NestedScrollView>
+        </FrameLayout>
+
+        <com.google.android.material.bottomnavigation.BottomNavigationView
+            android:id="@+id/bottomNav"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingTop="8dp"
-            android:text="@string/login_not_logged_in"
-            android:textSize="14sp" />
-
-        <TextView android:id="@+id/accountOverview" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="账户/店铺状态：未读取" />
-        <Button android:id="@+id/onlineButton" style="@style/NormalButton" android:text="上线" />
-        <Button android:id="@+id/offlineButton" style="@style/NormalButton" android:text="下线" />
-        <Button android:id="@+id/randomOnButton" style="@style/NormalButton" android:text="开启随机单" />
-        <Button android:id="@+id/randomOffButton" style="@style/NormalButton" android:text="关闭随机单" />
-        <Button android:id="@+id/itemTypesButton" style="@style/NormalButton" android:text="接单类型" />
-        <TextView android:id="@+id/statisticsOverview" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="续费率 / 续单率：未读取；续客率：口径待确认" />
-        <TextView android:id="@+id/todayOverview" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="今日成功：读取中" />
-        <TextView style="@style/SectionTitle" android:text="本地持久历史（长按操作）" />
-        <LinearLayout android:id="@+id/historyList" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView
-            style="@style/SectionTitle"
-            android:text="@string/section_settings" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_min_amount" />
-
-        <EditText
-            android:id="@+id/minAmountInput"
-            style="@style/FieldInput"
-            android:inputType="numberDecimal"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_max_amount" />
-
-        <EditText
-            android:id="@+id/maxAmountInput"
-            style="@style/FieldInput"
-            android:inputType="numberDecimal"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_poll_interval" />
-
-        <EditText
-            android:id="@+id/pollIntervalInput"
-            style="@style/FieldInput"
-            android:inputType="numberDecimal"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_memo_mode" />
-
-        <Spinner
-            android:id="@+id/memoModeSpinner"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:entries="@array/memo_mode_options" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_memo_keywords" />
-
-        <EditText
-            android:id="@+id/memoKeywordsInput"
-            style="@style/FieldInput"
-            android:hint="@string/hint_memo_keywords"
-            android:inputType="textMultiLine"
-            android:minLines="2" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_blacklist" />
-
-        <EditText
-            android:id="@+id/blacklistInput"
-            style="@style/FieldInput"
-            android:hint="@string/hint_blacklist"
-            android:inputType="textMultiLine"
-            android:minLines="2" />
-
-        <Button
-            android:id="@+id/saveSettingsButton"
-            style="@style/PrimaryButton"
-            android:text="@string/btn_save_settings" />
-
-        <TextView
-            style="@style/SectionTitle"
-            android:text="@string/section_listen" />
-
-        <Button
-            android:id="@+id/startButton"
-            style="@style/PrimaryButton"
-            android:text="@string/btn_start_listen" />
-
-        <Button
-            android:id="@+id/stopButton"
-            style="@style/NormalButton"
-            android:text="@string/btn_stop_listen" />
-
-        <TextView
-            android:id="@+id/listenStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingTop="8dp"
-            android:text="@string/status_idle"
-            android:textSize="14sp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingTop="8dp">
-
-            <TextView
-                style="@style/SectionTitle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:paddingTop="0dp"
-                android:text="@string/section_log" />
-
-            <Button
-                android:id="@+id/clearLogButton"
-                style="@style/NormalButton"
-                android:layout_width="wrap_content"
-                android:layout_marginTop="0dp"
-                android:text="@string/btn_clear_log" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/logView"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="160dp"
-            android:background="@drawable/bg_input"
-            android:padding="8dp"
-            android:text="@string/log_empty"
-            android:textIsSelectable="true"
-            android:textSize="12sp"
-            android:typeface="monospace" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingTop="16dp"
-            android:text="DPGrabber 独立版 · 手机号 + 密码登录 · 不注入宿主 App"
-            android:textSize="12sp" />
+            android:background="?attr/colorSurface"
+            app:labelVisibilityMode="labeled"
+            app:menu="@menu/bottom_nav" />
     </LinearLayout>
-</ScrollView>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

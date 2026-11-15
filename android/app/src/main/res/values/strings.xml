@@ -4,8 +4,14 @@
     <string name="notification_channel_name">监听运行状态</string>
     <string name="notification_channel_desc">抢单监听运行时的常驻通知</string>
 
+    <!-- 底部导航 -->
+    <string name="tab_workbench">工作台</string>
+    <string name="tab_rules">接单规则</string>
+    <string name="tab_history">处理记录</string>
+    <string name="tab_account">我的</string>
+
     <!-- 登录 -->
-    <string name="section_login">1. 账号登录</string>
+    <string name="section_login">账号登录</string>
     <string name="label_phone">手机号</string>
     <string name="hint_phone">11 位手机号</string>
     <string name="label_password">密码</string>
@@ -16,8 +22,28 @@
     <string name="login_success">登录成功</string>
     <string name="login_failed">登录失败</string>
 
+    <!-- 工作台 -->
+    <string name="badge_foreground">前台运行</string>
+    <string name="status_hint_default">保持 App 在前台，切到后台会安全停止。</string>
+    <string name="title_today_overview">今日概览</string>
+    <string name="title_shop_orders">店铺与接单</string>
+    <string name="title_week_performance">本周表现</string>
+    <string name="title_recent_activity">最近活动</string>
+    <string name="action_view_all">查看全部 ›</string>
+    <string name="recent_activity_hint">完整记录在「记录」页。</string>
+
+    <!-- 接单动作 -->
+    <string name="btn_online">上线</string>
+    <string name="btn_offline">下线</string>
+    <string name="btn_random_on">开启随机单</string>
+    <string name="btn_random_off">关闭随机单</string>
+    <string name="btn_item_types">接单类型</string>
+
     <!-- 监听设置 -->
-    <string name="section_settings">2. 监听设置</string>
+    <string name="section_settings">接单规则</string>
+    <string name="title_amount_range">金额与轮询</string>
+    <string name="title_memo_filter">备注筛选</string>
+    <string name="title_blacklist">客户黑名单</string>
     <string name="label_min_amount">最低金额（元）</string>
     <string name="label_max_amount">最高金额（元，0 表示不限制）</string>
     <string name="label_poll_interval">轮询间隔（秒）</string>
@@ -33,7 +59,7 @@
     <string name="settings_invalid">设置有误，请检查输入</string>
 
     <!-- 监听控制 -->
-    <string name="section_listen">3. 监听</string>
+    <string name="section_listen">监听</string>
     <string name="btn_start_listen">开始监听</string>
     <string name="btn_stop_listen">停止监听</string>
     <string name="status_idle">状态：未运行</string>
@@ -41,10 +67,20 @@
     <string name="need_login_first">请先登录并保存账号</string>
     <string name="need_settings_first">请先保存监听设置</string>
 
+    <!-- 记录 -->
+    <string name="section_history">处理记录</string>
+    <string name="history_summary_default">仅当前账号；按北京时间统计</string>
+    <string name="history_empty_hint">还没有订单记录，开始监听后会显示在这里。</string>
+
     <!-- 日志 -->
     <string name="section_log">运行日志</string>
     <string name="btn_clear_log">清空日志</string>
     <string name="log_empty">暂无日志</string>
+
+    <!-- 我的 -->
+    <string name="btn_advanced_settings">高级设置</string>
+    <string name="title_about">关于</string>
+    <string name="about_text">DPGrabber 独立版 · 手机号 + 密码登录 · 不注入宿主 App</string>
 
     <!-- 高级设置 -->
     <string name="menu_advanced">高级设置</string>

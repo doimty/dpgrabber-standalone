@@ -84,10 +84,13 @@ mkdir -p "$OUT"
 [ -d "$APP_PATH" ] || fail "simulator app bundle not found: $APP_PATH (build the Debug configuration first)"
 [ -f "$APP_PATH/Info.plist" ] || fail "app bundle has no Info.plist: $APP_PATH"
 
+XCODE_VERSION="$(xcodebuild -version 2>/dev/null | head -n 1 || true)"
+[ -n "$XCODE_VERSION" ] || XCODE_VERSION="unknown"
+
 log "bundle id: $BUNDLE_ID"
 log "app bundle: $APP_PATH"
 log "host: $(uname -m) / $(sw_vers -productVersion 2>/dev/null || echo unknown)"
-log "xcode: $(xcodebuild -version | head -n 1)"
+log "xcode: $XCODE_VERSION"
 
 # ------------------------------------------------------------ runtime discovery
 
@@ -299,6 +302,23 @@ run_round() {
         "$bytes" "$dimensions" "$status" >> "$TSV"
       log "  $appearance tab$tab -> $(basename "$shot") ($bytes bytes, $dimensions, $status)"
     done
+
+    # Contract guard: the four tabs must not render identically. If they do,
+    # the DEBUG-only -uiReviewTab hook is probably not wired up and the
+    # screenshots would be meaningless evidence.
+    local invalid_count unique_hashes
+    invalid_count="$(awk -F'\t' -v k="$runtime_key" -v a="$appearance" \
+      '$2 == k && $3 == a && $8 != "ok"' "$TSV" | wc -l | tr -d ' ')"
+    if [ "$invalid_count" -eq 0 ]; then
+      unique_hashes="$(shasum -a 256 "$OUT/${runtime_key}-${appearance}"-tab*.png \
+        | awk '{ print $1 }' | sort -u | wc -l | tr -d ' ')"
+      if [ "$unique_hashes" -eq 1 ]; then
+        printf '::error::%s %s: all four tab screenshots are identical, -uiReviewTab (DEBUG only) is likely not applied\n' \
+          "$runtime_key" "$appearance" >&2
+        FAILURES=$((FAILURES + 1))
+      fi
+    fi
+
     collect_logs "$udid" "$runtime_key" "$appearance"
   done
 }
@@ -324,7 +344,7 @@ SUMMARY="$OUT/summary.md"
   echo
   echo "- 生成时间（UTC）：$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "- Runner 镜像：${ImageOS:-unknown} ${ImageVersion:-unknown}（$(uname -m)）"
-  echo "- Xcode：$(xcodebuild -version | head -n 1)"
+  echo "- Xcode：$XCODE_VERSION"
   echo "- Bundle ID：\`$BUNDLE_ID\`（Debug 模拟器构建）"
   echo "- 启动参数契约：\`-uiReviewTab 0/1/2/3\` → 工作台 / 规则 / 记录 / 我的，仅 DEBUG 生效"
   echo "- 语言/区域：\`-AppleLanguages (zh-Hans)\`、\`-AppleLocale zh_CN\`"
@@ -375,7 +395,7 @@ if [ "$ACTUAL" -ne "$EXPECTED" ]; then
 fi
 
 if [ "$FAILURES" -ne 0 ]; then
-  fail "$FAILURES screenshot(s) missing, empty or not a valid PNG; see $SUMMARY"
+  fail "$FAILURES screenshot validation failure(s) (missing/empty/non-PNG/identical tabs); see $SUMMARY"
 fi
 
 log "all screenshots captured and validated"

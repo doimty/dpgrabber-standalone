@@ -25,6 +25,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import com.doimty.dpgrabber.databinding.ActivityMainBinding
 import com.doimty.dpgrabber.engine.LogLevel
+import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.doimty.dpgrabber.service.ListenService
 import com.doimty.dpgrabber.service.LogBus
 
@@ -83,6 +84,41 @@ class MainActivity : AppCompatActivity() {
             LogBus.clear()
             binding.logView.text = getString(R.string.log_empty)
         }
+
+        binding.bottomNav.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.tab_workbench -> showPage(0)
+                R.id.tab_rules -> showPage(1)
+                R.id.tab_history -> showPage(2)
+                R.id.tab_account -> showPage(3)
+            }
+            true
+        }
+        binding.bottomNav.selectedItemId = R.id.tab_workbench
+
+        val openHistory = View.OnClickListener {
+            binding.bottomNav.selectedItemId = R.id.tab_history
+        }
+        binding.openHistoryLink.setOnClickListener(openHistory)
+        binding.openHistoryLink2.setOnClickListener(openHistory)
+        binding.advancedSettingsButton.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+    }
+
+    /** Switches between the four bottom-navigation pages. */
+    private fun showPage(index: Int) {
+        val pages = arrayOf(
+            binding.pageWorkbench,
+            binding.pageRules,
+            binding.pageHistory,
+            binding.pageAccount
+        )
+        pages.forEachIndexed { position, page ->
+            page.visibility = if (position == index) View.VISIBLE else View.GONE
+        }
+        binding.toolbar.title = getString(PAGE_TITLES[index])
+        pages[index].scrollTo(0, 0)
     }
 
     override fun onResume() {
@@ -159,8 +195,8 @@ class MainActivity : AppCompatActivity() {
             pollIntervalSec = binding.pollIntervalInput.text.toString().toDoubleOrNull()
                 ?: throw IllegalArgumentException("轮询间隔必须是数字"),
             memoMode = binding.memoModeSpinner.selectedItemPosition,
-            memoKeywords = lines(binding.memoKeywordsInput.text),
-            blacklist = lines(binding.blacklistInput.text)
+            memoKeywords = lines(binding.memoKeywordsInput.text ?: ""),
+            blacklist = lines(binding.blacklistInput.text ?: "")
         ).validate()
     }
 
@@ -307,10 +343,7 @@ class MainActivity : AppCompatActivity() {
         val logText = binding.logView.text.toString()
         if (logText.length > 100_000) binding.logView.text = logText.takeLast(80_000)
         // Keep the newest line visible.
-        val scroll = binding.logView.parent
-        if (scroll is android.widget.ScrollView) {
-            scroll.post { scroll.fullScroll(android.view.View.FOCUS_DOWN) }
-        }
+        binding.logScroll.post { binding.logScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun setNetworkBusy(busy: Boolean) {
@@ -445,6 +478,7 @@ class MainActivity : AppCompatActivity() {
                 val labels = listOf("成功", "失败", "风控", "未知", "跳过")
                 binding.todayOverview.text = types.mapIndexed { index, type -> "${labels[index]} ${counts[type] ?: 0}" }.joinToString(" · ") + "\n仅当前账号；Asia/Shanghai 持久历史"
                 binding.historyList.removeAllViews()
+                binding.historyEmptyHint.visibility = if (entries.isEmpty()) View.VISIBLE else View.GONE
                 entries.forEach { entry ->
                     val text = TextView(this).apply {
                         setPadding(8, 12, 8, 12)
@@ -504,5 +538,11 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val MENU_ADVANCED = 1
+        private val PAGE_TITLES = intArrayOf(
+            R.string.tab_workbench,
+            R.string.tab_rules,
+            R.string.tab_history,
+            R.string.tab_account
+        )
     }
 }

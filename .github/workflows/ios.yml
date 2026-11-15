@@ -29,11 +29,12 @@ permissions:
   contents: read
 
 env:
-  # Verified in actions/runner-images: images/macos/macos-15-Readme.md
-  # (image 20260824.0482.1) lists Xcode 26.3 (17C529) at
-  # /Applications/Xcode_26.3.app, together with iOS 26.0-26.2 and
+  # Verified in actions/runner-images: images/macos/macos-15-Readme.md and
+  # macos-15-arm64-Readme.md both list Xcode 26.3 (17C529) at
+  # /Applications/Xcode_26.3.app together with iOS 26.0-26.2 and
   # iOS 18.0-18.5 simulator runtimes. macos-26 only ships iOS 26.x
-  # runtimes, so macos-15 is used for both jobs to keep the legacy round.
+  # runtimes, so macos-15 (arm64 per the GitHub-hosted runner table) is
+  # used for both jobs to keep the legacy iOS 18 round.
   XCODE_APP: /Applications/Xcode_26.3.app
   IOS_BUNDLE_ID: com.doimty.dpgrabber
   IOS_MIN_DEPLOYMENT_TARGET: '15.0'
@@ -145,6 +146,7 @@ jobs:
           sudo xcode-select -s "$XCODE_APP"
           xcode-select -p
           xcodebuild -version
+          xcrun simctl list runtimes
           ACTUAL="$(xcodebuild -version | awk '/^Xcode /{print $2; exit}')"
           echo "selected Xcode: $ACTUAL"
           case "$ACTUAL" in
@@ -169,11 +171,14 @@ jobs:
         run: |
           set -Eeuo pipefail
           cd ios
+          # The hand-written project declares SUPPORTED_PLATFORMS=iphoneos only, so
+          # `-destination generic/platform=iOS Simulator` cannot be resolved.
+          # Building with `-sdk iphonesimulator` plus the platform override is the
+          # reliable way to produce a simulator .app without touching the project.
           xcodebuild -project DPGrabber.xcodeproj \
             -scheme DPGrabber \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
             SUPPORTED_PLATFORMS='iphoneos iphonesimulator' \
             ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
