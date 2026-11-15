@@ -38,6 +38,10 @@
 #
 set -Eeuo pipefail
 
+# With `set -e` a failing command aborts silently. Print the exact line and
+# command so a red run always explains itself in the log.
+trap 'printf "::error::ui-review failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+
 BUNDLE_ID="${IOS_BUNDLE_ID:-com.doimty.dpgrabber}"
 APP_PATH="${IOS_SIM_APP:-ios/build/Debug-iphonesimulator/DPGrabber.app}"
 SETTLE_SECONDS="${UI_REVIEW_SETTLE_SECONDS:-8}"
@@ -276,16 +280,22 @@ run_round() {
   log "installed app once on $udid"
 
   for appearance in light dark; do
-    xcrun simctl ui "$udid" appearance "$appearance"
+    xcrun simctl ui "$udid" appearance "$appearance" >/dev/null 2>&1 \
+      || log "warning: could not switch appearance to $appearance"
     sleep 2
     for tab in $TABS; do
-      local shot status bytes dimensions
+      local shot status bytes dimensions launch_rc=0
       shot="$OUT/${runtime_key}-${appearance}-tab${tab}.png"
       xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
       xcrun simctl launch "$udid" "$BUNDLE_ID" \
         -AppleLanguages "(zh-Hans)" -AppleLocale zh_CN \
         -uiReviewTab "$tab" \
-        > "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>&1
+        > "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>&1 || launch_rc=$?
+      if [ "$launch_rc" -ne 0 ]; then
+        log "launch exited $launch_rc for $appearance tab$tab; launch log follows"
+        head -c 2000 "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>/dev/null \
+          | sed -E 's/[[:digit:]]{11}/<phone>/g' >&2 || true
+      fi
       sleep "$SETTLE_SECONDS"
       xcrun simctl io "$udid" screenshot --type=png "$shot" >/dev/null 2>&1 || true
 
