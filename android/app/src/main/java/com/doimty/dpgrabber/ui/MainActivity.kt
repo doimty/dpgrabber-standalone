@@ -317,7 +317,7 @@ class MainActivity : AppCompatActivity() {
                     binding.loginButton.isEnabled = true
                     if (generation != accountGeneration || requestRevision != SessionRepository.revision) return@runOnUiThread
                     binding.loginStatus.text =
-                        getString(R.string.login_failed) + "：" + (e.messageText ?: "登录或会话校验失败").take(40)
+                        getString(R.string.login_failed) + "：" + e.messageText.take(40)
                     updateLoginStatusVisibility()
                 }
             } catch (e: Exception) {
@@ -736,15 +736,13 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 // 之前这里吞掉了异常，用户只看到"操作失败"却不知道原因，
                 // 表现就是"按钮点了没反应"。原因必须进日志。
+                // 40 字是为了让「平台拒绝操作（code=1004：…）」里的 code 不被截掉。
                 val reason = ((e as? com.doimty.dpgrabber.core.ApiError)?.messageText
-                    ?: e.javaClass.simpleName).take(30)
+                    ?: e.javaClass.simpleName).take(40)
                 com.doimty.dpgrabber.service.LogBus.post(
                     com.doimty.dpgrabber.engine.LogLevel.WARNING, "操作失败：$reason")
-                runOnUiThread {
-                    if (revision == SessionRepository.revision) {
-                        Toast.makeText(this, "操作失败：$reason", Toast.LENGTH_LONG).show()
-                    }
-                }
+                // Toast 不受 revision 限制：用户点过就应该看到结果，哪怕会话已换。
+                runOnUiThread { Toast.makeText(this, "操作失败：$reason", Toast.LENGTH_LONG).show() }
             } finally {
                 runOnUiThread { setNetworkBusy(false); refreshAccountInfo() }
             }
