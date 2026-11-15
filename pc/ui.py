@@ -1385,6 +1385,13 @@ class App(QMainWindow):
         self._activate_account(digits)
         self._reload_account_picker()
 
+    def _on_auto_stop_toggled(self, checked: bool):
+        self.cfg["auto_stop_after_grab"] = bool(checked)
+        try:
+            self._save_cfg()
+        except Exception as exc:
+            self.log("warning", "保存自动停止设置失败：%s" % str(exc)[:80])
+
     def _set_online_text(self, online: bool):
         box = getattr(self, "online_check", None)
         if box is None:
@@ -1399,6 +1406,11 @@ class App(QMainWindow):
         if session is None:
             return
         target = 1 if checked else 2
+        self.cfg["online_after_login"] = bool(checked)
+        try:
+            self._save_cfg()
+        except Exception:
+            pass
         # flip the label immediately so the control answers the click
         self._set_online_text(bool(checked))
 
@@ -1842,6 +1854,8 @@ class App(QMainWindow):
         self.auto_stop_check.setObjectName("sidebarCheck")
         self.auto_stop_check.setChecked(bool(self.cfg.get("auto_stop_after_grab", True)))
         self.auto_stop_check.setToolTip("关闭后抢到一单会继续轮询，适合连续接单")
+        # 勾选状态立即落盘：以前只有点「保存设置」才写，导致每次打开都回到默认
+        self.auto_stop_check.toggled.connect(self._on_auto_stop_toggled)
         layout.addWidget(self.auto_stop_check)
         self.online_check = QCheckBox("在线接单（离线中）")
         self.online_check.setObjectName("sidebarCheck")
