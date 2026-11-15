@@ -663,115 +663,235 @@
                             android:orientation="vertical"
                             android:padding="16dp">
 
+                            <!-- 已登录：身份卡（头像 / 姓名+ID / 打码手机号 / 本周三项指标 / 注销） -->
                             <LinearLayout
+                                android:id="@+id/profileCard"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:id="@+id/accountAvatarText"
-                                    android:layout_width="48dp"
-                                    android:layout_height="48dp"
-                                    android:background="@drawable/bg_avatar"
-                                    android:gravity="center"
-                                    android:text="未"
-                                    android:textColor="?attr/colorPrimary"
-                                    android:textSize="16sp"
-                                    android:textStyle="bold" />
+                                android:orientation="vertical"
+                                android:visibility="gone">
 
                                 <LinearLayout
-                                    android:layout_width="0dp"
+                                    android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:layout_marginStart="12dp"
-                                    android:layout_weight="1"
-                                    android:orientation="vertical">
+                                    android:gravity="center_vertical"
+                                    android:orientation="horizontal">
 
                                     <TextView
-                                        android:id="@+id/accountPhoneText"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:text="未登录"
-                                        android:textColor="?attr/colorOnSurface"
-                                        android:textSize="16sp" />
+                                        android:id="@+id/accountAvatarText"
+                                        android:layout_width="48dp"
+                                        android:layout_height="48dp"
+                                        android:background="@drawable/bg_avatar"
+                                        android:gravity="center"
+                                        android:text="未"
+                                        android:textColor="?attr/colorPrimary"
+                                        android:textSize="16sp"
+                                        android:textStyle="bold" />
 
-                                    <TextView
-                                        android:id="@+id/accountStatusText"
-                                        android:layout_width="wrap_content"
+                                    <LinearLayout
+                                        android:layout_width="0dp"
                                         android:layout_height="wrap_content"
-                                        android:layout_marginTop="2dp"
-                                        android:text="手机号 + 密码登录"
-                                        android:textColor="?attr/colorOnSurfaceVariant"
-                                        android:textSize="12sp" />
+                                        android:layout_marginStart="12dp"
+                                        android:layout_weight="1"
+                                        android:orientation="vertical">
+
+                                        <TextView
+                                            android:id="@+id/profileName"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:ellipsize="end"
+                                            android:maxLines="1"
+                                            android:text="已登录店员"
+                                            android:textColor="?attr/colorOnSurface"
+                                            android:textSize="16sp"
+                                            android:textStyle="bold" />
+
+                                        <TextView
+                                            android:id="@+id/accountPhoneText"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginTop="2dp"
+                                            android:text="未登录"
+                                            android:textColor="?attr/colorOnSurfaceVariant"
+                                            android:textSize="13sp" />
+
+                                        <TextView
+                                            android:id="@+id/accountStatusText"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginTop="2dp"
+                                            android:text="手机号 + 密码登录"
+                                            android:textColor="?attr/colorOnSurfaceVariant"
+                                            android:textSize="12sp" />
+                                    </LinearLayout>
                                 </LinearLayout>
+
+                                <View style="@style/Divider" />
+
+                                <LinearLayout
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:baselineAligned="false"
+                                    android:orientation="horizontal">
+
+                                    <LinearLayout
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:gravity="center_horizontal"
+                                        android:orientation="vertical">
+
+                                        <TextView
+                                            android:id="@+id/profileOrders"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:text="—"
+                                            android:textColor="?attr/colorOnSurface"
+                                            android:textSize="24sp"
+                                            android:textStyle="bold" />
+
+                                        <TextView
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginTop="2dp"
+                                            android:text="本周接单"
+                                            android:textColor="?attr/colorOnSurfaceVariant"
+                                            android:textSize="12sp" />
+                                    </LinearLayout>
+
+                                    <LinearLayout
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:gravity="center_horizontal"
+                                        android:orientation="vertical">
+
+                                        <TextView
+                                            android:id="@+id/profileFeeRate"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:text="—"
+                                            android:textColor="?attr/colorOnSurface"
+                                            android:textSize="24sp"
+                                            android:textStyle="bold" />
+
+                                        <TextView
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginTop="2dp"
+                                            android:text="续费率"
+                                            android:textColor="?attr/colorOnSurfaceVariant"
+                                            android:textSize="12sp" />
+                                    </LinearLayout>
+
+                                    <LinearLayout
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:gravity="center_horizontal"
+                                        android:orientation="vertical">
+
+                                        <TextView
+                                            android:id="@+id/profileOrderRate"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:text="—"
+                                            android:textColor="?attr/colorOnSurface"
+                                            android:textSize="24sp"
+                                            android:textStyle="bold" />
+
+                                        <TextView
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginTop="2dp"
+                                            android:text="续单率"
+                                            android:textColor="?attr/colorOnSurfaceVariant"
+                                            android:textSize="12sp" />
+                                    </LinearLayout>
+                                </LinearLayout>
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/logoutButton"
+                                    style="@style/BtnOutlined"
+                                    android:layout_width="match_parent"
+                                    android:layout_marginTop="16dp"
+                                    android:text="注销"
+                                    android:textColor="?attr/colorError"
+                                    app:strokeColor="?attr/colorError" />
                             </LinearLayout>
 
-                            <View style="@style/Divider" />
-
-                            <TextView
-                                style="@style/CardTitle"
-                                android:text="@string/section_login" />
-
-                            <TextView
-                                android:id="@+id/credentialsWarning"
+                            <!-- 未登录：手机号 + 密码登录表单 -->
+                            <LinearLayout
+                                android:id="@+id/loginFormContainer"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="8dp"
-                                android:text="@string/credentials_unencrypted_warning"
-                                android:textColor="@color/danger"
-                                android:textSize="13sp"
-                                android:visibility="gone" />
+                                android:orientation="vertical">
 
-                            <!-- 未登录时由头像头展示账号状态，这里不重复；仅在登录过程/结果时显示。 -->
-                            <TextView
-                                android:id="@+id/loginStatus"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="8dp"
-                                android:text="@string/login_not_logged_in"
-                                android:textColor="?attr/colorOnSurfaceVariant"
-                                android:textSize="14sp"
-                                android:visibility="gone" />
+                                <TextView
+                                    style="@style/CardTitle"
+                                    android:text="@string/section_login" />
 
-                            <com.google.android.material.textfield.TextInputLayout
-                                android:id="@+id/phoneInputLayout"
-                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="12dp"
-                                android:hint="@string/hint_phone">
-
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/phoneInput"
+                                <TextView
+                                    android:id="@+id/credentialsWarning"
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:inputType="phone"
-                                    android:maxLines="1" />
-                            </com.google.android.material.textfield.TextInputLayout>
+                                    android:layout_marginTop="8dp"
+                                    android:text="@string/credentials_unencrypted_warning"
+                                    android:textColor="@color/danger"
+                                    android:textSize="13sp"
+                                    android:visibility="gone" />
 
-                            <com.google.android.material.textfield.TextInputLayout
-                                android:id="@+id/passwordInputLayout"
-                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="12dp"
-                                android:hint="@string/hint_password"
-                                app:endIconMode="password_toggle">
-
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/passwordInput"
+                                <!-- 未登录时由身份卡表达账号状态，这里不重复；仅在登录过程/结果时显示。 -->
+                                <TextView
+                                    android:id="@+id/loginStatus"
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:inputType="textPassword"
-                                    android:maxLines="1" />
-                            </com.google.android.material.textfield.TextInputLayout>
+                                    android:layout_marginTop="8dp"
+                                    android:text="@string/login_not_logged_in"
+                                    android:textColor="?attr/colorOnSurfaceVariant"
+                                    android:textSize="14sp"
+                                    android:visibility="gone" />
 
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/loginButton"
-                                style="@style/BtnFilled"
-                                android:layout_width="match_parent"
-                                android:layout_marginTop="14dp"
-                                android:text="@string/btn_login" />
+                                <com.google.android.material.textfield.TextInputLayout
+                                    android:id="@+id/phoneInputLayout"
+                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="12dp"
+                                    android:hint="@string/hint_phone">
+
+                                    <com.google.android.material.textfield.TextInputEditText
+                                        android:id="@+id/phoneInput"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:inputType="phone"
+                                        android:maxLines="1" />
+                                </com.google.android.material.textfield.TextInputLayout>
+
+                                <com.google.android.material.textfield.TextInputLayout
+                                    android:id="@+id/passwordInputLayout"
+                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="12dp"
+                                    android:hint="@string/hint_password"
+                                    app:endIconMode="password_toggle">
+
+                                    <com.google.android.material.textfield.TextInputEditText
+                                        android:id="@+id/passwordInput"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:inputType="textPassword"
+                                        android:maxLines="1" />
+                                </com.google.android.material.textfield.TextInputLayout>
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/loginButton"
+                                    style="@style/BtnFilled"
+                                    android:layout_width="match_parent"
+                                    android:layout_marginTop="14dp"
+                                    android:text="@string/btn_login" />
+                            </LinearLayout>
 
                             <LinearLayout
                                 android:id="@+id/advancedSettingsButton"

@@ -163,12 +163,20 @@ class ApiClient(
             }
         }
         val resolved = inner ?: outer
-        val code = parseCode(resolved)
-            ?: throw ApiError(ApiError.Kind.API, "response has no valid business code")
+        val code = parseCode(resolved) ?: run {
+            // 连 code 都没有时，若平台仍给了 msg，也要留在错误里，否则无法定位。
+            val reason = sanitizeReason(resolved.optString("msg", resolved.optString("message", "")))
+            throw ApiError(ApiError.Kind.API,
+                if (reason.isEmpty()) "response has no valid business code"
+                else "response has no valid business code（$reason）")
+        }
         if (code == 401 || code == 403) {
-            val reason = resolved.optString("msg", resolved.optString("message", ""))
+            val reason = sanitizeReason(resolved.optString("msg", resolved.optString("message", "")))
             val permission = listOf("没有操作权限", "无操作权限", "不是店员", "非店员").any { reason.contains(it) }
-            throw ApiError(if (permission) ApiError.Kind.PERMISSION else ApiError.Kind.AUTH, "会话或店铺访问被拒绝")
+            // 平台原因不能丢：401/403 既可能是会话失效，也可能是身份/店铺权限问题。
+            val detail = if (reason.isEmpty()) "code=$code" else "code=$code：$reason"
+            throw ApiError(if (permission) ApiError.Kind.PERMISSION else ApiError.Kind.AUTH,
+                "会话或店铺访问被拒绝（$detail）")
         }
         val msg = resolved.optString("msg", resolved.optString("message", ""))
         if (code == 1 && msg.contains("IP")) {
@@ -233,7 +241,9 @@ class ApiClient(
             )
         } catch (e: Exception) {
             checkActive()
-            throw ApiError(ApiError.Kind.NETWORK, "网络请求失败")
+            // 传输层失败（拿不到任何业务响应）必须与“平台业务拒绝”区分开：
+            // 前者是 TLS 被掐断/超时/拒连，后者才是解析到 JSON 且 code != 0。
+            throw ApiError(ApiError.Kind.NETWORK, transportFailureText(e))
         }
         checkActive()
         if (resp.statusCode == 401 || resp.statusCode == 403) {
@@ -295,7 +305,7 @@ class ApiClient(
         if (resp.optInt("code", -1) != 0) {
             throw ApiError(
                 ApiError.Kind.AUTH,
-                "登录被拒绝"
+                rejectionText(resp, "登录被拒绝")
             )
         }
         val data = resp.optJSONObject("data")
@@ -323,7 +333,7 @@ class ApiClient(
             extraHeaders = mapOf("sid" to base.sid), timeoutSec = 15.0
         )
         if (resp.optInt("code", -1) != 0) {
-            throw ApiError(ApiError.Kind.API, "shop list rejected")
+            throw ApiError(ApiError.Kind.API, rejectionText(resp, "店铺列表被拒绝"))
         }
         val shops = mutableListOf<JSONObject>()
         val data = resp.optJSONArray("data")
@@ -356,7 +366,11 @@ class ApiClient(
                 lastError = e
                 continue
             }
-            if (switched.optInt("code", -1) != 0) continue
+            if (switched.optInt("code", -1) != 0) {
+                // 换店被平台拒绝时留下原因，最终“无可用店铺会话”的报错才有诊断价值。
+                lastError = ApiError(ApiError.Kind.API, rejectionText(switched, "切换店铺被拒绝"))
+                continue
+            }
             val switchedData = switched.optJSONObject("data")
             val token = switchedData?.optString("token", "") ?: ""
             if (token.isEmpty()) continue
@@ -384,8 +398,49 @@ class ApiClient(
         )
     }
 
+    /**
+     * 平台拒绝的统一文案：带上业务 code 与脱敏后的 msg，便于在日志里区分
+     * “另一台设备在监听”“操作过于频繁”“会话失效”等原因。两者都拿不到时
+     * 才退回 [prefix] 原文案。
+     */
+    private fun rejectionText(response: JSONObject, prefix: String = "平台拒绝操作"): String {
+        val code = parseCode(response)
+        val reason = sanitizeReason(response.optString("msg", response.optString("message", "")))
+        return when {
+            code != null && reason.isNotEmpty() -> "$prefix（code=$code：$reason）"
+            code != null -> "$prefix（code=$code）"
+            reason.isNotEmpty() -> "$prefix（$reason）"
+            else -> prefix
+        }
+    }
+
+    /**
+     * 传输层失败的分类文案：TLS 被对端掐断、超时、拒连、对端关闭。
+     * 这些情况完全没有业务 JSON，因此绝不会进入“平台拒绝操作（code=…）”。
+     */
+    private fun transportFailureText(error: Throwable): String = when (error) {
+        is javax.net.ssl.SSLException -> "网络连接被中断（SSL 握手失败，可能被限流）"
+        is java.net.SocketTimeoutException -> "请求超时（网络不稳定或对端限流）"
+        is java.net.ConnectException -> "连接被拒绝（网络不可用或对端拒绝）"
+        is java.io.EOFException -> "连接被对端关闭（可能被限流）"
+        is java.io.IOException -> "网络请求失败（连接被中断）"
+        else -> "网络请求失败"
+    }
+
+    /**
+     * 平台原因脱敏：32 位以上十六进制串（token/密钥形态）替换为 `<token>`，
+     * 连续 11 位及以上的数字串（手机号、订单号）替换为 `<num>`，折叠换行/制表
+     * 并按字符截断到 60。token、authorization、密码从不参与这段文本的提取。
+     */
+    private fun sanitizeReason(raw: String): String = raw
+        .replace(Regex("\\b[0-9a-fA-F]{32,}\\b"), "<token>")
+        .replace(Regex("\\d{11,}"), "<num>")
+        .replace(Regex("[\\r\\n\\t]+"), " ")
+        .trim()
+        .take(60)
+
     private fun successful(response: JSONObject): JSONObject {
-        if (parseCode(response) != 0) throw ApiError(ApiError.Kind.API, "平台拒绝操作")
+        if (parseCode(response) != 0) throw ApiError(ApiError.Kind.API, rejectionText(response))
         return response
     }
 

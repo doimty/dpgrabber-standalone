@@ -65,6 +65,26 @@ class CredentialStore(context: Context) {
     fun loadPhone(): String = (memoryPair ?: readPair(prefs))?.first ?: ""
     fun loadPassword(): String = (memoryPair ?: readPair(prefs))?.second ?: ""
 
+    /**
+     * 店员姓名与平台 ID：与账号同样只写加密存储，密钥不可用时退回内存。
+     * 返回值表示是否真正落盘；未落盘时当前进程内仍可读取，界面不会因此空白。
+     */
+    fun saveClerk(name: String, id: Int): Boolean {
+        memoryClerk = name to id
+        val target = prefs ?: return false
+        return try {
+            target.edit().putString("clerk_name", name).putInt("clerk_id", id).commit() &&
+                target.getString("clerk_name", null) == name && target.getInt("clerk_id", 0) == id
+        } catch (_: Exception) { false }
+    }
+
+    /** 无值时返回空串与 0；调用方据此显示兜底文案。 */
+    fun loadClerk(): Pair<String, Int> = memoryClerk ?: try {
+        val target = prefs
+        if (target == null) "" to 0
+        else (target.getString("clerk_name", null) ?: "") to target.getInt("clerk_id", 0)
+    } catch (_: Exception) { "" to 0 }
+
     fun clearAccount() {
         SessionRepository.invalidate()
         memoryPair = "" to ""
@@ -96,6 +116,8 @@ class CredentialStore(context: Context) {
 
     companion object {
         @Volatile private var memoryPair: Pair<String, String>? = null
+        /** 姓名与 ID 的内存回退；null 表示本进程尚未写入过。 */
+        @Volatile private var memoryClerk: Pair<String, Int>? = null
         internal fun completePair(phone: String?, password: String?): Pair<String, String>? =
             if (!phone.isNullOrBlank() && !password.isNullOrBlank()) phone to password else null
     }

@@ -22,6 +22,19 @@ import java.util.Locale
 /** Log levels, same set as the PC engine. */
 enum class LogLevel { INFO, WARNING, ERROR, SUCCESS, DEBUG }
 
+/** 同一类业务拒绝连续达到该次数即熔断停止，避免无限撞墙。 */
+private const val REJECT_STOP_THRESHOLD = 5
+
+/** 传输层失败的硬退避阶梯（秒）：首次 5 秒，之后 10/20/30，封顶 30。 */
+private val TRANSPORT_BACKOFF_SEC = doubleArrayOf(5.0, 10.0, 20.0, 30.0)
+
+/**
+ * 平台原因里出现这些词即按“店铺不在线”处理。
+ * 与 core/Confirm.kt 的 QUALIFICATION_WORDS 同一思路（命中即分类），
+ * 但那张表只覆盖资质类词，不含上线状态，故在此单列三个最小词。
+ */
+private val OFFLINE_STATUS_WORDS = listOf("未上线", "请先上线", "不在线")
+
 /**
  * Listening engine (PROTOCOL.md sections 6-8, mirroring PC engine.py).
  *
@@ -80,6 +93,13 @@ class ListenEngine(
     private val seen = LinkedHashMap<String, Long>()
     private val seenTtlMs: Long = (config.seenTtlSec * 1000).toLong()
     private var consecutiveFailures = 0
+    /** 最近一条轮询失败日志的内容：连续相同错误只记一次，避免每 2-3 秒刷屏。 */
+    private var lastFailureLog: String? = null
+    /** 同一类业务拒绝（code!=0 且 messageText 未变）的连续次数，用于熔断。 */
+    private var sameRejectStreak = 0
+    private var lastRejectText: String? = null
+    /** 传输层失败（连不上/被掐断）的退避档位：5s → 10s → 20s → 30s。 */
+    private var transportBackoffStep = 0
     private val runId = java.util.UUID.randomUUID().toString()
     private val completedOrders = mutableSetOf<String>()
     private var outcomeType = OutcomeType.UNKNOWN
@@ -206,6 +226,31 @@ class ListenEngine(
         try { log(level, text) } catch (_: Throwable) { }
     }
 
+    /**
+     * 连续相同的轮询失败只记一次：同一个 messageText 不重复刷屏，内容一旦
+     * 变化（比如换成另一台设备在监听、或换了一个 code）立即再记一条；
+     * 轮询恢复后由 pollLoop 清空去重键。只影响日志，不动轮询间隔与时序。
+     */
+    private fun logFailureOnce(level: LogLevel, text: String) {
+        if (text == lastFailureLog) return
+        lastFailureLog = text
+        log(level, text)
+    }
+
+    /**
+     * 熔断文案：能从平台原因里认出店铺状态问题就给更具体的指引，
+     * 否则给含 code 的通用文案；两者都只说分类，不含订单号/手机号/令牌。
+     */
+    private fun rejectStopMessage(text: String): String {
+        if (OFFLINE_STATUS_WORDS.any { text.contains(it) }) {
+            return "店铺未上线，抢单请求被拒绝：已停止监听。请先在工作台点「上线」。"
+        }
+        val code = Regex("code=(-?\\d+)").find(text)?.groupValues?.get(1)
+        val suffix = if (code == null) "" else "（code=$code）"
+        return "平台连续拒绝 $REJECT_STOP_THRESHOLD 次$suffix：已停止监听。" +
+            "可能是账号在其他设备登录、店铺未上线或操作过于频繁，请核对后重新开始。"
+    }
+
     /** 只输出脱敏的故障分类，绝不带订单号、手机号或令牌。 */
     private fun stopReason(error: Throwable): String = when (error) {
         is InterruptedException -> "任务被中断，已停止"
@@ -262,9 +307,30 @@ class ListenEngine(
                         if (!sleepInterruptible(60.0)) return
                         continue
                     }
+                    ApiError.Kind.NETWORK -> {
+                        // 传输层：根本拿不到业务响应（TLS EOF/超时/拒绝连接），
+                        // 高频重试只会继续撞限流，故用更硬的 5/10/20/30 秒退避。
+                        val delaySec = TRANSPORT_BACKOFF_SEC[minOf(transportBackoffStep, TRANSPORT_BACKOFF_SEC.size - 1)]
+                        if (transportBackoffStep < TRANSPORT_BACKOFF_SEC.size - 1) transportBackoffStep++
+                        logFailureOnce(LogLevel.WARNING,
+                            "网络连接中断，${delaySec.toInt()} 秒后重试：${e.messageText}")
+                        if (!sleepInterruptible(delaySec)) return
+                        continue
+                    }
                     else -> {
                         consecutiveFailures++
-                        log(LogLevel.WARNING, "监听请求失败：${e.messageText}")
+                        // 业务拒绝：同一类拒绝连续 5 次就停止，避免无限撞墙。
+                        val text = e.messageText
+                        sameRejectStreak = if (text == lastRejectText) sameRejectStreak + 1 else 1
+                        lastRejectText = text
+                        if (sameRejectStreak >= REJECT_STOP_THRESHOLD) {
+                            log(LogLevel.ERROR, rejectStopMessage(text))
+                            // 安全停止：只退出轮询，由 run() 的 finally 收尾，
+                            // 不抛异常、不额外 cancel（本轮没有在途请求）。
+                            return
+                        }
+                        logFailureOnce(LogLevel.WARNING,
+                            "抢单请求被平台拒绝（第 ${sameRejectStreak}/$REJECT_STOP_THRESHOLD 次）：$text")
                         if (!sleepInterruptible(minOf(60.0, interval * (1 shl minOf(consecutiveFailures, 6))))) return
                         continue
                     }
@@ -272,6 +338,11 @@ class ListenEngine(
             }
             if (stopFlag.get()) return
             consecutiveFailures = 0
+            // 轮询恢复正常：清掉去重键与熔断/退避计数，下次同样的失败会重新记并重新计数。
+            lastFailureLog = null
+            sameRejectStreak = 0
+            lastRejectText = null
+            transportBackoffStep = 0
             if (orders.length() == 0) {
                 if (!sleepInterruptible(interval)) return
                 continue

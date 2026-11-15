@@ -142,8 +142,17 @@ class UiReviewInstrumentedTest {
         assertFalse(device.findObject(By.res(PACKAGE, "loginButton")).isEnabled)
         capture("login-loading")
         fixture.release.countDown()
-        awaitText("loginStatus", "登录成功")
+        // 登录成功后整块登录表单 GONE，loginStatus 不再在无障碍树中；已登录态由身份卡承载。
+        assertTrue("登录成功后应出现身份卡", device.wait(Until.hasObject(By.res(PACKAGE, "profileCard")), WAIT_MS))
+        assertFalse("登录成功后登录表单应隐藏", device.hasObject(By.res(PACKAGE, "loginFormContainer")))
+        val profileName = textOf("profileName")
+        assertTrue("身份卡姓名不应为空", profileName.isNotBlank())
+        assertNotEquals("身份卡不应停留在占位符", "已登录店员", profileName)
+        // fixture 的 clerk/get 固定返回 name=离线合成店员、id=90001，故姓名行应为「离线合成店员（ID 90001）」。
+        assertTrue("身份卡姓名应包含店员 ID（实际：\"$profileName\"）", profileName.contains("ID"))
+        assertNull("登录成功后不应再残留手机号输入框", device.findObject(By.res(PACKAGE, "phoneInput")))
         capture("login-verified")
+        capture("profile-card")
         selectTab("工作台")
         awaitText("statisticsOverview", "本周订单 12 单")
         assertTrue(device.findObject(By.res(PACKAGE, "statisticsOverview")).text.contains("25.00%"))
