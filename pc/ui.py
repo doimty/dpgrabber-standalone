@@ -1108,19 +1108,6 @@ class App(QMainWindow):
     def _build_login_section(self, sidebar_layout):
         card, layout = self._sidebar_card(sidebar_layout, "账号登录")
 
-        # --- account picker: one config file per phone ----------------------
-        picker_row = QHBoxLayout()
-        picker_row.setSpacing(6)
-        self.account_combo = QComboBox()
-        self.account_combo.setObjectName("accountCombo")
-        self.account_combo.currentIndexChanged.connect(self._on_account_picked)
-        picker_row.addWidget(self.account_combo, 1)
-        add_button = self._ghost_button("＋", self._on_add_account)
-        add_button.setFixedWidth(34)
-        add_button.setToolTip("新增账号（每个账号一份配置文件）")
-        picker_row.addWidget(add_button)
-        layout.addLayout(picker_row)
-
         # --- signed-out form ------------------------------------------------
         self.login_form = QWidget()
         form = QVBoxLayout(self.login_form)
@@ -1321,6 +1308,7 @@ class App(QMainWindow):
             holder.addWidget(hint)
 
     def _reload_account_picker(self):
+        """No picker in the UI any more; the per-account files stay behind it."""
         combo = getattr(self, "account_combo", None)
         if combo is None:
             return
@@ -2176,6 +2164,8 @@ class App(QMainWindow):
         except cfgmod.ConfigError as exc:
             QMessageBox.critical(self, "设置有误", str(exc))
             return
+        updates["auto_stop_after_grab"] = self.auto_stop_check.isChecked()
+        updates["online_after_login"] = self.online_check.isChecked()
         self.cfg.update(updates)
         try:
             self._save_cfg()
@@ -2190,6 +2180,10 @@ class App(QMainWindow):
 
     def _on_advanced_saved(self, new_cfg: dict):
         self.cfg = new_cfg
+        try:
+            self._save_cfg()
+        except Exception as exc:
+            self.log("error", "保存配置失败：%s" % str(exc)[:120])
         self.client = self._make_client()
         self.voice.enabled = bool(new_cfg.get("voice_enabled", True))
         from notify import Notifier
@@ -2704,7 +2698,6 @@ class AdvancedDialog(QDialog):
                 else:
                     self.cfg[key] = value
             self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
-            self.cfg["auto_stop_after_grab"] = self.auto_stop_check.isChecked()
             self.cfg["notify_enabled"] = self.notify_check.isChecked()
             self.cfg["notify_provider"] = str(self.notify_provider_box.currentData() or "serverchan")
             self.cfg["verify_tls"] = self.verify_check.isChecked()
@@ -2722,9 +2715,11 @@ class AdvancedDialog(QDialog):
                 if answer != QMessageBox.Yes:
                     return
             self.cfg["blacklist"] = new_blacklist
-            self._save_cfg()
         except (cfgmod.ConfigError, ValueError) as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
+            return
+        except Exception as exc:          # never fail silently again
+            QMessageBox.critical(self, "保存失败", "%s: %s" % (type(exc).__name__, exc))
             return
         self._on_saved(self.cfg)
         self.accept()
