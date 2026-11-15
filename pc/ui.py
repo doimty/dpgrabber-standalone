@@ -1704,9 +1704,16 @@ class App(QMainWindow):
         labels = getattr(self, "stat_labels", None)
         if not labels:
             return
-        for key, value in self._stats_snapshot().items():
+        snapshot = self._stats_snapshot()
+        for key, value in snapshot.items():
             if key in labels:
                 labels[key].setText(str(value))
+        # 顶栏的今日抢单和 今日概况 用同一个来源，避免重启后一个 0 一个 1
+        count_label = getattr(self, "grab_count_label", None)
+        if count_label is not None:
+            self.grab_count = max(getattr(self, "grab_count", 0),
+                                  int(snapshot.get("success", 0)))
+            count_label.setText("今日抢单 %d" % self.grab_count)
 
     def _build_conditions_section(self, main_layout):
         header = QHBoxLayout()
@@ -2289,7 +2296,13 @@ class App(QMainWindow):
         self._mirror_log_line(text + "\n")
         if level == "success" and "抢单成功" in message:
             self.grab_count += 1
-            self.grab_count_label.setText("今日抢单 %d" % self.grab_count)
+            # 重启后内存计数会归零，和 今日概况 对不上；以今天的成功条数为止
+        try:
+            today_success = int(self._stats_snapshot().get("success", 0))
+        except Exception:
+            today_success = 0
+        self.grab_count = max(self.grab_count, today_success)
+        self.grab_count_label.setText("今日抢单 %d" % self.grab_count)
         if level in ("success", "error", "warning"):
             try:
                 self.voice.speak(message)
