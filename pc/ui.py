@@ -1,4 +1,4 @@
-"""DPGrabber PC - PySide6 (Qt Widgets) user interface.
+"""DPPP - PySide6 (Qt Widgets) user interface.
 
 Replaces the CustomTkinter UI (preserved as ``ui_tk.py`` for reference).
 Same dashboard layout and fields: light blue sidebar (#D9E8F6) with
@@ -112,7 +112,7 @@ except Exception:
     Image = ImageDraw = None
     _PIL_AVAILABLE = False
 
-APP_TITLE = "DPGrabber PC"
+APP_TITLE = "DPPP"
 WINDOW_SIZE = (1180, 729)  # 1180 / 729 = 1.6187 -> 1:phi within 0.04%
 
 # Day-palette aliases, kept so older references keep working. The live
@@ -762,7 +762,7 @@ class App(QMainWindow):
         self._refresh_timer.timeout.connect(self._refresh_buttons)
         self._refresh_timer.start(500)
         # Canary: proves on launch that the log path is alive.
-        self.log("info", "DPGrabber PC 已启动")
+        self.log("info", "DPPP 已启动")
         try:
             from build_stamp import SHA as _build_sha
             self.log("info", "构建 %s" % _build_sha)
@@ -2111,6 +2111,8 @@ class App(QMainWindow):
     def _load_settings_into_widgets(self):
         self.phone_edit.setText(self.cfg.get("phone", ""))
         self.password_edit.setText(self.cfg.get("password", ""))
+        # 密码多半是 32 位哈希：载入后把光标归零，否则首字符被挤出可视区
+        self.password_edit.setCursorPosition(0)
         self.min_amount_edit.setText(str(self.cfg.get("min_amount", 10.0)))
         self.max_amount_edit.setText(str(self.cfg.get("max_amount", 0.0)))
         self.poll_interval_edit.setText(str(self.cfg.get("poll_interval_sec", 0.5)))
