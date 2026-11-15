@@ -286,7 +286,8 @@ final class ApiClientTests: XCTestCase {
         let client = makeClient(stub)
         let first = try await client.randomList()
         XCTAssertEqual(first.count, 1)
-        await XCTAssertThrowsErrorAsync(try await client.randomList())
+        let empty = try await client.randomList()
+        XCTAssertTrue(empty.isEmpty)
     }
 
     func testExtractClerk() {
@@ -370,7 +371,7 @@ extension ApiClientTests {
         ]
         for call in calls {
             do { _ = try await call(); XCTFail("业务错误不能返回成功") }
-            catch let error as ApiError { XCTAssertEqual(error.kind, .api); XCTAssertTrue(error.message.contains("没有操作权限")) }
+            catch let error as ApiError { XCTAssertEqual(error.kind, .api); XCTAssertEqual(error.detail, .permission); XCTAssertEqual(error.businessCode, 2) }
             catch { XCTFail("非预期错误：\(error)") }
         }
         XCTAssertEqual(stub.recorded.count, 6)
@@ -473,10 +474,91 @@ extension ApiClientTests {
         }
     }
 
+    func testSuccessfulEmptyHallAllowsMissingOrNullListWithoutHidingBusinessRefusal() async throws {
+        let stub = StubTransport()
+        let client = makeClient(stub)
+        let emptyResponses: [[String: Any]] = [
+            ["code": 0], ["code": 0, "list": NSNull()], ["code": "0", "data": NSNull()],
+            ["code": 0, "data": [:]], ["code": 0, "data": ["list": NSNull()]],
+            ["code": 0, "list": []], ["code": 0, "data": ["list": []]]
+        ]
+        for response in emptyResponses {
+            stub.handler = { _, _, _, _ in (200, plainEnvelope(response)) }
+            let orders = try await client.randomList()
+            XCTAssertTrue(orders.isEmpty)
+        }
+        stub.handler = { _, _, _, _ in (200, plainEnvelope(["code": 0, "list": NSNull(), "data": ["list": [["id": "nested"]]]])) }
+        let nested = try await client.randomList()
+        XCTAssertEqual(nested.first?["id"] as? String, "nested")
+        stub.handler = { _, _, _, _ in (200, plainEnvelope(["code": 9, "list": NSNull(), "msg": "没有店员权限"])) }
+        do { _ = try await client.randomList(); XCTFail("A business refusal is not an empty hall") }
+        catch let error as ApiError {
+            XCTAssertEqual(error.detail, .permission)
+            XCTAssertEqual(error.businessCode, 9)
+            XCTAssertTrue(error.safeDiagnostic.contains("randomList"))
+        }
+    }
+
+    func testPollDiagnosticsRetainCodesWithoutCredentialsOrResponseBodies() async throws {
+        let stub = StubTransport()
+        let client = makeClient(stub)
+        client.session = DPGSession(token: "private-token-never-log", sid: "92")
+        for (text, expected) in [("没有店员权限 private-token-never-log", ApiError.Detail.permission),
+                                 ("请先上线", .shopOffline), ("当前续费率不达标", .qualification),
+                                 ("unknown private-token-never-log phone=13800000000", .business)] {
+            stub.handler = { _, _, _, _ in (200, plainEnvelope(["code": 17, "msg": text, "list": []])) }
+            do { _ = try await client.randomList(); XCTFail("Business refusal must fail") }
+            catch let error as ApiError {
+                XCTAssertEqual(error.detail, expected)
+                XCTAssertEqual(error.businessCode, 17)
+                XCTAssertTrue(error.safeDiagnostic.contains("code 17"))
+                XCTAssertFalse(error.safeDiagnostic.contains("private-token"))
+                XCTAssertFalse(error.safeDiagnostic.contains("13800000000"))
+                XCTAssertFalse(error.safeDiagnostic.contains("https://"))
+                XCTAssertFalse(error.message.contains("private-token"))
+            }
+        }
+        stub.handler = { _, _, _, _ in (503, Data("private body".utf8)) }
+        do { _ = try await client.randomList(); XCTFail("HTTP failure must fail") }
+        catch let error as ApiError {
+            XCTAssertEqual(error.httpStatus, 503)
+            XCTAssertTrue(error.safeDiagnostic.contains("HTTP 503"))
+            XCTAssertTrue(error.safeDiagnostic.contains("randomList"))
+            XCTAssertFalse(error.safeDiagnostic.contains("private body"))
+        }
+        stub.handler = { _, _, _, _ in throw URLError(.timedOut) }
+        do { _ = try await client.randomList(); XCTFail("Timeout must fail") }
+        catch let error as ApiError {
+            XCTAssertEqual(error.detail, .timeout)
+            XCTAssertEqual(error.networkCode, URLError.timedOut.rawValue)
+            XCTAssertTrue(error.safeDiagnostic.contains("NSURLError -1001"))
+        }
+        stub.handler = { _, _, _, _ in (200, Data("not-json private-token-never-log".utf8)) }
+        do { _ = try await client.randomList(); XCTFail("Malformed response must fail") }
+        catch let error as ApiError {
+            XCTAssertEqual(error.detail, .responseJSON)
+            XCTAssertEqual(error.httpStatus, 200)
+            XCTAssertTrue(error.safeDiagnostic.contains("responseJSON"))
+            XCTAssertFalse(error.safeDiagnostic.contains("private-token"))
+        }
+    }
+
+    func testEmptyMsgFallsThroughToMessageForRiskAndBusinessClassification() async throws {
+        let client = makeClient(StubTransport())
+        do {
+            _ = try client.decodeResponse(plainEnvelope(["code": 1, "msg": "", "message": "IP受限"]))
+            XCTFail("Empty msg must not hide the risk message")
+        } catch let error as ApiError { XCTAssertEqual(error.kind, .ip) }
+        let stub = StubTransport()
+        stub.handler = { _, _, _, _ in (200, plainEnvelope(["code": 2, "msg": "", "message": "没有店员权限"])) }
+        do { _ = try await makeClient(stub).randomList(); XCTFail("Expected business refusal") }
+        catch let error as ApiError { XCTAssertEqual(error.detail, .permission) }
+    }
+
     func testRandomListBusinessFailureAndMalformedListThrow() async {
         let stub = StubTransport()
         let client = makeClient(stub)
-        let responses: [[String: Any]] = [["code": 2, "msg": "拒绝"], ["code": 0], ["code": 0, "list": "错误"], ["code": 0, "data": ["list": [:]]]]
+        let responses: [[String: Any]] = [["code": 2, "msg": "拒绝"], ["code": 0, "list": "错误"], ["code": 0, "list": [1, "bad"]], ["code": 0, "data": "bad"], ["code": 0, "data": ["list": [:]]]]
         for response in responses {
             stub.handler = { _, _, _, _ in (200, plainEnvelope(response)) }
             await XCTAssertThrowsErrorAsync(try await client.randomList())

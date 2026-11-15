@@ -18,12 +18,110 @@ public struct ApiError: Error, Equatable, LocalizedError {
     public enum Kind: String, Equatable {
         case auth, ip, api, network, cancelled
     }
+    public enum Detail: String, Equatable {
+        case business, permission, shopOffline, qualification
+        case responseJSON, responseCode, responseShape, decryption, invalidRequest
+        case http, connectivity, timeout, tls
+    }
     public let kind: Kind
     public let message: String
+    public let detail: Detail?
+    public let endpoint: String?
+    public let httpStatus: Int?
+    public let businessCode: Int?
+    public let networkCode: Int?
 
-    public init(_ kind: Kind, _ message: String) {
+    public init(_ kind: Kind, _ message: String, detail: Detail? = nil,
+                endpoint: String? = nil, httpStatus: Int? = nil,
+                businessCode: Int? = nil, networkCode: Int? = nil) {
         self.kind = kind
         self.message = message
+        self.detail = detail
+        self.endpoint = endpoint
+        self.httpStatus = httpStatus
+        self.businessCode = businessCode
+        self.networkCode = networkCode
+    }
+
+    public func at(endpoint: String, httpStatus: Int? = nil) -> ApiError {
+        ApiError(kind, message, detail: detail, endpoint: self.endpoint ?? endpoint,
+                 httpStatus: self.httpStatus ?? httpStatus, businessCode: businessCode, networkCode: networkCode)
+    }
+
+    /// Safe for the user interface: never includes headers, query strings, URLs, response bodies or free-form server messages.
+    public var safeDiagnostic: String {
+        let summary: String
+        switch detail {
+        case .permission: summary = "没有操作权限，请检查店铺店员授权"
+        case .shopOffline: summary = "店铺未上线，请先上线再开始"
+        case .qualification: summary = "平台接单条件未达标，请核验续费率等要求"
+        case .business: summary = "平台拒绝请求，请核验账号和店铺状态"
+        case .responseJSON: summary = "服务器返回的内容不是有效 JSON"
+        case .responseCode: summary = "服务器响应缺少有效业务码"
+        case .responseShape: summary = "服务器订单列表格式不符合预期"
+        case .decryption: summary = "服务器响应解密失败，请核验协议设置"
+        case .invalidRequest: summary = "请求参数无效"
+        case .timeout: summary = "网络请求超时"
+        case .tls: summary = "安全连接校验失败，未绕过证书校验"
+        case .http: summary = "服务器 HTTP 请求失败"
+        case .connectivity: summary = "网络连接失败，请检查网络"
+        case nil:
+            switch kind {
+            case .auth: summary = "登录状态失效，请重新登录"
+            case .ip: summary = "平台风控限制，已暂停请求"
+            case .api: summary = "接口响应异常，请核验平台状态"
+            case .network: summary = "网络连接失败，请检查网络"
+            case .cancelled: summary = "请求已取消"
+            }
+        }
+        var codes: [String] = []
+        if let endpoint {
+            let path = String(endpoint.split(separator: "?", maxSplits: 1).first ?? "")
+            let labels = ["/s/c/order/randomList": "randomList", "/s/c/clerk/get": "clerk/get",
+                          "/s/c/order/get": "order/get", "/s/c/order/confirm": "order/confirm",
+                          "/s/duopei-account/login": "login"]
+            codes.append(labels[path] ?? "API")
+        }
+        if let httpStatus { codes.append("HTTP \(httpStatus)") }
+        if let businessCode { codes.append("code \(businessCode)") }
+        if let networkCode { codes.append("NSURLError \(networkCode)") }
+        if let detail { codes.append(detail.rawValue) }
+        return codes.isEmpty ? summary : summary + " [" + codes.joined(separator: " · ") + "]"
+    }
+
+    public static func transport(_ error: Error) -> ApiError {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled {
+            return ApiError(.cancelled, "请求已取消")
+        }
+        let code = (error as? URLError)?.code
+        let detail: Detail
+        switch code {
+        case .timedOut: detail = .timeout
+        case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+             .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+             .clientCertificateRejected, .clientCertificateRequired: detail = .tls
+        default: detail = .connectivity
+        }
+        return ApiError(.network, "网络请求失败", detail: detail, networkCode: code?.rawValue)
+    }
+}
+
+/// Match the first nonempty message field, as the PC client does; an empty msg must not hide message.
+public func responseMessage(_ response: [String: Any]) -> String {
+    for key in ["msg", "message"] {
+        if let value = response[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return value }
+    }
+    return ""
+}
+
+public struct PollStatus: Equatable {
+    public let issue: String?
+    public let retryAt: Date?
+    public let lastSuccessAt: Date?
+    public init(issue: String? = nil, retryAt: Date? = nil, lastSuccessAt: Date? = nil) {
+        self.issue = issue
+        self.retryAt = retryAt
+        self.lastSuccessAt = lastSuccessAt
     }
 }
 

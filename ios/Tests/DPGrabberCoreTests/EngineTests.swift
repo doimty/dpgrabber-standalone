@@ -188,6 +188,100 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
     }
 
+    func testSuccessfulEmptyHallPublishesHealthyStatusWithoutConfirmation() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") { return (200, plainEnvelope(["code": 0, "list": NSNull()])) }
+            return try original(method, url, headers, body)
+        }
+        var statuses: [PollStatus] = []
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in engine.stop(); return false })
+        engine.onPollStatus = { statuses.append($0) }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(statuses.count, 1)
+        XCTAssertNil(statuses.first?.issue)
+        XCTAssertNotNil(statuses.first?.lastSuccessAt)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") })
+    }
+
+    func testBusinessRefusalPausesWithReasonInsteadOfEndlessRetry() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") { return (200, plainEnvelope(["code": 31, "msg": "没有店员权限 sensitive-account"])) }
+            return try original(method, url, headers, body)
+        }
+        var statuses: [PollStatus] = []
+        var logs: [String] = []
+        let engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, text in logs.append(text) }, sleeper: { _ in true })
+        engine.onPollStatus = { statuses.append($0) }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("randomList") }.count, 1)
+        XCTAssertTrue(statuses.last?.issue?.contains("code 31") ?? false)
+        XCTAssertTrue(statuses.last?.issue?.contains("randomList") ?? false)
+        XCTAssertNil(statuses.last?.retryAt)
+        XCTAssertTrue(logs.contains { $0.contains("监听已暂停") })
+        XCTAssertFalse(logs.contains { $0.contains("sensitive-account") })
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") })
+    }
+
+    func testNetworkBackoffIsVisibleAndSuccessfulPollClearsIssue() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        var polls = 0
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") {
+                polls += 1
+                if polls == 1 { throw URLError(.timedOut) }
+                return (200, plainEnvelope(["code": 0, "list": []]))
+            }
+            return try original(method, url, headers, body)
+        }
+        var statuses: [PollStatus] = []
+        var sleeps = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps >= 2 { engine.stop(); return false }
+            return true
+        })
+        engine.onPollStatus = { statuses.append($0) }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(polls, 2)
+        XCTAssertTrue(statuses.first?.issue?.contains("NSURLError -1001") ?? false)
+        XCTAssertNotNil(statuses.first?.retryAt)
+        XCTAssertNil(statuses.last?.issue)
+        XCTAssertNil(statuses.last?.retryAt)
+        XCTAssertNotNil(statuses.last?.lastSuccessAt)
+    }
+
+    func testMalformedListAndTLSFailurePauseWithoutRepeatedRequests() async throws {
+        for tls in [false, true] {
+            let transport = stub()
+            let original = transport.handler!
+            transport.handler = { method, url, headers, body in
+                if url.path.contains("randomList") {
+                    if tls { throw URLError(.serverCertificateUntrusted) }
+                    return (200, plainEnvelope(["code": 0, "list": "not-an-array"]))
+                }
+                return try original(method, url, headers, body)
+            }
+            var statuses: [PollStatus] = []
+            let engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in true })
+            engine.onPollStatus = { statuses.append($0) }
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+            XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("randomList") }.count, 1)
+            XCTAssertTrue(statuses.last?.issue?.contains(tls ? "tls" : "responseShape") ?? false)
+            XCTAssertNil(statuses.last?.retryAt)
+        }
+    }
+
     func testRunRestSleepIsCancelledWithoutNewPoll() async throws {
         let transport = stub()
         var cfg = DPGConfig(); cfg.runRestEnabled = true; cfg.runDurationSec = 1

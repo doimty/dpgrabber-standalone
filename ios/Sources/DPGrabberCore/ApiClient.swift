@@ -65,7 +65,7 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
             if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
                 throw ApiError(.cancelled, "请求已取消")
             }
-            throw ApiError(.network, "request failed: \(error.localizedDescription)")
+            throw ApiError.transport(error)
         }
     }
 }
@@ -109,7 +109,6 @@ public final class ApiClient: @unchecked Sendable {
         if !aesKeyHexAlt.isEmpty, !aesIVHexAlt.isEmpty {
             attempts.append((aesKeyHexAlt, aesIVHexAlt))
         }
-        var lastError: Error?
         for (keyHex, ivHex) in attempts {
             do {
                 let plain = try aesDecryptB64(payload, keyHex: keyHex, ivHex: ivHex)
@@ -118,11 +117,10 @@ public final class ApiClient: @unchecked Sendable {
                 }
                 return inner
             } catch {
-                lastError = error
                 continue
             }
         }
-        throw ApiError(.api, "response decryption failed: \(String(describing: lastError))")
+        throw ApiError(.api, "服务器响应解密失败", detail: .decryption)
     }
 
     /// Decode one HTTP response body per PROTOCOL.md §4.2, with one
@@ -134,7 +132,7 @@ public final class ApiClient: @unchecked Sendable {
     /// "IP" in msg -> IP control).
     public func decodeResponse(_ raw: Data) throws -> [String: Any] {
         guard let outer = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
-            throw ApiError(.api, "response is not valid JSON")
+            throw ApiError(.api, "服务器返回的内容不是有效 JSON", detail: .responseJSON)
         }
         let envelope = outer["response"]
         let encrypted = (outer["isEncrypted"] as? NSNumber)?.boolValue ?? false
@@ -153,14 +151,14 @@ public final class ApiClient: @unchecked Sendable {
         }
         let resolved = inner ?? outer
         guard let code = parseCode(resolved) else {
-            throw ApiError(.api, "response has no valid business code")
+            throw ApiError(.api, "服务器响应缺少有效业务码", detail: .responseCode)
         }
         if code == 401 || code == 403 {
-            throw ApiError(.auth, "login state invalid (code \(code))")
+            throw ApiError(.auth, "登录状态失效", businessCode: code)
         }
-        let msg = (resolved["msg"] as? String) ?? (resolved["message"] as? String) ?? ""
+        let msg = responseMessage(resolved)
         if code == 1, msg.contains("IP") {
-            throw ApiError(.ip, "IP control: \(msg)")
+            throw ApiError(.ip, "平台风控限制", businessCode: code)
         }
         return resolved
     }
@@ -191,10 +189,10 @@ public final class ApiClient: @unchecked Sendable {
         timeout: TimeInterval = 15
     ) async throws -> [String: Any] {
         guard path.hasPrefix("/s/"), timeout > 0 else {
-            throw ApiError(.api, "invalid request path or timeout")
+            throw ApiError(.api, "请求路径或超时设置无效", detail: .invalidRequest)
         }
         guard let url = URL(string: dpBaseURL + path) else {
-            throw ApiError(.api, "invalid request URL")
+            throw ApiError(.api, "请求URL无效", detail: .invalidRequest)
         }
         var headers: [String: String] = [
             "User-Agent": dpUserAgent,
@@ -235,21 +233,22 @@ public final class ApiClient: @unchecked Sendable {
                 method: method, url: url, headers: headers, body: data, timeout: max(0.1, timeout)
             )
         } catch let error as ApiError {
-            throw error
+            throw error.at(endpoint: url.path)
         } catch {
             if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
-                throw ApiError(.cancelled, "请求已取消")
+                throw ApiError(.cancelled, "请求已取消", endpoint: url.path)
             }
-            throw ApiError(.network, "request failed: \(error.localizedDescription)")
+            throw ApiError.transport(error).at(endpoint: url.path)
         }
-        guard !Task.isCancelled else { throw ApiError(.cancelled, "请求已取消") }
+        guard !Task.isCancelled else { throw ApiError(.cancelled, "请求已取消", endpoint: url.path) }
         if status == 401 || status == 403 {
-            throw ApiError(.auth, "login state invalid (HTTP \(status))")
+            throw ApiError(.auth, "登录状态失效", endpoint: url.path, httpStatus: status)
         }
         if status >= 400 {
-            throw ApiError(.network, "HTTP \(status)")
+            throw ApiError(.network, "HTTP请求失败", detail: .http, endpoint: url.path, httpStatus: status)
         }
-        return try decodeResponse(raw)
+        do { return try decodeResponse(raw) }
+        catch let error as ApiError { throw error.at(endpoint: url.path, httpStatus: status) }
     }
 
     // MARK: - Login flow (PROTOCOL.md §3.2)
@@ -283,7 +282,7 @@ public final class ApiClient: @unchecked Sendable {
             timeout: 15
         )
         guard parseCode(resp) == 0 else {
-            throw ApiError(.auth, "login rejected: \((resp["msg"] as? String) ?? (resp["message"] as? String) ?? "")")
+            throw ApiError(.auth, "登录被平台拒绝", endpoint: "/s/duopei-account/login", businessCode: parseCode(resp))
         }
         guard let data = resp["data"] as? [String: Any],
               let token = data["token"] as? String, !token.isEmpty else {
@@ -344,7 +343,7 @@ public final class ApiClient: @unchecked Sendable {
                 )
                 guard parseCode(balance) == 0 else { throw ApiError(.api, "候选店铺余额权限被拒绝") }
                 let clerkResponse = try await clerkGet(session: candidate)
-                guard let clerk = extractClerk(clerkResponse), clerk.shopId == nil || String(clerk.shopId!) == sid else {
+                guard let clerk = extractClerk(clerkResponse), clerk.shopId == nil || String(clerk.shopId ?? 0) == sid else {
                     throw ApiError(.api, "候选店铺无可用店员权限")
                 }
                 guard !Task.isCancelled else { throw ApiError(.cancelled, "登录已取消") }
@@ -361,9 +360,21 @@ public final class ApiClient: @unchecked Sendable {
         throw ApiError(.auth, "no usable shop session: \(lastError?.message ?? "all shops rejected")")
     }
 
-    private func requireSuccess(_ response: [String: Any]) throws -> [String: Any] {
+    private func requireSuccess(_ response: [String: Any], endpoint: String? = nil) throws -> [String: Any] {
         guard parseCode(response) == 0 else {
-            throw ApiError(.api, "业务操作被拒绝：\(response["msg"] as? String ?? response["message"] as? String ?? "未知业务错误")")
+            let text = responseMessage(response)
+            let detail: ApiError.Detail
+            let message: String
+            if ["权限", "非店员", "不是店员", "无店员"].contains(where: { text.contains($0) }) {
+                detail = .permission; message = "没有操作权限，请检查店铺店员授权"
+            } else if ["未上线", "未在线", "已下线", "不在线", "离线"].contains(where: { text.contains($0) }) {
+                detail = .shopOffline; message = "店铺未上线，请先上线"
+            } else if ["续费率", "达标", "资质", "资格", "上限", "额度"].contains(where: { text.contains($0) }) {
+                detail = .qualification; message = "平台接单条件未达标"
+            } else {
+                detail = .business; message = "平台拒绝业务操作"
+            }
+            throw ApiError(.api, message, detail: detail, endpoint: endpoint, businessCode: parseCode(response))
         }
         return response
     }
@@ -433,18 +444,28 @@ public final class ApiClient: @unchecked Sendable {
     }
 
     /// GET /s/c/order/randomList. Returns the order list (possibly empty).
-    /// 缺少合法数组是响应错误，不能伪造成没有订单。
+    /// code 0 的缺失/null列表兼容为空；非空但类型错误或业务拒绝仍抛错。
     public func randomList(pageSize: Int = 20, timeout: TimeInterval = 15) async throws -> [[String: Any]] {
         let resp = try await request(
             method: "GET",
             path: "/s/c/order/randomList?pageNo=1&pageSize=\(pageSize)",
             timeout: timeout
         )
-        _ = try requireSuccess(resp)
-        if let list = resp["list"] as? [[String: Any]] { return list }
-        if let data = resp["data"] as? [String: Any],
-           let list = data["list"] as? [[String: Any]] { return list }
-        throw ApiError(.api, "订单响应缺少合法 list 数组")
+        let endpoint = "/s/c/order/randomList"
+        _ = try requireSuccess(resp, endpoint: endpoint)
+        // The working PC client treats an absent/null list on code 0 as an empty hall.
+        // Do not turn explicit business refusals or malformed non-null payloads into success.
+        let nested = resp["data"] as? [String: Any]
+        let top = resp["list"]
+        if (top == nil || top is NSNull), let data = resp["data"], !(data is NSNull), nested == nil {
+            throw ApiError(.api, "订单列表容器格式错误", detail: .responseShape, endpoint: endpoint, businessCode: 0)
+        }
+        let candidate = (top == nil || top is NSNull) ? nested?["list"] : top
+        guard let candidate, !(candidate is NSNull) else { return [] }
+        guard let list = candidate as? [[String: Any]] else {
+            throw ApiError(.api, "订单列表格式错误", detail: .responseShape, endpoint: endpoint, businessCode: 0)
+        }
+        return list
     }
 
     /// GET /s/c/order/get?id=... (DPGrabber reconcile form, used to verify

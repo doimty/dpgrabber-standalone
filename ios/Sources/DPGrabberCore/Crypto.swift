@@ -8,6 +8,7 @@
 // Key length selects the variant: 16 bytes -> AES-128, 32 bytes -> AES-256.
 
 import Foundation
+import CoreFoundation
 
 public enum CryptoError: Error, Equatable {
     case badHexString
@@ -144,9 +145,8 @@ public func parseCode(_ object: Any?) -> Int? {
     let code = dict["code"]
     if code is NSNull { return nil }
     if let n = code as? NSNumber {
-        // JSONSerialization produces a boolean NSNumber (ObjC type "c")
-        // for true/false; reject those so a JSON bool is never read as 0/1.
-        if String(cString: n.objCType) == "c" { return nil }
+        // CoreFoundation identity distinguishes JSON bool from valid signed-char numeric values.
+        if CFGetTypeID(n) == CFBooleanGetTypeID() { return nil }
         let value = n.doubleValue
         guard value.isFinite, value.rounded() == value, value >= Double(Int.min), value < Double(Int.max) else { return nil }
         return n.intValue

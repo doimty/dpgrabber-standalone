@@ -23,6 +23,9 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var selectedItemIDs: Set<Int> = []
     @Published private(set) var todayCounts: [OrderOutcome: Int] = [:]
     @Published private(set) var statusText = "未开始"
+    @Published private(set) var listenIssue: String?
+    @Published private(set) var listenRetryAt: Date?
+    @Published private(set) var lastPollAt: Date?
     @Published var keepAliveText = "仅限前台运行；进入后台停止新增请求，未决订单保存为未知"
     @Published private(set) var foundCount = 0
     @Published private(set) var grabbedCount = 0
@@ -91,6 +94,9 @@ final class AppViewModel: ObservableObject {
         weeklyStats = WeeklyStatistics(raw: [:])
         itemOptions = []
         selectedItemIDs = []
+        listenIssue = nil
+        listenRetryAt = nil
+        lastPollAt = nil
     }
 
     private func credentialsChanged() {
@@ -204,7 +210,9 @@ final class AppViewModel: ObservableObject {
                 guard generation == id, !Task.isCancelled else { return }
                 invalidateSession()
                 statusText = "登录未完成"
-                lastError = "登录或权限校验失败，请检查账号和授权店铺"
+                let reason = (error as? ApiError)?.safeDiagnostic ?? "登录或权限校验未完成"
+                lastError = reason
+                logStore.append(.error, "登录失败：\(reason)")
             }
         }
     }
@@ -224,7 +232,9 @@ final class AppViewModel: ObservableObject {
             } catch {
                 guard generation == id, !Task.isCancelled else { return }
                 if (error as? ApiError)?.kind == .auth { invalidateSession() }
-                lastError = "平台操作未确认成功，界面未应用本次更改；请刷新核验"
+                let reason = (error as? ApiError)?.safeDiagnostic ?? "平台操作未完成"
+                lastError = reason + "。界面未应用本次更改，请刷新核验"
+                logStore.append(.warning, reason)
             }
         }
     }
@@ -325,6 +335,17 @@ final class AppViewModel: ObservableObject {
                 self.voice.speak(text)
             }
         }, history: history)
+        worker.onPollStatus = { [weak self] status in
+            Task { @MainActor in
+                guard let self, self.generation == id else { return }
+                self.listenIssue = status.issue
+                self.listenRetryAt = status.retryAt
+                if let time = status.lastSuccessAt { self.lastPollAt = time }
+                if status.issue != nil {
+                    self.statusText = status.retryAt == nil ? "监听已暂停" : "连接待恢复"
+                } else { self.statusText = "正在监听" }
+            }
+        }
         worker.onHistoryChange = { [weak self] in Task { @MainActor in self?.refreshHistory() } }
         worker.onPersistenceFailure = { [weak self] in
             Task { @MainActor in
@@ -343,9 +364,12 @@ final class AppViewModel: ObservableObject {
         }
         engine = worker
         if worker.start(phone: phone, password: password) {
+            listenIssue = nil
+            listenRetryAt = nil
+            lastPollAt = nil
             isRunning = true
             foundCount = 0
-            statusText = "监听中（仅限前台）"
+            statusText = "正在检查订单连接，请保持前台"
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
             startPollTimer()
         } else { engine = nil; lastError = "监听无法启动，请检查设置" }
@@ -380,6 +404,7 @@ final class AppViewModel: ObservableObject {
             await previous?.stopAndWait()
             guard generation == stopID else { endBackgroundCleanup(); return }
             engine = nil
+            listenRetryAt = nil
             if clearCredentials {
                 invalidateSession()
                 phone = ""
@@ -475,7 +500,9 @@ final class AppViewModel: ObservableObject {
                     self.stopPollTimer()
                     self.refreshHistory()
                     self.isLoggedIn = self.client?.session != nil && self.clientIdentity == self.identity()
-                    if self.statusText.hasPrefix("监听中") { self.statusText = "已停止" }
+                    self.listenRetryAt = nil
+                    if self.listenIssue != nil { self.statusText = "监听已暂停" }
+                    else if self.statusText.hasPrefix("监听中") || self.statusText.hasPrefix("正在检查订单") || self.statusText == "正在监听" { self.statusText = "已停止" }
                 }
             }
         }

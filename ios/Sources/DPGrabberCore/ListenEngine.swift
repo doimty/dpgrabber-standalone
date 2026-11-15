@@ -24,6 +24,7 @@ public final class ListenEngine: @unchecked Sendable {
     public var onGrabSuccess: (([String: Any]) -> Void)?
     public var onHistoryChange: (() -> Void)?
     public var onPersistenceFailure: (() -> Void)?
+    public var onPollStatus: ((PollStatus) -> Void)?
     public var isRunning: Bool { stateLock.withLock { running } }
     private var stopped: Bool { !isRunning || Task.isCancelled }
     private var config: DPGConfig { stateLock.withLock { currentConfig } }
@@ -139,7 +140,9 @@ public final class ListenEngine: @unchecked Sendable {
             await pollLoop()
         } catch {
             guard !stopped, (error as? ApiError)?.kind != .cancelled else { return }
-            log(.error, "启动失败，请检查登录状态与店铺权限")
+            let issue = (error as? ApiError)?.safeDiagnostic ?? "启动校验未完成，请重新登录并检查店铺状态"
+            onPollStatus?(PollStatus(issue: issue))
+            log(.error, "无法开始监听：\(issue)")
         }
     }
 
@@ -158,7 +161,9 @@ public final class ListenEngine: @unchecked Sendable {
             do {
                 let orders = try await client.randomList(pageSize: 20, timeout: cfg.requestTimeoutSec)
                 guard !stopped else { return }
+                if failures > 0 { log(.info, "订单连接已恢复") }
                 failures = 0
+                onPollStatus?(PollStatus(lastSuccessAt: Date(timeIntervalSince1970: now())))
                 seen = seen.filter { now() - $0.value < config.seenTTLSec }
                 for order in orders {
                     guard !stopped else { return }
@@ -180,22 +185,50 @@ public final class ListenEngine: @unchecked Sendable {
                 }
             } catch let error as ApiError {
                 guard !stopped else { return }
+                let issue = error.safeDiagnostic
                 switch error.kind {
                 case .cancelled: return
                 case .auth:
-                    log(.warning, "登录态失效，重新校验店员身份")
-                    do { _ = try await refreshSession() } catch { return }
+                    onPollStatus?(PollStatus(issue: issue))
+                    log(.warning, "订单连接需重新认证：\(issue)")
+                    do { _ = try await refreshSession() }
+                    catch {
+                        guard !stopped else { return }
+                        client.session = nil
+                        let reason = (error as? ApiError)?.safeDiagnostic ?? "重新登录未完成，请手动重试"
+                        onPollStatus?(PollStatus(issue: reason))
+                        log(.error, "监听已暂停：\(reason)")
+                        return
+                    }
                 case .ip:
-                    log(.warning, "平台风控，暂停 60 秒")
+                    onPollStatus?(PollStatus(issue: issue, retryAt: Date(timeIntervalSince1970: now() + 60)))
+                    log(.warning, "\(issue)，60 秒后重试")
                     guard await sleep(60) else { return }
-                default:
+                    continue
+                case .api:
+                    // Permission, business and protocol errors do not heal with an endless tight poll loop.
+                    onPollStatus?(PollStatus(issue: issue))
+                    log(.error, "监听已暂停：\(issue)。处理后可重新开始")
+                    return
+                case .network:
+                    if error.detail == .tls || error.httpStatus.map({ (400..<500).contains($0) && $0 != 408 && $0 != 429 }) == true {
+                        onPollStatus?(PollStatus(issue: issue))
+                        log(.error, "监听已暂停：\(issue)")
+                        return
+                    }
                     failures += 1
-                    log(.warning, "监听请求失败，稍后重试")
-                    guard await sleep(min(60, max(1, interval) * pow(2, Double(min(failures, 6))))) else { return }
+                    let delay = error.httpStatus == 429 ? 60 : min(60, max(1, interval) * pow(2, Double(min(failures, 6))))
+                    onPollStatus?(PollStatus(issue: issue, retryAt: Date(timeIntervalSince1970: now() + delay)))
+                    log(.warning, "\(issue)，第 \(failures) 次失败，\(Int(delay)) 秒后重试")
+                    guard await sleep(delay) else { return }
+                    continue
                 }
             } catch {
                 guard !stopped else { return }
-                log(.warning, "监听请求失败")
+                let issue = "监听遇到未分类异常，已暂停；请重新开始 [randomList · unexpected]"
+                onPollStatus?(PollStatus(issue: issue))
+                log(.error, issue)
+                return
             }
             guard await sleep(interval) else { return }
         }
