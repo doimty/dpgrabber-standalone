@@ -327,6 +327,54 @@ ITEM_FIELD_NAMES = ("itemId", "itemSwitchId", "itemCategoryId", "typeId",
                     "itemType", "serviceItemId", "categoryId")
 
 
+#: 订单里"接单类型名称"的候选字段（竞品 order_record 用 item_names）。
+ITEM_NAME_FIELDS = ("itemNames", "item_names", "itemName", "item_name",
+                    "items", "serviceNames", "serviceName", "itemCategoryName")
+
+#: 类型 id → 名称关键词。平台用名称下单，这里做同义词匹配。
+ITEM_NAME_SYNONYMS = {
+    465: ("连麦", "语音通话", "语音"),
+    2666: ("视频",),
+    2667: ("游戏",),
+}
+
+
+def order_item_names(order) -> list[str]:
+    """收集订单里出现的类型名称（可能是数组或单个字符串）。"""
+    names = []
+    if not isinstance(order, dict):
+        return names
+    for key in ITEM_NAME_FIELDS:
+        value = order.get(key)
+        if not value:
+            continue
+        if isinstance(value, (list, tuple)):
+            names.extend(str(v) for v in value if v)
+        elif isinstance(value, dict):
+            names.extend(str(v) for k2, v in value.items() if k2 in ("name", "itemName"))
+        else:
+            names.append(str(value))
+    return [n.strip() for n in names if n and n.strip()]
+
+
+def order_matches_items(order, enabled_items) -> bool | None:
+    """True/False 明确判定；None 表示订单没有任何类型信息（无法判断）。"""
+    enabled = set(int(i) for i in (enabled_items or []) if str(i).strip())
+    if not enabled:
+        return True
+    item_id = order_item_id(order)
+    if item_id is not None:
+        return item_id in enabled
+    names = " ".join(order_item_names(order))
+    if not names:
+        return None
+    for wanted in enabled:
+        for word in ITEM_NAME_SYNONYMS.get(wanted, ()):
+            if word in names:
+                return True
+    return False
+
+
 def order_item_id(order) -> int | None:
     """取订单的类型 id；没有这类字段时返回 None。"""
     if not isinstance(order, dict):
@@ -371,9 +419,13 @@ class OrderFilter:
         if self.max_amount > 0 and amount > self.max_amount:
             return False, "金额 %.2f 元高于最高金额" % amount
         if self.enabled_items:
-            item_id = order_item_id(order)
-            if item_id is not None and item_id not in self.enabled_items:
-                return False, "该接单类型已关闭（类型 id %d）" % item_id
+            matched = order_matches_items(order, self.enabled_items)
+            if matched is False:
+                names = "、".join(order_item_names(order))
+                if not names:
+                    item_id = order_item_id(order)
+                    names = ("类型 id %d" % item_id) if item_id is not None else "未知类型"
+                return False, "该接单类型已关闭（%s）" % names
         memo = str(order.get("userMemo") or "")
         if self.memo_mode == 1 and memo:
             return False, "订单有备注，不符合要求"
@@ -673,6 +725,13 @@ class Engine:
             if orders and not getattr(self, "_shape_logged", False):
                 self._shape_logged = True
                 self.log("debug", "订单字段：%s" % ", ".join(sorted(orders[0].keys())))
+                related = {k: v for k, v in orders[0].items()
+                           if any(word in k.lower() for word in ("item", "service", "type", "category"))}
+                if related:
+                    self.log("debug", "订单类型相关字段：%s" % related)
+                names = order_item_names(orders[0])
+                if names:
+                    self.log("info", "订单类型名称：%s" % "、".join(names))
             if not orders:
                 if not self._sleep(self._poll_delay()):
                     return
