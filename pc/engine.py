@@ -329,13 +329,15 @@ ITEM_FIELD_NAMES = ("itemId", "itemSwitchId", "itemCategoryId", "typeId",
 
 #: 订单里"接单类型名称"的候选字段（竞品 order_record 用 item_names）。
 ITEM_NAME_FIELDS = ("itemNames", "item_names", "itemName", "item_name",
-                    "items", "serviceNames", "serviceName", "itemCategoryName")
+                    "items", "serviceNames", "serviceName", "itemCategoryName",
+                    # 实测结构：item = {names: [...], ids: [...]}，itemCategory = {name: ...}
+                    "item", "itemCategory")
 
 #: 类型 id → 名称关键词。平台用名称下单，这里做同义词匹配。
 ITEM_NAME_SYNONYMS = {
-    465: ("连麦", "语音通话", "语音"),
+    465: ("连麦", "语音通话", "语音", "文字语音条", "语音条"),
     2666: ("视频",),
-    2667: ("游戏",),
+    2667: ("游戏", "陪玩"),
 }
 
 
@@ -351,7 +353,12 @@ def order_item_names(order) -> list[str]:
         if isinstance(value, (list, tuple)):
             names.extend(str(v) for v in value if v)
         elif isinstance(value, dict):
-            names.extend(str(v) for k2, v in value.items() if k2 in ("name", "itemName"))
+            for key2 in ("names", "name", "itemName"):
+                inner = value.get(key2)
+                if isinstance(inner, (list, tuple)):
+                    names.extend(str(v) for v in inner if v)
+                elif inner:
+                    names.append(str(inner))
         else:
             names.append(str(value))
     return [n.strip() for n in names if n and n.strip()]
@@ -758,8 +765,15 @@ class Engine:
                 continue
             self._mark_seen(order_id)
             order_filter = build_filter()
+            if order_filter.enabled_items and not getattr(self, "_item_decision_logged", False):
+                self._item_decision_logged = True
+                names = order_item_names(order)
+                decision = order_matches_items(order, order_filter.enabled_items)
+                self.log("info", "订单类型判定：%s → %s" % (
+                    "、".join(names) or "无类型信息",
+                    {True: "允许", False: "已关闭", None: "无法判定，放行"}[decision]))
             if (order_filter.enabled_items
-                    and order_item_id(order) is None
+                    and order_matches_items(order, order_filter.enabled_items) is None
                     and not getattr(self, "_no_item_field_noted", False)):
                 self._no_item_field_noted = True
                 self.log("warning", "订单不带类型字段，接单类型联动暂不生效（其他过滤正常）")
