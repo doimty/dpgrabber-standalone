@@ -1407,6 +1407,14 @@ class App(QMainWindow):
 
     def _on_clerk_state(self, state):
         status = int(state.get("status") or 0)
+        try:
+            names = {str(i.get("id")): str(i.get("name") or "")
+                     for i in (state.get("items") or []) if i.get("id") is not None}
+            if names and names != (self.cfg.get("item_switch_names") or {}):
+                self.cfg["item_switch_names"] = names
+                self._save_cfg()
+        except Exception:
+            pass
         self._set_online_text(status == 1)
         items = state.get("items")
         if items is not None:
@@ -2325,6 +2333,7 @@ class App(QMainWindow):
         layout.setSpacing(1)
         line1 = QLabel("%s   ¥%.2f   订单号 %s   [%s]" % (grabbed, amount, no, label))
         line1.setObjectName("historyLine1")
+        line1.setToolTip("订单号 %s" % no)
         layout.addWidget(line1)
         line2 = QLabel("微信 %s   ·   备注：%s" % (wechat, memo if memo else "无备注"))
         line2.setObjectName("historyLine2")
@@ -2339,7 +2348,7 @@ class App(QMainWindow):
             layout.addWidget(line3)
         # Outcome colour chip on line 1 via a coloured status word.
         line1.setText(
-            "%s   ¥%.2f   订单号 %s   " % (grabbed, amount, no)
+            "%s   ¥%.2f   " % (grabbed, amount)
             + "<span style='color:%s'>[%s]</span>" % (color, label)
         )
         line1.setTextFormat(Qt.RichText)
@@ -3367,19 +3376,34 @@ class AdvancedDialog(QDialog):
         grid.addWidget(scale_hint, scale_row, 2)
         root.addWidget(form)
 
-        map_title = QLabel("接单类型匹配词（每行：类型ID=关键词，逗号分隔）")
+        map_title = QLabel("接单类型匹配词")
         map_title.setObjectName("fieldLabel")
         root.addWidget(map_title)
-        map_hint = QLabel("订单只带条目名称，只能按词匹配；认不出的订单会照常抢，不会误拦")
+        map_hint = QLabel("订单只带条目名称，按词匹配；留空或认不出的类型照常抢，不会误拦")
         map_hint.setObjectName("hint")
         root.addWidget(map_hint)
-        self.item_map_edit = QPlainTextEdit()
-        self.item_map_edit.setFixedHeight(76)
-        lines = []
-        for key, words in (self.cfg.get("item_name_map") or {}).items():
-            lines.append("%s=%s" % (key, ",".join(words)))
-        self.item_map_edit.setPlainText("\n".join(lines))
-        root.addWidget(self.item_map_edit)
+
+        # 每行一个平台接单类型：名字来自 getItemSwitchList（有缓存，离线也能显示）
+        self.item_map_edits = {}
+        names = dict(self.cfg.get("item_switch_names") or {})
+        for fallback_id, fallback_name in ((465, "连麦"), (2666, "视频"), (2667, "游戏")):
+            names.setdefault(str(fallback_id), fallback_name)
+        current_scale_map = self.cfg.get("item_name_map") or {}
+        for key in current_scale_map:
+            names.setdefault(str(key), "类型 %s" % key)
+        grid_map = QGridLayout()
+        grid_map.setHorizontalSpacing(10)
+        grid_map.setVerticalSpacing(6)
+        for row, key in enumerate(sorted(names, key=lambda k: int(k) if k.isdigit() else 0)):
+            label = QLabel("%s（%s）" % (names[key] or key, key))
+            label.setObjectName("fieldLabel")
+            label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            grid_map.addWidget(label, row, 0)
+            edit = QLineEdit(",".join(current_scale_map.get(str(key)) or []))
+            edit.setPlaceholderText("匹配词，逗号分隔（可留空）")
+            grid_map.addWidget(edit, row, 1)
+            self.item_map_edits[str(key)] = edit
+        root.addLayout(grid_map)
 
         lists_row = QHBoxLayout()
         bl_box = QVBoxLayout()
@@ -3541,17 +3565,11 @@ class AdvancedDialog(QDialog):
             self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
             self.cfg["ui_scale"] = self.ui_scale_box.currentData()
             name_map = {}
-            for line in self.item_map_edit.toPlainText().splitlines():
-                line = line.strip()
-                if not line or "=" not in line:
-                    continue
-                key, _, words = line.partition("=")
-                key = key.strip()
-                if not key.isdigit():
-                    continue
-                items = [w.strip() for w in words.replace("，", ",").split(",") if w.strip()]
-                if items:
-                    name_map[key] = items
+            for key, edit in getattr(self, "item_map_edits", {}).items():
+                words = [w.strip() for w in edit.text().replace("，", ",").split(",")]
+                words = [w for w in words if w]
+                if words:
+                    name_map[key] = words
             self.cfg["item_name_map"] = name_map
             self.cfg["notify_enabled"] = self.notify_check.isChecked()
             self.cfg["rotate_enabled"] = self.rotate_check.isChecked()
