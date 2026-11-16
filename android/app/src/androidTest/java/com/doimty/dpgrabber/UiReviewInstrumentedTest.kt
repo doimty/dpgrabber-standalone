@@ -322,8 +322,8 @@ class UiReviewInstrumentedTest {
         device.findObject(By.res(PACKAGE, "busyCooldownInput")).apply { click(); text = "45" }
         device.pressBack()
         val before = store.loadConfig().autoStopAfterGrab
-        // 开关在长表单底部；先完整滚到底，避免大字号时点击到被遮挡的半个控件。
-        scrollBottom()
+        // 分组卡片后开关位于“运行与自动化”组，推送卡片在其下方；滚到最底会越过开关，必须按 id 精确定位。
+        scrollTo("autoStopSwitch")
         val autoStop = device.wait(Until.findObject(By.res(PACKAGE, "autoStopSwitch")), WAIT_MS)
         assertNotNull("应能到达自动停止开关", autoStop)
         autoStop!!.click()
