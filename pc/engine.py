@@ -374,7 +374,12 @@ def item_keywords(item_id: int, name_map=None) -> tuple:
 
 
 def order_matches_items(order, enabled_items, name_map=None) -> bool | None:
-    """True/False 明确判定；None 表示订单没有任何类型信息（无法判断）。"""
+    """True/False 明确判定；None 表示认不出类型（放行，别丢单）。
+
+    平台数据（2026-11-16 实测）：订单 item.ids 是 SKU id（59245…），
+    与接单类型的 465/2666/2667 没有 id 关联，只能按条目名称匹配。
+    所以只有"命中了某个已关闭类型的关键词"才拦，认不出的一律放行。
+    """
     enabled = set(int(i) for i in (enabled_items or []) if str(i).strip())
     if not enabled:
         return True
@@ -384,11 +389,25 @@ def order_matches_items(order, enabled_items, name_map=None) -> bool | None:
     names = " ".join(order_item_names(order))
     if not names:
         return None
-    for wanted in enabled:
-        for word in item_keywords(wanted, name_map):
-            if word in names:
-                return True
-    return False
+    candidates = set(enabled)
+    try:
+        candidates.update(int(k) for k in (name_map or {}))
+    except (TypeError, ValueError):
+        pass
+    candidates.update(ITEM_NAME_SYNONYMS)
+    hit_enabled = hit_disabled = False
+    for switch_id in candidates:
+        words = item_keywords(switch_id, name_map)
+        if words and any(word in names for word in words):
+            if switch_id in enabled:
+                hit_enabled = True
+            else:
+                hit_disabled = True
+    if hit_enabled:
+        return True
+    if hit_disabled:
+        return False
+    return None
 
 
 def order_item_id(order) -> int | None:
