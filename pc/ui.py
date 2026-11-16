@@ -433,6 +433,19 @@ QPushButton#ghost {
 QPushButton#ghost:hover { background: %(SELECTION_BG)s; border-color: %(BLUE)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
 QCheckBox { color: %(TEXT_DARK)s; font-size: 13px; spacing: 6px; }
+QFrame#switchRow {
+    background: transparent; border: 1px solid transparent; border-radius: 10px;
+}
+QFrame#switchRow:hover { background: %(ENTRY_BG)s; }
+QFrame#switchRow[selected="true"] {
+    border: 1px solid %(BLUE)s; background: %(ENTRY_BG)s;
+}
+QLabel#switchName { color: %(TEXT_DARK)s; font-size: 13px; }
+QLabel#switchDetail { color: %(HINT)s; font-size: 12px; }
+QLabel#switchBadge {
+    color: %(BLUE)s; font-size: 11px; border: 1px solid %(BLUE)s;
+    border-radius: 7px; padding: 1px 7px;
+}
 QRadioButton { color: %(TEXT_DARK)s; }
 QRadioButton::indicator {
     width: 16px; height: 16px; border-radius: 8px;
@@ -2932,20 +2945,10 @@ class AccountSwitchDialog(QDialog):
             warn.setWordWrap(True)
             outer.addWidget(warn)
 
-        self._group = QButtonGroup(self)
-        self._group.setExclusive(True)
-        for index, meta in enumerate(accounts):
+        self._rows = {}
+        for meta in accounts:
             phone = str(meta.get("phone") or "")
-            row = QRadioButton(accounts_mod.label_for(meta))
-            row.setObjectName("sidebarCheck")
-            row.setProperty("phone", phone)
-            if phone == current_phone:
-                row.setChecked(True)
-                row.setText(row.text() + "（当前）")
-            self._group.addButton(row, index)
-            row.toggled.connect(
-                lambda checked, phone=phone: self._on_radio(phone, checked))
-            outer.addWidget(row)
+            outer.addWidget(self._build_row(meta, phone == current_phone))
         add_row = QPushButton("＋ 新增账号…")
         add_row.setObjectName("secondary")
         add_row.clicked.connect(self._on_add)
@@ -2968,10 +2971,53 @@ class AccountSwitchDialog(QDialog):
         # 每个单选按钮自己连了 toggled，这里不需要 group 信号
         self._add_requested = False
 
-    def _on_radio(self, phone: str, checked: bool):
-        if not checked:
-            return
+    def _build_row(self, meta: dict, is_current: bool) -> QFrame:
+        phone = str(meta.get("phone") or "")
+        row = QFrame()
+        row.setObjectName("switchRow")
+        row.setCursor(Qt.PointingHandCursor)
+        line = QHBoxLayout(row)
+        line.setContentsMargins(12, 8, 12, 8)
+        line.setSpacing(8)
+
+        texts = QVBoxLayout()
+        texts.setSpacing(1)
+        clerk = str(meta.get("clerk_name") or "").strip()
+        name = QLabel(clerk or cfgmod.mask_phone(phone))
+        name.setObjectName("switchName")
+        parts = []
+        if clerk:
+            parts.append(cfgmod.mask_phone(phone))     # 有名字才重复手机号，否则一行就够
+        shop = str(meta.get("shop") or "0")
+        if shop not in ("", "0"):
+            parts.append("店 %s" % shop)
+        if not clerk:
+            parts.append("尚未登录过")
+        detail = QLabel(" · ".join(parts))
+        detail.setObjectName("switchDetail")
+        # 文字不接收鼠标事件，点哪儿都算点到整行
+        for label in (name, detail):
+            label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        texts.addWidget(name)
+        texts.addWidget(detail)
+        line.addLayout(texts, 1)
+
+        if is_current:
+            badge = QLabel("当前")
+            badge.setObjectName("switchBadge")
+            line.addWidget(badge)
+        row.setProperty("selected", False)
+        row.mousePressEvent = lambda event, p=phone: self._select(p)
+        self._rows[phone] = row
+        return row
+
+    def _select(self, phone: str):
+        """整行点击选中；选中行描边，其余恢复。"""
         self._chosen = str(phone or "")
+        for key, widget in self._rows.items():
+            widget.setProperty("selected", key == self._chosen)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
         self.ok_button.setEnabled(bool(self._chosen) and self._chosen != self._current)
 
     def _on_add(self):
