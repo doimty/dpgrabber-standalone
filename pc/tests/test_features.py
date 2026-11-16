@@ -995,5 +995,35 @@ class TableOffsetTests(unittest.TestCase):
         self.assertGreaterEqual(self._wait(cfg, 50), 0.0)
 
 
+class ItemTypeGateTests(unittest.TestCase):
+    """关闭的接单类型不抢对应随机单（订单带类型字段时生效）。"""
+
+    def _filter(self, enabled):
+        from engine import OrderFilter
+        return OrderFilter(10, 0, 0, [], [], enabled_items=enabled)
+
+    def test_enabled_type_passes(self):
+        ok, why = self._filter([465]).check({"id": "1", "totalAmount": 1000, "itemId": 465})
+        self.assertTrue(ok, why)
+
+    def test_disabled_type_is_rejected(self):
+        ok, why = self._filter([465]).check({"id": "2", "totalAmount": 1000, "itemId": 2666})
+        self.assertFalse(ok)
+        self.assertIn("2666", why)
+
+    def test_order_without_type_field_passes(self):
+        ok, _ = self._filter([465]).check({"id": "3", "totalAmount": 1000})
+        self.assertTrue(ok)
+
+    def test_empty_list_does_not_restrict(self):
+        ok, _ = self._filter([]).check({"id": "4", "totalAmount": 1000, "itemId": 2666})
+        self.assertTrue(ok)
+
+    def test_string_type_field_is_parsed(self):
+        from engine import order_item_id
+        self.assertEqual(order_item_id({"itemType": "2667"}), 2667)
+        self.assertIsNone(order_item_id({}))
+
+
 if __name__ == "__main__":
     unittest.main()
