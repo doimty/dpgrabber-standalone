@@ -1311,6 +1311,10 @@ class App(QMainWindow):
                 widget.setParent(None)   # detach now; deleteLater is deferred
                 widget.deleteLater()
         self.item_checks = {}
+        try:
+            self.cfg["item_switch_ids"] = [int(i) for i in (enabled or [])]
+        except (TypeError, ValueError):
+            pass
         for item in items:
             box = QCheckBox(str(item.get("name") or item.get("id")))
             box.setObjectName("sidebarCheck")
@@ -1436,6 +1440,12 @@ class App(QMainWindow):
         if session is None:
             return
         current = [int(i) for i, box in (getattr(self, "item_checks", {}) or {}).items() if box.isChecked()]
+        # 本地也记一份：关闭的类型不抢对应随机单（订单带类型字段时生效）
+        self.cfg["item_switch_ids"] = current
+        try:
+            self._save_cfg()
+        except Exception:
+            pass
 
         def worker():
             try:
@@ -1670,6 +1680,10 @@ class App(QMainWindow):
 
     def _build_item_switch_section(self, sidebar_layout):
         card, column = self._sidebar_card(sidebar_layout, "接单类型")
+        hint = QLabel("关闭的类型同时不抢该类随机单")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        column.addWidget(hint)
         self.item_switch_box = QVBoxLayout()
         self.item_switch_box.setSpacing(4)
         self.item_checks = {}
