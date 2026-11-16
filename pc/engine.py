@@ -394,11 +394,15 @@ class OrderFilter:
     ``(passed, reason)``; reason is a short human-readable note."""
 
     def __init__(self, min_amount: float, max_amount: float, memo_mode: int,
-                 memo_keywords, blacklist, enabled_items=None):
+                 memo_keywords, blacklist, enabled_items=None,
+                 memo_include_keywords=None):
         self.min_amount = float(min_amount)
         self.max_amount = float(max_amount)
         self.memo_mode = int(memo_mode)
+        # memo_keywords 是排除词（老名字）；白名单单独一份
         self.memo_keywords = [str(k).strip() for k in (memo_keywords or []) if str(k).strip()]
+        self.memo_include_keywords = [str(k).strip()
+                                      for k in (memo_include_keywords or []) if str(k).strip()]
         self.blacklist = set(str(b).strip() for b in (blacklist or []) if str(b).strip())
         # 兼容老配置：以前关键词只要非空就生效，没有"模式"这一说。
         # 现在 mode 0 是"不检测"，但老配置里的关键词不能因此突然失效。
@@ -438,9 +442,10 @@ class OrderFilter:
             for keyword in self.memo_keywords:
                 if keyword.lower() in lowered:
                     return False, "订单备注命中关键词[%s]" % keyword
-        if self.memo_mode == 3 and self.memo_keywords:
+        if self.memo_mode == 3 and self.memo_include_keywords:
             lowered = memo.lower()
-            if not any(keyword.lower() in lowered for keyword in self.memo_keywords):
+            if not any(keyword.lower() in lowered
+                       for keyword in self.memo_include_keywords):
                 return False, "订单备注不含指定关键词"
         return True, ""
 
@@ -676,6 +681,7 @@ class Engine:
                 self.cfg.get("memo_keywords", []),
                 self.cfg.get("blacklist", []),
                 self.cfg.get("item_switch_ids") or [],
+                self.cfg.get("memo_include_keywords") or [],
             )
         # Risk run/rest rhythm (autoduopei risk_run/rest): when enabled,
         # poll for one random run period, rest, then resume. The rest
