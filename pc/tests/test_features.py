@@ -1025,5 +1025,48 @@ class ItemTypeGateTests(unittest.TestCase):
         self.assertIsNone(order_item_id({}))
 
 
+class MemoModeTests(unittest.TestCase):
+    """备注检测四档：0 不检测 / 1 有备注不抢 / 2 排除关键词 / 3 只抢关键词。"""
+
+    def _check(self, mode, keywords, memo):
+        from engine import OrderFilter
+        return OrderFilter(10, 0, mode, keywords, []).check(
+            {"id": "1", "totalAmount": 1000, "userMemo": memo})
+
+    def test_mode0_ignores_memo_when_no_keywords(self):
+        ok, _ = self._check(0, [], "加急")
+        self.assertTrue(ok)
+
+    def test_mode0_with_keywords_keeps_old_behaviour(self):
+        # 老配置：没有模式这个概念时，关键词非空就一直生效
+        ok, why = self._check(0, ["加急"], "加急")
+        self.assertFalse(ok)
+        self.assertIn("关键词", why)
+
+    def test_mode1_drops_any_memo(self):
+        ok, why = self._check(1, [], "随便")
+        self.assertFalse(ok)
+        self.assertIn("备注", why)
+
+    def test_mode2_rejects_on_keyword_hit(self):
+        self.assertFalse(self._check(2, ["加急"], "加急")[0])
+        self.assertTrue(self._check(2, ["加急"], "聊天")[0])
+
+    def test_mode3_requires_keyword(self):
+        self.assertTrue(self._check(3, ["会讲故事"], "会讲故事")[0])
+        ok, why = self._check(3, ["会讲故事"], "随便")
+        self.assertFalse(ok)
+        self.assertIn("不含", why)
+
+    def test_mode3_without_keywords_does_not_block_all(self):
+        self.assertTrue(self._check(3, [], "随便")[0])
+
+    def test_config_accepts_modes_0_to_3(self):
+        import config as cfgmod
+        for mode in (0, 1, 2, 3):
+            cfg = cfgmod.validate(dict(cfgmod.DEFAULT_CONFIG, memo_mode=mode))
+            self.assertEqual(cfg["memo_mode"], mode)
+
+
 if __name__ == "__main__":
     unittest.main()
