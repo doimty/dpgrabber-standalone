@@ -321,17 +321,39 @@ _OUTCOME_DEFAULT_REASON = {
 }
 
 
+#: 订单里可能表示"接单类型"的字段名。平台文档没写，先按候选匹配，
+#: 实际字段名用一次 debug 日志确认（见 _poll_loop 的订单字段输出）。
+ITEM_FIELD_NAMES = ("itemId", "itemSwitchId", "itemCategoryId", "typeId",
+                    "itemType", "serviceItemId", "categoryId")
+
+
+def order_item_id(order) -> int | None:
+    """取订单的类型 id；没有这类字段时返回 None。"""
+    if not isinstance(order, dict):
+        return None
+    for key in ITEM_FIELD_NAMES:
+        if key not in order:
+            continue
+        try:
+            return int(order.get(key))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 class OrderFilter:
     """The section 7.1 filter chain. ``check(order)`` returns
     ``(passed, reason)``; reason is a short human-readable note."""
 
     def __init__(self, min_amount: float, max_amount: float, memo_mode: int,
-                 memo_keywords, blacklist):
+                 memo_keywords, blacklist, enabled_items=None):
         self.min_amount = float(min_amount)
         self.max_amount = float(max_amount)
         self.memo_mode = int(memo_mode)
         self.memo_keywords = [str(k).strip() for k in (memo_keywords or []) if str(k).strip()]
         self.blacklist = set(str(b).strip() for b in (blacklist or []) if str(b).strip())
+        # 接单类型联动：空列表 = 不限制
+        self.enabled_items = set(int(i) for i in (enabled_items or []) if str(i).strip())
 
     def check(self, order: dict):
         if not isinstance(order, dict):
@@ -348,6 +370,10 @@ class OrderFilter:
             return False, "金额 %.2f 元低于最低金额" % amount
         if self.max_amount > 0 and amount > self.max_amount:
             return False, "金额 %.2f 元高于最高金额" % amount
+        if self.enabled_items:
+            item_id = order_item_id(order)
+            if item_id is not None and item_id not in self.enabled_items:
+                return False, "该接单类型已关闭（类型 id %d）" % item_id
         memo = str(order.get("userMemo") or "")
         if self.memo_mode == 1 and memo:
             return False, "订单有备注，不符合要求"
@@ -589,6 +615,7 @@ class Engine:
                 self.cfg.get("memo_mode", 0),
                 self.cfg.get("memo_keywords", []),
                 self.cfg.get("blacklist", []),
+                self.cfg.get("item_switch_ids") or [],
             )
         # Risk run/rest rhythm (autoduopei risk_run/rest): when enabled,
         # poll for one random run period, rest, then resume. The rest
@@ -643,6 +670,9 @@ class Engine:
                 self.log("info", "网络恢复，继续监听（此前连续失败 %d 次）"
                          % self._consecutive_failures)
             self._consecutive_failures = 0
+            if orders and not getattr(self, "_shape_logged", False):
+                self._shape_logged = True
+                self.log("debug", "订单字段：%s" % ", ".join(sorted(orders[0].keys())))
             if not orders:
                 if not self._sleep(self._poll_delay()):
                     return
@@ -655,6 +685,11 @@ class Engine:
                 continue
             self._mark_seen(order_id)
             order_filter = build_filter()
+            if (order_filter.enabled_items
+                    and order_item_id(order) is None
+                    and not getattr(self, "_no_item_field_noted", False)):
+                self._no_item_field_noted = True
+                self.log("warning", "订单不带类型字段，接单类型联动暂不生效（其他过滤正常）")
             amount = amount_yuan_from_cents(order.get("totalAmount"))
             self.log(
                 "info",
