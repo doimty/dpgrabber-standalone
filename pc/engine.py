@@ -400,6 +400,10 @@ class OrderFilter:
         self.memo_mode = int(memo_mode)
         self.memo_keywords = [str(k).strip() for k in (memo_keywords or []) if str(k).strip()]
         self.blacklist = set(str(b).strip() for b in (blacklist or []) if str(b).strip())
+        # 兼容老配置：以前关键词只要非空就生效，没有"模式"这一说。
+        # 现在 mode 0 是"不检测"，但老配置里的关键词不能因此突然失效。
+        if self.memo_mode == 0 and self.memo_keywords:
+            self.memo_mode = 2
         # 接单类型联动：空列表 = 不限制
         self.enabled_items = set(int(i) for i in (enabled_items or []) if str(i).strip())
 
@@ -429,11 +433,15 @@ class OrderFilter:
         memo = str(order.get("userMemo") or "")
         if self.memo_mode == 1 and memo:
             return False, "订单有备注，不符合要求"
-        if memo and self.memo_keywords:
+        if memo and self.memo_keywords and self.memo_mode == 2:
             lowered = memo.lower()
             for keyword in self.memo_keywords:
                 if keyword.lower() in lowered:
                     return False, "订单备注命中关键词[%s]" % keyword
+        if self.memo_mode == 3 and self.memo_keywords:
+            lowered = memo.lower()
+            if not any(keyword.lower() in lowered for keyword in self.memo_keywords):
+                return False, "订单备注不含指定关键词"
         return True, ""
 
 
