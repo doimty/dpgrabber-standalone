@@ -154,7 +154,7 @@ for table in iptables ip6tables; do
   "${ADB[@]}" shell "$table -w 5 -S OUTPUT" > "$REPORT/$table-rules.txt"
   "${ADB[@]}" shell "$table -w 5 -nvx -L OUTPUT" > "$REPORT/$table-before.txt"
 done
-MARKER=$(printf 'version=1\ntargetUid=%s\ntestUid=%s\nipv4=blocked\nipv6=blocked' "$TARGET_UID" "$TEST_UID")
+MARKER=$(printf 'version=1\ntargetUid=%s\ntestUid=%s\nprofile=%s\nipv4=blocked\nipv6=blocked' "$TARGET_UID" "$TEST_UID" "$PROFILE")
 printf '%s\n' "$MARKER" | "${ADB[@]}" shell "cat > $ISOLATION_MARKER"
 "${ADB[@]}" shell chmod 644 "$ISOLATION_MARKER"
 [[ "$("${ADB[@]}" shell cat "$ISOLATION_MARKER" | tr -d '\r')" == "$MARKER" ]]
@@ -185,7 +185,7 @@ STAGE=configure-profile
 STAGE=instrumentation
 set +e
 timeout --signal=TERM --kill-after=15s 600s "${ADB[@]}" shell am instrument -w -r \
-  -e class com.doimty.dpgrabber.UiReviewInstrumentedTest,com.doimty.dpgrabber.SessionLifecycleInstrumentedTest,com.doimty.dpgrabber.SettingsParityInstrumentedTest -e profile "$PROFILE" "$RUNNER" 2>&1 | sanitize | tee "$REPORT/instrumentation-redacted.txt"
+  -e class com.doimty.dpgrabber.UiReviewInstrumentedTest,com.doimty.dpgrabber.SessionLifecycleInstrumentedTest,com.doimty.dpgrabber.SettingsParityInstrumentedTest,com.doimty.dpgrabber.DpppBrandInstrumentedTest,com.doimty.dpgrabber.DpppBrandInstrumentedTest -e profile "$PROFILE" "$RUNNER" 2>&1 | sanitize | tee "$REPORT/instrumentation-redacted.txt"
 PIPE_RESULTS=("${PIPESTATUS[@]}")
 set -e
 REPORT="$REPORT" PROFILE="$PROFILE" AM_RESULT="${PIPE_RESULTS[0]}" FILTER_RESULT="${PIPE_RESULTS[1]}" TEE_RESULT="${PIPE_RESULTS[2]}" python3 - <<'PY'

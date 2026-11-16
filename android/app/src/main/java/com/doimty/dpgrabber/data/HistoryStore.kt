@@ -39,7 +39,7 @@ class HistoryStore(context: Context) : SQLiteOpenHelper(context.applicationConte
             put("order_id", value.orderId); put("timestamp_ms", value.timestampMs)
             put("outcome", value.type.name); put("reason", value.reason)
             val allowed = JSONObject()
-            for (key in listOf("id", "no", "totalAmount", "userWechatId", "userMemo")) {
+            for (key in listOf("id", "no", "totalAmount", "userWechatId", "userMemo", "createTime")) {
                 if (value.order.has(key)) allowed.put(key, value.order.opt(key))
             }
             put("payload", allowed.toString())
@@ -63,6 +63,10 @@ class HistoryStore(context: Context) : SQLiteOpenHelper(context.applicationConte
         }
         return result
     }
+
+    fun count(account: String): Long = readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM outcomes WHERE account_key=?", arrayOf(account)
+    ).use { cursor -> cursor.moveToFirst(); cursor.getLong(0) }
 
     fun blockedOrderIds(account: String, shop: String): Set<String> {
         val ids = mutableSetOf<String>()

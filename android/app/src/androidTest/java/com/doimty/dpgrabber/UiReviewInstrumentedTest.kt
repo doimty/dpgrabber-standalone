@@ -2,6 +2,7 @@ package com.doimty.dpgrabber
 
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.graphics.Bitmap
@@ -106,6 +107,12 @@ class UiReviewInstrumentedTest {
                 .filterIsInstance<SettingsActivity>().forEach { it.finish() }
         }
         main?.close()
+        if (caseName.startsWith("11-history") || caseName.startsWith("12-history")) {
+            HistoryStore(context).use { history ->
+                history.writableDatabase.delete("outcomes", "entry_key IN (?, ?, ?)",
+                    arrayOf("history-legacy-raw-fixture", "history-other-account-fixture", "history-missing-fields-fixture"))
+            }
+        }
         if (::savedAvatarTransport.isInitialized) AvatarLoader::class.java.getDeclaredField("transport")
             .apply { isAccessible = true }.set(null, savedAvatarTransport)
         if (::store.isInitialized) store.clearAccount()
@@ -187,11 +194,11 @@ class UiReviewInstrumentedTest {
         capture("rules-page")
         selectTab("处理记录")
         for ((label, artifact) in listOf("成功" to "success", "失败" to "failed", "风控" to "risk", "跳过" to "skipped")) {
-            scrollToText("$label · 店铺")
+            scrollToText(label)
             capture("history-$artifact")
         }
-        scrollToText("未知 · 店铺")
-        val unknown = device.wait(Until.findObject(By.textStartsWith("未知 · 店铺")), WAIT_MS)
+        scrollToText("未知")
+        val unknown = device.wait(Until.findObject(By.text("未知")), WAIT_MS)
         assertNotNull("合成未知记录应经 HistoryStore 渲染", unknown)
         unknown!!.longClick()
         assertTrue(device.wait(Until.hasObject(By.text("只读核验未知结果（不重新提交）")), WAIT_MS))
@@ -476,10 +483,31 @@ class UiReviewInstrumentedTest {
         assertEquals("重建必须复用缓存，不应重复下载", downloads, avatarCalls.get())
         capture("avatar-after-recreate")
         scrollTo("aboutVersionText")
-        awaitText("aboutVersionText", "build")
-        awaitText("aboutBuildText", "验证版")
-        awaitText("aboutUsageText", "停止监听不会退出账号")
-        assertFalse(textOf("aboutUsageText").contains("不注入"))
+        val packageInfo = context.packageManager.getPackageInfo(PACKAGE, 0)
+        val expectedVersion = "版本 ${packageInfo.versionName.orEmpty()}（${if (android.os.Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode else packageInfo.versionCode.toLong()}）"
+        awaitTextExact("aboutVersionText", expectedVersion)
+        awaitTextExact("aboutNameText", "DPPP")
+        awaitTextExact("aboutBuildText", "Android 客户端")
+        awaitText("aboutUsageText", "处理记录")
+        assertTrue("正式关于文案应包含处理记录", textOf("aboutUsageText").contains("处理记录"))
+        val appInfo = context.packageManager.getApplicationInfo(PACKAGE, PackageManager.GET_META_DATA)
+        assertEquals("DPPP", appInfo.loadLabel(context.packageManager).toString())
+        assertTrue("应用描述应包含品牌名", appInfo.loadDescription(context.packageManager)?.toString()?.contains("DPPP") == true)
+        assertTrue("应用图标资源必须存在", appInfo.icon != 0)
+        assertNotNull("应用图标必须可加载", appInfo.loadIcon(context.packageManager))
+        val roundIcon = context.assets.openXmlResourceParser("AndroidManifest.xml").use { parser ->
+            var resource = 0
+            while (parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                if (parser.eventType == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name == "application") {
+                    resource = parser.getAttributeResourceValue("http://schemas.android.com/apk/res/android", "roundIcon", 0)
+                    break
+                }
+                parser.next()
+            }
+            resource
+        }
+        assertTrue("清单必须声明圆形图标", roundIcon != 0)
+        assertNotNull("圆形图标必须可加载", context.packageManager.getDrawable(PACKAGE, roundIcon, appInfo))
         capture("about-runtime-version")
         // 坏缓存不得被永久复用；必须回退下载，且真实 PNG 不依赖 Content-Type。
         val cache = File(context.cacheDir, "avatars").walkTopDown().first { it.extension == "png" }
@@ -576,6 +604,154 @@ class UiReviewInstrumentedTest {
         } finally { release.countDown() }
     }
 
+    @Test(timeout = 240_000)
+    fun legacyHistoryDetailsClipboardRecreationAndAccountIsolation() {
+        caseName = "11-history-legacy-details"
+        val account = HistoryStore.accountKey("")
+        val id = "LEGACY-RAW-900719925474099312345"
+        val no = "000900719925474099312345678901"
+        val wechat = "synthetic-wechat-900719925474099312345"
+        val memo = "第一行合成备注\n第二行\n第三行\n第四行完整保留\n" + "长备注".repeat(100)
+        val payload = JSONObject().put("no", no).put("totalAmount", 0)
+            .put("userWechatId", wechat).put("userMemo", memo)
+        val stamp = 1704067200000L
+        HistoryStore(context).use { history ->
+            assertEquals("必须继续使用 v1 数据库", 1, history.writableDatabase.version)
+            history.writableDatabase.execSQL("INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf("history-legacy-raw-fixture", account, "92", id, stamp, "UNKNOWN", "合成待核验原因", payload.toString()))
+            history.writableDatabase.execSQL("INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf("history-other-account-fixture", HistoryStore.accountKey("00000000992"), "92", "OTHER-PRIVATE-ID",
+                    stamp, "SUCCESS", "", """{"userWechatId":"other-account-wechat"}"""))
+        }
+        HistoryStore(context).use { reopened ->
+            val saved = reopened.entries(account).single { it.orderId == id }
+            assertFalse("旧 payload 不能凭空补下单时间", saved.order.has("createTime"))
+            assertEquals(memo, saved.order.getString("userMemo"))
+            assertEquals(wechat, saved.order.getString("userWechatId"))
+            assertFalse(reopened.entries(account).any { it.orderId == "OTHER-PRIVATE-ID" })
+        }
+        launchMain()
+        selectTab("处理记录")
+        awaitText("historySummary", "当前账号共 1 条记录")
+        fun assertCard() {
+            main!!.onActivity { activity ->
+                val list = activity.findViewById<ViewGroup>(R.id.historyList)
+                val texts = historyTexts(list)
+                assertTrue(texts.any { it.text.toString() == "订单号：$no" })
+                assertTrue(texts.any { it.text.toString() == "微信号：$wechat" })
+                assertTrue(texts.any { it.text.toString() == "¥0.00" })
+                assertTrue(texts.any { it.text.toString().contains("2024-01-01 08:00:00") })
+                assertFalse(texts.any { it.text.toString().contains("other-account-wechat") })
+                val summary = texts.single { it.contentDescription == "备注摘要，完整内容请查看详情" }
+                assertEquals(3, summary.maxLines)
+                assertTrue("摘要保留完整原文本，仅视觉省略", summary.text.toString().contains(memo))
+            }
+        }
+        assertCard()
+        capture("history-legacy-visible-fields")
+        val requestsBefore = fixtures.sumOf { it.requests.size }
+        scrollToText("复制微信号")
+        device.findObject(By.text("复制微信号")).click()
+        instrumentation.waitForIdleSync()
+        fun clipboard(): String {
+            var value = ""
+            instrumentation.runOnMainSync {
+                value = context.getSystemService(android.content.ClipboardManager::class.java)
+                    .primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+            }
+            return value
+        }
+        assertEquals(wechat, clipboard())
+        scrollToText("查看详情")
+        device.findObject(By.text("查看详情")).click()
+        val full = device.wait(Until.findObject(By.desc("完整订单信息")), WAIT_MS)
+        assertNotNull("真实详情应可见", full)
+        val expected = com.doimty.dpgrabber.engine.HistoryFormatter.details(payload, id, "92", stamp, OutcomeType.UNKNOWN, "合成待核验原因")
+        assertEquals("详情必须包含完整长备注和独立订单ID", expected, full!!.text)
+        val detailScroller = UiScrollable(UiSelector().description("订单详情滚动区域"))
+        assertTrue(detailScroller.scrollIntoView(UiSelector().text("复制完整订单信息")))
+        device.findObject(By.text("复制完整订单信息")).click()
+        instrumentation.waitForIdleSync()
+        assertEquals(expected, clipboard())
+        assertTrue(detailScroller.scrollIntoView(UiSelector().text("复制订单号")))
+        device.findObject(By.text("复制订单号")).click()
+        instrumentation.waitForIdleSync()
+        assertEquals(no, clipboard())
+        capture("history-details-full-copy")
+        device.findObject(By.text("关闭")).click()
+        scrollTop()
+        scrollToText("订单号：$no")
+        device.findObject(By.text("订单号：$no")).longClick()
+        assertTrue(device.wait(Until.hasObject(By.text("只读核验未知结果（不重新提交）")), WAIT_MS))
+        assertTrue(device.hasObject(By.text("拉黑客户")))
+        assertTrue(device.hasObject(By.text("添加备注关键词")))
+        device.pressBack()
+        assertEquals("详情、复制和打开菜单不允许调用业务接口", requestsBefore, fixtures.sumOf { it.requests.size })
+        main!!.recreate()
+        selectTab("处理记录")
+        awaitText("historySummary", "当前账号共 1 条记录")
+        assertCard()
+        main!!.close()
+        launchMain()
+        selectTab("处理记录")
+        awaitText("historySummary", "当前账号共 1 条记录")
+        assertCard()
+        main!!.close()
+        store.saveAccount("00000000993", PASSWORD)
+        injectFixture(Mode.SUCCESS, phone = "00000000993")
+        launchMain()
+        selectTab("处理记录")
+        awaitText("historySummary", "当前账号共 0 条")
+        main!!.onActivity { activity ->
+            assertEquals("换号后旧记录不可见", 0, activity.findViewById<ViewGroup>(R.id.historyList).childCount)
+        }
+    }
+
+    @Test(timeout = 180_000)
+    fun missingHistoryFieldsDisableWechatAndCopyFallbackId() {
+        caseName = "12-history-missing-fields"
+        val id = "SYNTHETIC-FALLBACK-900719925474099312345"
+        HistoryStore(context).use { history ->
+            history.writableDatabase.execSQL("INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf("history-missing-fields-fixture", HistoryStore.accountKey(""), "92", id,
+                    1704067200000L, "FAILED", "合成失败原因", """{"no":null,"totalAmount":null,"userWechatId":null,"userMemo":""}"""))
+        }
+        launchMain()
+        selectTab("处理记录")
+        awaitText("historySummary", "当前账号共 1 条记录")
+        main!!.onActivity { activity ->
+            val texts = historyTexts(activity.findViewById(R.id.historyList))
+            assertTrue(texts.any { it.text.toString() == "订单号：$id" })
+            assertTrue(texts.any { it.text.toString() == "金额未提供" })
+            assertTrue(texts.any { it.text.toString() == "微信号：未提供微信号" })
+            assertTrue(texts.any { it.text.toString() == "备注：无备注" })
+            assertFalse(texts.single { it.text.toString() == "复制微信号" }.isEnabled)
+        }
+        scrollToText("查看详情")
+        device.findObject(By.text("查看详情")).click()
+        val details = device.wait(Until.findObject(By.desc("完整订单信息")), WAIT_MS)
+        assertNotNull(details)
+        assertTrue(details!!.text.contains("订单号：$id\n订单ID：$id"))
+        val scroll = UiScrollable(UiSelector().description("订单详情滚动区域"))
+        assertTrue(scroll.scrollIntoView(UiSelector().text("复制微信号")))
+        assertFalse(device.findObject(By.text("复制微信号")).isEnabled)
+        assertTrue(scroll.scrollIntoView(UiSelector().text("复制订单号")))
+        device.findObject(By.text("复制订单号")).click()
+        instrumentation.waitForIdleSync()
+        instrumentation.runOnMainSync {
+            assertEquals(id, context.getSystemService(android.content.ClipboardManager::class.java)
+                .primaryClip!!.getItemAt(0).text.toString())
+        }
+        device.findObject(By.text("关闭")).click()
+        assertTrue("缺字段详情与复制不能发业务请求", fixtures.all { it.requests.isEmpty() })
+    }
+
+    private fun historyTexts(view: View): List<TextView> = when (view) {
+        is ViewGroup -> (0 until view.childCount).flatMap { historyTexts(view.getChildAt(it)) }
+        is TextView -> listOf(view)
+        else -> emptyList()
+    }
+
     private fun assertActualAvatar() {
         main!!.onActivity { activity ->
             val view = activity.findViewById<TextView>(R.id.accountAvatarText)
@@ -655,9 +831,20 @@ class UiReviewInstrumentedTest {
                         OutcomeType.RISK -> "合成风控：暂停操作，不重试"
                         OutcomeType.UNKNOWN -> "合成未知：保留待只读核验"
                         OutcomeType.SKIPPED -> "合成跳过：不符合筛选条件"
-                    }, JSONObject().put("id", "UI-ONLY-${type.name}").put("totalAmount", 25)
-                        .put("userWechatId", "fixture-not-a-real-user").put("userMemo", "离线合成备注")))
+                    }, JSONObject().put("id", "UI-ONLY-${type.name}")
+                        .put("no", "SYNTHETIC-NO-${type.name}-00000000000000000001")
+                        .put("createTime", System.currentTimeMillis())
+                        .put("totalAmount", 25)
+                        .put("userWechatId", "fixture-not-a-real-user")
+                        .put("userMemo", "离线合成备注\n第二行\n第三行\n第四行")))
             }
+            // 原始 v1 行不经新 record() 写入；没有 createTime，不为旧数据伪造字段。
+            history.writableDatabase.execSQL(
+                "INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf("fixture-legacy-v1", HistoryStore.accountKey(PHONE), "92", "LEGACY-ID-ONLY",
+                    System.currentTimeMillis() - 172800000L, "SUCCESS", "旧 v1 合成记录",
+                    """{"id":"LEGACY-ID-ONLY","totalAmount":null,"userWechatId":"legacy-wechat","userMemo":"旧记录备注"}""")
+            )
         }
     }
 

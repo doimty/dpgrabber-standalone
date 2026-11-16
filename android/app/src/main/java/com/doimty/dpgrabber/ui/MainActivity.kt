@@ -27,11 +27,15 @@ import com.doimty.dpgrabber.data.CredentialStore
 import com.doimty.dpgrabber.data.SessionRepository
 import com.doimty.dpgrabber.data.HistoryStore
 import android.widget.TextView
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import androidx.appcompat.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import com.doimty.dpgrabber.databinding.ActivityMainBinding
 import com.doimty.dpgrabber.engine.LogLevel
+import com.doimty.dpgrabber.engine.HistoryFormatter
+import com.doimty.dpgrabber.engine.OutcomeType
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.button.MaterialButton
 import com.doimty.dpgrabber.service.ListenService
@@ -611,9 +615,8 @@ class MainActivity : AppCompatActivity() {
         val info = packageManager.getPackageInfo(packageName, 0)
         val build = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
         binding.aboutVersionText.text = getString(R.string.about_version, info.versionName.orEmpty(), build)
-        val verification = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 ||
-            packageName.endsWith(".preview")
-        binding.aboutBuildText.visibility = if (verification) View.VISIBLE else View.GONE
+        binding.aboutBuildText.text = getString(R.string.about_verification)
+        binding.aboutBuildText.visibility = View.VISIBLE
     }
 
     /** 注销二次确认：不可撤销，先把后果说清楚。 */
@@ -1003,10 +1006,12 @@ class MainActivity : AppCompatActivity() {
         val account = HistoryStore.accountKey(store.loadPhone())
         Thread {
             val entries: List<HistoryStore.Entry>
+            val total: Long
             val counts: Map<com.doimty.dpgrabber.engine.OutcomeType, Int>
             try {
                 HistoryStore(this).use { history ->
                     entries = history.entries(account, 100)
+                    total = history.count(account)
                     counts = history.todayCounts(account)
                 }
             } catch (_: Exception) {
@@ -1020,39 +1025,186 @@ class MainActivity : AppCompatActivity() {
                 binding.todayPendingCount.text = (counts[com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN] ?: 0).toString()
                 binding.todayRiskCount.text = (counts[com.doimty.dpgrabber.engine.OutcomeType.RISK] ?: 0).toString()
                 binding.todayOverview.text = "仅当前账号 · 按北京时间统计"
+                binding.historySummary.text = "当前账号共 $total 条记录 · 按北京时间展示" +
+                    if (total > entries.size) " · 展示最近 ${entries.size} 条" else ""
                 binding.historyList.removeAllViews()
                 binding.historyEmptyHint.visibility = if (entries.isEmpty()) View.VISIBLE else View.GONE
-                entries.forEach { entry ->
-                    val text = TextView(this).apply {
-                        setPadding(8, 12, 8, 12)
-                        val label = when (entry.outcome) {
-                            com.doimty.dpgrabber.engine.OutcomeType.SUCCESS -> "成功"
-                            com.doimty.dpgrabber.engine.OutcomeType.FAILED -> "失败"
-                            com.doimty.dpgrabber.engine.OutcomeType.SKIPPED -> "跳过"
-                            com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN -> "未知"
-                            com.doimty.dpgrabber.engine.OutcomeType.RISK -> "风控"
-                        }
-                        this.text = "$label · 店铺 ${entry.shop} · ${entry.orderId.takeLast(8)} · ${entry.reason}"
-                        setOnLongClickListener {
-                            val wechat = entry.order.optString("userWechatId", "")
-                            val memo = entry.order.optString("userMemo", "")
-                            AlertDialog.Builder(this@MainActivity).setItems(if (entry.outcome == com.doimty.dpgrabber.engine.OutcomeType.UNKNOWN) arrayOf("拉黑客户", "添加备注关键词", "复制订单号", "只读核验未知结果（不重新提交）") else arrayOf("拉黑客户", "添加备注关键词", "复制订单号")) { _, which ->
-                                val config = store.loadConfig()
-                                when (which) {
-                                    0 -> if (wechat.isNotBlank()) { store.saveConfig(config.copy(blacklist = (config.blacklist + wechat).distinct())); binding.blacklistInput.setText((config.blacklist + wechat).distinct().joinToString("\n")) }
-                                    1 -> if (memo.isNotBlank()) { store.saveConfig(config.copy(memoKeywords = (config.memoKeywords + memo).distinct())); binding.memoKeywordsInput.setText((config.memoKeywords + memo).distinct().joinToString("\n")) }
-                                    2 -> getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("订单号", entry.orderId))
-                                    3 -> verifyUnknown(entry)
-                                }
-                            }.show()
-                            true
-                        }
-                    }
-                    binding.historyList.addView(text)
-                }
+                entries.forEach { entry -> binding.historyList.addView(createHistoryCard(entry)) }
             }
         }.apply { isDaemon = true; start() }
     }
+
+    private fun createHistoryCard(entry: HistoryStore.Entry): View {
+        val card = com.google.android.material.card.MaterialCardView(this).apply {
+            tag = "history:${entry.orderId}"
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 12.dp() }
+            setContentPadding(16.dp(), 16.dp(), 16.dp(), 12.dp())
+            radius = 16.dp().toFloat()
+            cardElevation = 0f
+            strokeWidth = 1.dp()
+            strokeColor = com.google.android.material.color.MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutlineVariant)
+            setCardBackgroundColor(com.google.android.material.color.MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurface))
+            isLongClickable = true
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val heading = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2)
+        }
+        val title = TextView(this).apply {
+            setTextAppearance(this@MainActivity, R.style.CardTitle)
+            text = HistoryFormatter.outcomeLabel(entry.outcome)
+            layoutParams = LinearLayout.LayoutParams(-1, -2)
+            setOnLongClickListener {
+                showHistoryLongPressMenu(entry, HistoryFormatter.orderNumber(entry.order, entry.orderId))
+                true
+            }
+        }
+        val amount = TextView(this).apply {
+            setTextAppearance(this@MainActivity, R.style.CardTitle)
+            text = HistoryFormatter.amount(entry.order)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8.dp() }
+        }
+        heading.addView(title)
+        heading.addView(amount)
+        content.addView(heading)
+        val metadata = TextView(this).apply {
+            setTextAppearance(this@MainActivity, R.style.CardBody)
+            setPadding(0, 8.dp(), 0, 0)
+            textSize = 12f
+            text = "${HistoryFormatter.timestamp(entry.timeMs)}（北京时间）\n店铺 ${HistoryFormatter.text(entry.shop).ifBlank { "未提供" }}"
+        }
+        content.addView(metadata)
+        val orderNumber = HistoryFormatter.orderNumber(entry.order, entry.orderId)
+        content.addView(historyField("订单号", orderNumber))
+        val wechat = HistoryFormatter.wechat(entry.order)
+        content.addView(historyField("微信号", wechat))
+        content.addView(historyField("备注", HistoryFormatter.memo(entry.order)).apply {
+            // 只有列表备注允许三行摘要；详情与复制始终保留全文。
+            maxLines = 3
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            contentDescription = "备注摘要，完整内容请查看详情"
+        })
+        val copyWechat = historyButton("复制微信号") {
+            if (isCurrentHistoryAccount(entry)) copyToClipboard("微信号", HistoryFormatter.wechatValue(entry.order))
+        }.apply { isEnabled = HistoryFormatter.wechatValue(entry.order).isNotBlank() }
+        content.addView(copyWechat)
+        val details = historyButton("查看详情") { showHistoryDetails(entry) }
+        details.setOnLongClickListener {
+            showHistoryLongPressMenu(entry, orderNumber)
+            true
+        }
+        content.addView(details)
+        content.addView(MaterialButton(androidx.appcompat.view.ContextThemeWrapper(this, R.style.BtnText)).apply {
+            text = "更多操作"
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8.dp() }
+            minHeight = 48.dp()
+            minimumHeight = 48.dp()
+            setOnClickListener { showHistoryLongPressMenu(entry, orderNumber) }
+        })
+        if (entry.outcome != OutcomeType.SUCCESS) {
+            content.addView(historyField("原因", HistoryFormatter.text(entry.reason).ifBlank { "原因未提供" }))
+        }
+        card.addView(content)
+        val longPress = View.OnLongClickListener {
+            if (isCurrentHistoryAccount(entry)) showHistoryLongPressMenu(entry, orderNumber)
+            true
+        }
+        card.setOnLongClickListener(longPress)
+        title.setOnLongClickListener(longPress)
+        amount.setOnLongClickListener(longPress)
+        for (index in 0 until content.childCount) {
+            val child = content.getChildAt(index)
+            if (child is TextView && child !is MaterialButton) child.setOnLongClickListener(longPress)
+        }
+        return card
+    }
+
+    private fun historyField(label: String, value: String): TextView = TextView(this).apply {
+        setTextAppearance(this@MainActivity, R.style.CardBody)
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8.dp() }
+        text = "$label：$value"
+    }
+
+    private fun isCurrentHistoryAccount(entry: HistoryStore.Entry): Boolean =
+        !isDestroyed && entry.account == HistoryStore.accountKey(store.loadPhone())
+
+    private fun historyButton(label: String, action: () -> Unit): MaterialButton =
+        MaterialButton(androidx.appcompat.view.ContextThemeWrapper(this, R.style.BtnOutlined)).apply {
+            text = label
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8.dp() }
+            minHeight = 48.dp()
+            minimumHeight = 48.dp()
+            setOnClickListener { action() }
+        }
+
+    private fun showHistoryLongPressMenu(entry: HistoryStore.Entry, orderNumber: String) {
+        if (!isCurrentHistoryAccount(entry)) return
+        val wechat = HistoryFormatter.wechatValue(entry.order)
+        val memo = HistoryFormatter.memoValue(entry.order)
+        val items = mutableListOf("复制订单号", "查看详情")
+        if (wechat.isNotBlank()) items.add("拉黑客户")
+        if (memo.isNotBlank()) items.add("添加备注关键词")
+        if (entry.outcome == OutcomeType.UNKNOWN) items.add("只读核验未知结果（不重新提交）")
+        AlertDialog.Builder(this).setItems(items.toTypedArray()) { _, which ->
+            if (!isCurrentHistoryAccount(entry)) return@setItems
+            when (items[which]) {
+                "复制订单号" -> copyToClipboard("订单号", orderNumber)
+                "查看详情" -> showHistoryDetails(entry)
+                "拉黑客户" -> {
+                    val config = store.loadConfig()
+                    val values = (config.blacklist + wechat).distinct()
+                    store.saveConfig(config.copy(blacklist = values))
+                    binding.blacklistInput.setText(values.joinToString("\n"))
+                }
+                "添加备注关键词" -> {
+                    val config = store.loadConfig()
+                    val values = (config.memoKeywords + memo).distinct()
+                    store.saveConfig(config.copy(memoKeywords = values))
+                    binding.memoKeywordsInput.setText(values.joinToString("\n"))
+                }
+                "只读核验未知结果（不重新提交）" -> verifyUnknown(entry)
+                else -> Unit
+            }
+        }.show()
+    }
+
+    private fun showHistoryDetails(entry: HistoryStore.Entry) {
+        if (!isCurrentHistoryAccount(entry)) return
+        val orderNumber = HistoryFormatter.orderNumber(entry.order, entry.orderId)
+        val wechat = HistoryFormatter.wechatValue(entry.order)
+        val detail = HistoryFormatter.details(entry.order, entry.orderId, entry.shop, entry.timeMs, entry.outcome, entry.reason)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16.dp(), 8.dp(), 16.dp(), 16.dp())
+        }
+        content.addView(historyField("", detail).apply {
+            text = detail
+            contentDescription = "完整订单信息"
+            setTextIsSelectable(true)
+        })
+        content.addView(historyButton("复制微信号") {
+            if (isCurrentHistoryAccount(entry)) copyToClipboard("微信号", wechat)
+        }.apply { isEnabled = wechat.isNotBlank() })
+        content.addView(historyButton("复制订单号") {
+            if (isCurrentHistoryAccount(entry)) copyToClipboard("订单号", orderNumber)
+        })
+        content.addView(historyButton("复制完整订单信息") {
+            if (isCurrentHistoryAccount(entry)) copyToClipboard("订单信息", detail)
+        })
+        val scroll = ScrollView(this).apply {
+            contentDescription = "订单详情滚动区域"
+            addView(content, android.widget.FrameLayout.LayoutParams(-1, -2))
+        }
+        AlertDialog.Builder(this).setTitle("订单详情").setView(scroll)
+            .setPositiveButton("关闭", null).show()
+    }
+
+    private fun copyToClipboard(label: String, value: String) {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, value))
+    }
+
+    private fun Int.dp(): Int = (this * resources.displayMetrics.density).toInt()
 
     private fun verifyUnknown(entry: HistoryStore.Entry) = networkAction { client ->
         require(entry.account == HistoryStore.accountKey(store.loadPhone()) && client.session?.sid == entry.shop) { "请登录记录对应的账号与店铺" }
