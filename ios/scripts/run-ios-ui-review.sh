@@ -62,7 +62,7 @@ cleanup() {
     xcrun simctl delete "$udid" >/dev/null 2>&1 || true
   done
 }
-trap cleanup EXIT
+trap 'result=$?; trap - EXIT; cleanup; exit "$result"' EXIT
 
 # ---------------------------------------------------------------- preconditions
 
@@ -150,7 +150,7 @@ if [ -n "$RUNTIME_FILTER" ]; then
   if [ -z "$PRIMARY" ]; then
     fail "requested iOS runtime prefix '$RUNTIME_FILTER' is not installed; available: $(printf '%s' "$RUNTIME_LINES" | cut -f1-2 | tr '\n' ' ')"
   fi
-  LEGACY_NOTE="已显式指定 runtime 前缀 $RUNTIME_FILTER，因此只跑该轮次，未追加旧系统轮次。"
+  LEGACY_NOTE="已显式指定 runtime 前缀 ${RUNTIME_FILTER}，因此只跑该轮次，未追加旧系统轮次。"
 else
   PRIMARY="$(pick_runtime "26.")"
   if [ -z "$PRIMARY" ]; then
@@ -275,11 +275,15 @@ run_round() {
                    "com.apple.CoreSimulator.SimDeviceType.iPhone-16" \
                    "com.apple.CoreSimulator.SimDeviceType.iPhone-15" \
                    "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation"; do
-    if udid="$(xcrun simctl create "$device_name" "$candidate" "$runtime_id" 2>/dev/null | tail -n 1 | tr -d '[:space:]')" \
-       && [ -n "$udid" ]; then
-      log "device type: $candidate"
-      break
+    if xcrun simctl create "$device_name" "$candidate" "$runtime_id" \
+        > "$OUT/${runtime_key}-create.txt" 2> "$OUT/${runtime_key}-create-error.txt"; then
+      udid="$(tr -d '[:space:]' < "$OUT/${runtime_key}-create.txt")"
+      if [ -n "$udid" ]; then
+        log "device type: $candidate"
+        break
+      fi
     fi
+    log "device type unavailable for $runtime_name, trying next: $candidate"
     udid=""
   done
   [ -n "$udid" ] || fail "simctl create failed for $runtime_name with every known iPhone device type"
@@ -295,6 +299,9 @@ run_round() {
 
   xcrun simctl install "$udid" "$APP_PATH"
   log "installed app once on $udid"
+  local data_container ready_marker
+  data_container="$(xcrun simctl get_app_container "$udid" "$BUNDLE_ID" data)"
+  ready_marker="$data_container/tmp/ui-review-ready"
 
   for appearance in light dark; do
     xcrun simctl ui "$udid" appearance "$appearance" >/dev/null 2>&1 \
@@ -306,9 +313,10 @@ run_round() {
       if [ "$tab" = settings-wait ]; then wait_review=YES; fi
       shot="$OUT/${runtime_key}-${appearance}-tab${tab}.png"
       xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
+      rm -f "$ready_marker"
       xcrun simctl launch "$udid" "$BUNDLE_ID" \
         -AppleLanguages "(zh-Hans)" -AppleLocale zh_CN \
-        -uiReviewTab "$initial_tab" -uiReviewSettings "$settings_review" -uiReviewWaitSection "$wait_review" \
+        -uiReviewCapture YES -uiReviewTab "$initial_tab" -uiReviewSettings "$settings_review" -uiReviewWaitSection "$wait_review" \
         > "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>&1 || launch_rc=$?
       if [ "$launch_rc" -ne 0 ]; then
         LAUNCH_FAILURES=$((LAUNCH_FAILURES + 1))
@@ -317,10 +325,19 @@ run_round() {
         head -c 2000 "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>/dev/null \
           | sed -E 's/[[:digit:]]{11}/<phone>/g' >&2 || true
       fi
+      local ready_attempt=0
+      while [ ! -s "$ready_marker" ] && [ "$ready_attempt" -lt 45 ] && [ "$launch_rc" -eq 0 ]; do
+        sleep 1
+        ready_attempt=$((ready_attempt + 1))
+      done
+      if [ ! -s "$ready_marker" ]; then
+        log "application did not report foreground content readiness for $appearance tab$tab"
+        FAILURES=$((FAILURES + 1))
+      fi
       sleep "$SETTLE_SECONDS"
       xcrun simctl io "$udid" screenshot --type=png "$shot" >/dev/null 2>&1 || true
 
-      if dimensions="$(assert_png "$shot")"; then
+      if [ "$launch_rc" -eq 0 ] && [ -s "$ready_marker" ] && dimensions="$(assert_png "$shot")"; then
         status="ok"
       else
         status="invalid"
@@ -388,7 +405,7 @@ SUMMARY="$OUT/summary.md"
     echo "- 旧系统轮次 runtime：$(printf '%s' "$LEGACY" | cut -f1)（$(printf '%s' "$LEGACY" | cut -f2)）"
   fi
   echo "- 旧系统说明：$LEGACY_NOTE"
-  echo "- 截图数量：$ACTUAL（期望 $EXPECTED）"
+  echo "- 截图数量：${ACTUAL}（期望 ${EXPECTED}）"
   echo
   echo "## 已枚举的可用 iOS runtime"
   echo

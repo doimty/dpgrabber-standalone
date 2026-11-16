@@ -1,7 +1,13 @@
 import SwiftUI
 import UIKit
 
-private let appAccent = Color(red: 0.02, green: 0.45, blue: 0.67)
+let appAccent = Color(UIColor { traits in
+    traits.userInterfaceStyle == .dark
+        ? UIColor(red: 85.0 / 255, green: 196.0 / 255, blue: 242.0 / 255, alpha: 1)
+        : UIColor(red: 0.02, green: 0.45, blue: 0.67, alpha: 1)
+})
+// 实心按钮保留深色底，确保其白色标题对比度不随深色模式的文字强调色变浅。
+private let appButtonFill = Color(red: 0.02, green: 0.45, blue: 0.67)
 
 /// 仅调试构建可通过启动参数指定初始页，供离线截图验收使用；发布构建恒为工作台。
 private func initialTabForLaunch() -> Int {
@@ -41,6 +47,20 @@ struct ContentView: View {
                 .tag(3)
         }
         .tint(accent)
+        .task {
+            #if DEBUG
+            guard UserDefaults.standard.bool(forKey: "uiReviewCapture") else { return }
+            // 冷启动的根视图已经出现且应用进入前台后才允许外部截图；正式包无此入口。
+            for _ in 0..<60 {
+                do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
+                if UIApplication.shared.applicationState == .active {
+                    let marker = FileManager.default.temporaryDirectory.appendingPathComponent("ui-review-ready")
+                    try? Data("ready".utf8).write(to: marker, options: .atomic)
+                    return
+                }
+            }
+            #endif
+        }
         .onAppear {
             #if DEBUG
             if UserDefaults.standard.bool(forKey: "uiReviewSettings") { showingSettings = true }
@@ -148,7 +168,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
                     .foregroundColor(.white)
-                    .background(viewModel.isRunning ? Color(UIColor.systemRed) : accent)
+                    .background(viewModel.isRunning ? Color(UIColor.systemRed) : appButtonFill)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(PlainButtonStyle())

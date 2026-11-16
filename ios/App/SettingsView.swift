@@ -11,7 +11,7 @@ struct SettingsView: View {
         Form {
             Section(footer: Text("设置会自动保存。店铺与协议参数只能在任务停止后修改，修改后需重新登录。")) {
                 Label("按需调整，默认即可使用", systemImage: "gearshape.2.fill")
-                    .font(.headline).foregroundColor(.accentColor)
+                    .font(.headline).foregroundColor(appAccent)
             }
             Section(header: Text("店铺与连接")) {
                 HStack {
