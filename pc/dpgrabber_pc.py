@@ -68,6 +68,15 @@ def main(argv=None) -> int:
         print("config error: %s" % exc, file=sys.stderr)
         return 2
 
+    # 界面缩放必须在 QApplication 创建之前设好：Qt 只在这个时刻读它，
+    # QSS 里的 px、控件尺寸、字体都会一起等比变化。
+    try:
+        scale = cfgmod.resolve_ui_scale(cfg)
+        os.environ["QT_SCALE_FACTOR"] = "%.2f" % scale
+        os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+    except Exception:
+        pass
+
     from PySide6.QtCore import QTimer
     from themes import DEFAULT_THEME, THEMES
     from ui import App, apply_theme
