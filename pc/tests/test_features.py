@@ -1102,15 +1102,14 @@ class RealOrderSchemaTests(unittest.TestCase):
 
     def test_matching_is_decidable(self):
         from engine import order_matches_items
-        self.assertIs(order_matches_items(self.REAL, [465]), True)   # 连麦（语音条）
-        self.assertIs(order_matches_items(self.REAL, [2666]), False)  # 视频
+        # 「文字语音条」没有证据属于任何接单类型 → 认不出 = None = 放行
+        self.assertIsNone(order_matches_items(self.REAL, [465]))
+        self.assertIsNone(order_matches_items(self.REAL, [2666]))
 
-    def test_filter_blocks_closed_type(self):
+    def test_unknown_type_is_not_dropped(self):
         from engine import OrderFilter
-        filt = OrderFilter(10, 0, 0, [], [], enabled_items=[2666])
-        ok, why = filt.check(self.REAL)
-        self.assertFalse(ok)
-        self.assertIn("文字语音条", why)
+        ok, why = OrderFilter(10, 0, 0, [], [], enabled_items=[2666]).check(self.REAL)
+        self.assertTrue(ok, why)
 
 
 class ObservedItemNameTests(unittest.TestCase):
