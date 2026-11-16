@@ -327,6 +327,15 @@
                                 android:layout_width="match_parent"
                                 android:layout_marginTop="10dp"
                                 android:text="@string/btn_item_types" />
+
+                            <TextView
+                                android:id="@+id/itemTypesHint"
+                                style="@style/CardBody"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
+                                android:lineSpacingMultiplier="1.15"
+                                android:text="@string/item_types_not_read" />
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
@@ -730,6 +739,20 @@
                                             android:text="手机号 + 密码登录"
                                             android:textColor="?attr/colorOnSurfaceVariant"
                                             android:textSize="12sp" />
+
+                                        <TextView
+                                            android:id="@+id/avatarStatusText"
+                                            android:layout_width="match_parent"
+                                            android:layout_height="wrap_content"
+                                            android:minHeight="48dp"
+                                            android:gravity="center_vertical"
+                                            android:background="?attr/selectableItemBackground"
+                                            android:clickable="true"
+                                            android:focusable="true"
+                                            android:visibility="gone"
+                                            android:text="@string/avatar_loading"
+                                            android:textColor="?attr/colorOnSurfaceVariant"
+                                            android:textSize="12sp" />
                                     </LinearLayout>
                                 </LinearLayout>
 
@@ -995,6 +1018,25 @@
                                 android:text="@string/title_about" />
 
                             <TextView
+                                android:id="@+id/aboutNameText"
+                                style="@style/CardTitle"
+                                android:layout_marginTop="8dp"
+                                android:text="@string/app_name" />
+
+                            <TextView
+                                android:id="@+id/aboutVersionText"
+                                style="@style/CardBody"
+                                android:layout_marginTop="6dp" />
+
+                            <TextView
+                                android:id="@+id/aboutBuildText"
+                                style="@style/CardBody"
+                                android:layout_marginTop="6dp"
+                                android:text="@string/about_verification"
+                                android:visibility="gone" />
+
+                            <TextView
+                                android:id="@+id/aboutUsageText"
                                 style="@style/CardBody"
                                 android:layout_marginTop="8dp"
                                 android:text="@string/about_text" />

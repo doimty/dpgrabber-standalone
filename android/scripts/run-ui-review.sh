@@ -185,7 +185,7 @@ STAGE=configure-profile
 STAGE=instrumentation
 set +e
 timeout --signal=TERM --kill-after=15s 600s "${ADB[@]}" shell am instrument -w -r \
-  -e class com.doimty.dpgrabber.UiReviewInstrumentedTest -e profile "$PROFILE" "$RUNNER" 2>&1 | sanitize | tee "$REPORT/instrumentation-redacted.txt"
+  -e class com.doimty.dpgrabber.UiReviewInstrumentedTest,com.doimty.dpgrabber.SessionLifecycleInstrumentedTest -e profile "$PROFILE" "$RUNNER" 2>&1 | sanitize | tee "$REPORT/instrumentation-redacted.txt"
 PIPE_RESULTS=("${PIPESTATUS[@]}")
 set -e
 REPORT="$REPORT" PROFILE="$PROFILE" AM_RESULT="${PIPE_RESULTS[0]}" FILTER_RESULT="${PIPE_RESULTS[1]}" TEE_RESULT="${PIPE_RESULTS[2]}" python3 - <<'PY'

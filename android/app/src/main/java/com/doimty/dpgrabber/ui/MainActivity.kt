@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.view.Menu
@@ -37,7 +36,9 @@ import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.button.MaterialButton
 import com.doimty.dpgrabber.service.ListenService
 import com.doimty.dpgrabber.service.LogBus
-import java.io.File
+import com.doimty.dpgrabber.data.AvatarLoader
+import android.os.SystemClock
+import org.json.JSONObject
 import java.util.Locale
 
 /**
@@ -65,7 +66,16 @@ class MainActivity : AppCompatActivity() {
     /** 已解码的真实头像；null 表示回退首字圆形占位。 */
     @Volatile private var avatarBitmap: Bitmap? = null
     /** 头像请求序号：只有最后一次请求的结果才允许写进界面。 */
-    @Volatile private var avatarRequestId = 0L
+    private var avatarRequestId = 0L
+    private val avatarExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val avatarLoader by lazy { AvatarLoader(cacheDir) }
+    private var avatarKey: Pair<String, Int>? = null
+    private var avatarUrl = ""
+    private var avatarLoading = false
+    private var avatarAttempts = 0
+    private var avatarRetryAt = 0L
+    private var previouslyAuthenticated = false
+    private val avatarRetry = Runnable { if (hasValidSession()) requestAvatar() }
     private val historyListener: () -> Unit = { runOnUiThread { refreshHistory() } }
 
     private val notificationPermissionLauncher =
@@ -94,6 +104,12 @@ class MainActivity : AppCompatActivity() {
         refreshAccountHeader()
         updateLoginStatusVisibility()
 
+        renderAbout()
+        val retryAvatar = View.OnClickListener {
+            if (avatarUrl.isBlank()) refreshAccountInfo() else requestAvatar(force = true)
+        }
+        binding.avatarStatusText.setOnClickListener(retryAvatar)
+        binding.accountAvatarText.setOnClickListener(retryAvatar)
         binding.loginButton.setOnClickListener { verifyLogin() }
         binding.logoutButton.setOnClickListener { confirmLogout() }
         binding.onlineButton.setOnClickListener { networkAction { it.updateStatus(1, false) } }
@@ -204,6 +220,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        avatarRequestId++
+        binding.root.removeCallbacks(avatarRetry)
+        avatarExecutor.shutdownNow()
         networkExecutor.shutdownNow()
         super.onDestroy()
     }
@@ -313,19 +332,14 @@ class MainActivity : AppCompatActivity() {
                 }
                 client.checkActive()
                 if (generation != accountGeneration || loginRevision != SessionRepository.revision) return@execute
-                val persisted = store.saveAccount(phone, password)
-                credentialPersisted = persisted
-                val name = clerk?.optString("name", "") ?: ""
-                val id = clerk?.optInt("id", 0) ?: 0
-                // 姓名与 ID 只进加密存储（失败退回内存），界面文案由它们派生。
-                store.saveClerk(name, id)
-                // 头像地址可能带签名参数：只交给下载流程，不落库、不进日志。
-                val avatarUrl = clerk?.optString("avatarUrl", "") ?: ""
                 runOnUiThread {
                     binding.loginButton.isEnabled = true
                     if (generation != accountGeneration || loginRevision != SessionRepository.revision || client.isCancelled) return@runOnUiThread
+                    val persisted = store.saveAccount(phone, password)
+                    credentialPersisted = persisted
                     // 成功结果不再向用户暴露 sid 等内部标识；"已验证"由身份卡承载。
-                    binding.loginStatus.text = getString(R.string.login_success)
+                    binding.loginStatus.text = ""
+                    clerk?.let { updateClerkProfile(it) }
                     updateLoginStatusVisibility()
                     refreshHistory()
                     // 登录成功后工作台也要跟着变：身份卡显示“已登录/监听中”，
@@ -333,8 +347,6 @@ class MainActivity : AppCompatActivity() {
                     // 下方 finally 中的 refreshAccountInfo() 刷新。
                     refreshAccountHeader()
                     refreshListenStatus()
-                    // 头像只在登录成功这一次触发；下载放到后台，失败保持首字占位。
-                    loadAvatar(avatarUrl, id)
                     if (!persisted) Toast.makeText(this, "登录成功；凭据仅当前进程可用，未持久保存", Toast.LENGTH_LONG).show()
                     else Toast.makeText(this, R.string.login_success, Toast.LENGTH_SHORT).show()
                 }
@@ -400,6 +412,7 @@ class MainActivity : AppCompatActivity() {
         }
         lastRunning = running
         val loggedIn = hasValidSession()
+        if (loggedIn != (binding.profileCard.visibility == View.VISIBLE)) refreshAccountHeader()
         binding.startButton.isEnabled = !running && !networkBusy && loggedIn
         binding.stopButton.isEnabled = running
         applyShopControls()
@@ -428,7 +441,7 @@ class MainActivity : AppCompatActivity() {
         val phone = store.loadPhone()
         val loggedIn = hasValidSession()
         // 会话一旦不在，上一账号的头像必须立刻消失，不能留在界面上。
-        if (!loggedIn) avatarBitmap = null
+        if (!loggedIn || (avatarKey != null && avatarKey?.first != HistoryStore.accountKey(phone))) clearAvatar()
         applyAvatarDrawable()
         val avatar: String
         val phoneText: String
@@ -437,7 +450,7 @@ class MainActivity : AppCompatActivity() {
             avatar = if (loggedIn) "已" else "未"
             phoneText = if (loggedIn) "会话已登录" else "未登录"
         } else {
-            avatar = phone.takeLast(2)
+            avatar = store.loadClerk().first.trim().take(1).ifEmpty { "人" }
             phoneText = maskPhone(phone)
         }
         // 取值顺序固定：正在监听 → 有会话 → 未登录。
@@ -461,7 +474,18 @@ class MainActivity : AppCompatActivity() {
         val loggedIn = hasValidSession()
         binding.profileCard.visibility = if (loggedIn) View.VISIBLE else View.GONE
         binding.loginFormContainer.visibility = if (loggedIn) View.GONE else View.VISIBLE
-        if (loggedIn) refreshProfileName() else renderProfileMetrics(null)
+        if (loggedIn) {
+            previouslyAuthenticated = true
+            refreshProfileName()
+        } else {
+            val text = binding.loginStatus.text.toString()
+            if (text == getString(R.string.login_success) ||
+                ((previouslyAuthenticated || store.loadPhone().isNotBlank()) && text.isBlank())) {
+                binding.loginStatus.setText(R.string.login_session_expired)
+            }
+            renderProfileMetrics(null)
+        }
+        updateLoginStatusVisibility()
     }
 
     /** 身份卡姓名行：「姓名（ID 307569）」→「姓名」→「已登录店员」。 */
@@ -487,129 +511,99 @@ class MainActivity : AppCompatActivity() {
         if (binding.profileOrderRate.text.toString() != orderRate) binding.profileOrderRate.text = orderRate
     }
 
-    /**
-     * 头像：优先本地缓存 avatar_{clerkId}.png（>1KB 视为有效），没有缓存才按 avatarUrl 下载。
-     * 任何失败（网络/解码/磁盘）都静默回退首字占位，不影响登录结果；URL 可能带签名参数，
-     * 因此不写日志，缓存文件名只用 clerkId。传空 url 表示只读缓存（回到前台恢复用）。
-     */
-    private fun loadAvatar(url: String, clerkId: Int) {
-        if (clerkId <= 0 || avatarBitmap != null) return
-        val requestId = ++avatarRequestId
-        networkExecutor.execute {
-            val cached = avatarCacheFile(clerkId)?.takeIf { it.isFile && it.length() > MIN_AVATAR_BYTES }
-            val bytes = when {
-                cached != null -> try { cached.readBytes() } catch (_: Exception) { null }
-                isHttpUrl(url) -> downloadAvatar(url)?.also { writeAvatarCache(clerkId, it) }
-                else -> null
-            }
-            val bitmap = bytes?.let { decodeAvatar(it) } ?: return@execute
+    private fun updateClerkProfile(clerk: JSONObject) {
+        val id = clerk.optInt("id", 0)
+        store.saveClerk(clerk.optString("name", ""), id)
+        val key = HistoryStore.accountKey(store.loadPhone()) to id
+        val url = AvatarLoader.normalizeUrl(clerk.optString("avatarUrl", "")) ?: ""
+        if (key != avatarKey || url != avatarUrl) {
+            clearAvatar()
+            avatarKey = key
+            avatarUrl = url
+        }
+        refreshAccountHeader()
+        requestAvatar()
+    }
+
+    private fun clearAvatar() {
+        avatarRequestId++
+        binding.root.removeCallbacks(avatarRetry)
+        avatarBitmap = null
+        avatarKey = null
+        avatarUrl = ""
+        avatarLoading = false
+        binding.avatarStatusText.visibility = View.GONE
+        binding.avatarStatusText.text = ""
+        binding.accountAvatarText.contentDescription = null
+        avatarAttempts = 0
+        avatarRetryAt = 0L
+    }
+
+    private fun restoreAvatarFromCache() {
+        if (!hasValidSession() || avatarBitmap != null || avatarLoading) return
+        val key = HistoryStore.accountKey(store.loadPhone()) to store.loadClerk().second
+        if (key.second <= 0) return
+        avatarKey = key
+        requestAvatar(cacheOnly = true)
+    }
+
+    private fun requestAvatar(force: Boolean = false, cacheOnly: Boolean = false) {
+        val key = avatarKey ?: return
+        if (!hasValidSession() || avatarLoading || (avatarBitmap != null && !force)) return
+        if (!force && !cacheOnly && (avatarAttempts >= 3 || SystemClock.elapsedRealtime() < avatarRetryAt)) return
+        val url = avatarUrl
+        val generation = accountGeneration
+        val request = ++avatarRequestId
+        avatarLoading = true
+        binding.avatarStatusText.visibility = View.VISIBLE
+        binding.avatarStatusText.setText(R.string.avatar_loading)
+        binding.accountAvatarText.contentDescription = getString(R.string.avatar_loading)
+        if (!cacheOnly) avatarAttempts++
+        avatarExecutor.execute {
+            val bitmap = try {
+                if (cacheOnly) avatarLoader.restore(key.first, key.second)
+                else avatarLoader.load(key.first, key.second, url)
+            } catch (_: Exception) { null }
             runOnUiThread {
-                if (isDestroyed || requestId != avatarRequestId || !hasValidSession()) return@runOnUiThread
-                avatarBitmap = bitmap
+                if (isDestroyed || request != avatarRequestId) return@runOnUiThread
+                avatarLoading = false
+                if (generation != accountGeneration || key != avatarKey || url != avatarUrl ||
+                    key.first != HistoryStore.accountKey(store.loadPhone()) || !hasValidSession()) return@runOnUiThread
+                if (bitmap != null) {
+                    avatarBitmap = bitmap
+                    binding.avatarStatusText.visibility = View.GONE
+                    binding.avatarStatusText.text = ""
+                    binding.accountAvatarText.contentDescription = getString(R.string.avatar_loaded)
+                } else {
+                    binding.avatarStatusText.setText(if (url.isBlank()) R.string.avatar_missing else R.string.avatar_unavailable)
+                    binding.accountAvatarText.contentDescription = binding.avatarStatusText.text
+                    if (!cacheOnly && url.isNotBlank() && avatarAttempts < 3) {
+                        val delay = 5_000L * avatarAttempts
+                        avatarRetryAt = SystemClock.elapsedRealtime() + delay
+                        binding.root.removeCallbacks(avatarRetry)
+                        binding.root.postDelayed(avatarRetry, delay)
+                    }
+                }
                 applyAvatarDrawable()
-                binding.accountAvatarText.text = ""
+                binding.accountAvatarText.text = if (avatarBitmap != null) "" else store.loadClerk().first.trim().take(1).ifEmpty { "人" }
             }
         }
     }
 
-    /** 回到前台只恢复本地缓存，不重复发起下载。 */
-    private fun restoreAvatarFromCache() {
-        if (avatarBitmap != null || !hasValidSession()) return
-        val (_, clerkId) = store.loadClerk()
-        val file = avatarCacheFile(clerkId) ?: return
-        if (!file.isFile || file.length() <= MIN_AVATAR_BYTES) return
-        loadAvatar("", clerkId)
-    }
-
-    /** 48dp 圆形头像；没有图就回到 bg_avatar 的首字圆形底。 */
     private fun applyAvatarDrawable() {
         val bitmap = avatarBitmap
         binding.accountAvatarText.background = if (bitmap == null) {
             ContextCompat.getDrawable(this, R.drawable.bg_avatar)
-        } else {
-            RoundedBitmapDrawableFactory.create(resources, bitmap).apply { isCircular = true }
-        }
+        } else RoundedBitmapDrawableFactory.create(resources, bitmap).apply { isCircular = true }
     }
 
-    private fun avatarCacheFile(clerkId: Int): File? =
-        if (clerkId <= 0) null else File(File(cacheDir, AVATAR_DIR), "avatar_$clerkId.png")
-
-    private fun isHttpUrl(url: String): Boolean =
-        url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)
-
-    private fun writeAvatarCache(clerkId: Int, bytes: ByteArray) {
-        val file = avatarCacheFile(clerkId) ?: return
-        try {
-            file.parentFile?.mkdirs()
-            file.writeBytes(bytes)
-        } catch (_: Exception) {
-            // 缓存失败不影响本次显示。
-        }
-    }
-
-    private fun downloadAvatar(url: String): ByteArray? {
-        val connection = try {
-            java.net.URL(url).openConnection() as java.net.HttpURLConnection
-        } catch (_: Exception) {
-            return null
-        }
-        return try {
-            connection.requestMethod = "GET"
-            connection.connectTimeout = AVATAR_TIMEOUT_MS
-            connection.readTimeout = AVATAR_TIMEOUT_MS
-            if (!connection.contentType.orEmpty().startsWith("image/", ignoreCase = true)) return null
-            if (connection.contentLengthLong > MAX_AVATAR_BYTES) return null
-            val buffer = java.io.ByteArrayOutputStream()
-            val input = connection.inputStream
-            try {
-                val chunk = ByteArray(16 * 1024)
-                var read = input.read(chunk)
-                while (read >= 0) {
-                    buffer.write(chunk, 0, read)
-                    if (buffer.size() > MAX_AVATAR_BYTES) return null
-                    read = input.read(chunk)
-                }
-            } finally {
-                try { input.close() } catch (_: Exception) { }
-            }
-            val bytes = buffer.toByteArray()
-            if (looksLikeImage(bytes)) bytes else null
-        } catch (_: Exception) {
-            null
-        } finally {
-            try { connection.disconnect() } catch (_: Exception) { }
-        }
-    }
-
-    // 服务端不一定给 image/… 的 Content-Type，用文件头兜底判断 PNG/JPEG/GIF/WEBP。
-    // 注意：这里必须用行注释。Kotlin 块注释支持嵌套，注释里写 image/* 会再开一层注释，
-    // 导致整个文件后半段被吞掉、报 "Unclosed comment"。
-    private fun looksLikeImage(bytes: ByteArray): Boolean {
-        fun at(index: Int): Int = if (index < bytes.size) bytes[index].toInt() and 0xFF else -1
-        return when {
-            at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4E && at(3) == 0x47 -> true
-            at(0) == 0xFF && at(1) == 0xD8 && at(2) == 0xFF -> true
-            at(0) == 0x47 && at(1) == 0x49 && at(2) == 0x46 -> true
-            at(0) == 0x52 && at(1) == 0x49 && at(2) == 0x46 && at(3) == 0x46 &&
-                at(8) == 0x57 && at(9) == 0x45 && at(10) == 0x42 && at(11) == 0x50 -> true
-            else -> false
-        }
-    }
-
-    /** 按 48dp 目标尺寸降采样解码，避免原图占用过多内存。 */
-    private fun decodeAvatar(bytes: ByteArray): Bitmap? = try {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            null
-        } else {
-            var sample = 1
-            while (bounds.outWidth / (sample * 2) >= AVATAR_TARGET_PX) sample *= 2
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
-                BitmapFactory.Options().apply { inSampleSize = sample })
-        }
-    } catch (_: Throwable) {
-        null
+    private fun renderAbout() {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val build = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+        binding.aboutVersionText.text = getString(R.string.about_version, info.versionName.orEmpty(), build)
+        val verification = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 ||
+            packageName.endsWith(".preview")
+        binding.aboutBuildText.visibility = if (verification) View.VISIBLE else View.GONE
     }
 
     /** 注销二次确认：不可撤销，先把后果说清楚。 */
@@ -659,6 +653,8 @@ class MainActivity : AppCompatActivity() {
         }
         binding.phoneInput.setText("")
         binding.passwordInput.setText("")
+        previouslyAuthenticated = false
+        clearAvatar()
         binding.loginStatus.text = ""
         updateLoginStatusVisibility()
         refreshAccountHeader()
@@ -775,6 +771,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshAccountInfo() {
         if (isDestroyed || networkBusy || ListenService.isRunning) return
+        val phoneSnapshot = store.loadPhone()
+        renderItemTypesHint(phoneSnapshot, null)
         if (!HistoryStore.persistenceHealthy) { Toast.makeText(this, "历史存储异常，平台操作已锁定", Toast.LENGTH_LONG).show(); return }
         val client = try { SessionRepository.forAccount(store.loadConfig(), store.loadPhone(), store.loadPassword()) }
         catch (_: Exception) { return }
@@ -786,6 +784,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val revision = SessionRepository.revision
+        val generation = accountGeneration
+        renderItemTypesHint(phoneSnapshot, session.sid)
         val range = com.doimty.dpgrabber.core.platformWeekRange(System.currentTimeMillis())
         setNetworkBusy(true)
         binding.statisticsOverview.text = "正在读取本周统计；续费率 —；续单率 —"
@@ -797,13 +797,25 @@ class MainActivity : AppCompatActivity() {
                 val status = clerk.opt("status")
                 val random = clerk.opt("randomOrderSwitch")
                 runOnUiThread {
-                    if (revision == SessionRepository.revision) renderShopState(session.sid, status, random)
+                    if (generation == accountGeneration && revision == SessionRepository.revision && !client.isCancelled) {
+                        updateClerkProfile(clerk)
+                        renderShopState(session.sid, status, random)
+                    }
                 }
             } catch (_: Exception) {
                 runOnUiThread {
                     if (revision == SessionRepository.revision) resetShopState("店铺状态读取失败，请稍后重试")
                 }
             }
+            // 类型读取失败不影响头像/统计，也不以空列表覆盖上次有效作用域缓存。
+            try {
+                val selection = parseItemTypes(client.getItemSwitchList())
+                runOnUiThread {
+                    if (validAccountRequest(generation, revision, phoneSnapshot) && !client.isCancelled) {
+                        saveItemTypes(selection.selected, phoneSnapshot, session.sid)
+                    }
+                }
+            } catch (_: Exception) { }
             // 统计只解析一次：同一份响应同时喂给工作台文案与身份卡三项指标。
             var metrics: WeekMetrics? = null
             val text = try {
@@ -879,22 +891,70 @@ class MainActivity : AppCompatActivity() {
         else -> null
     }
 
+    private data class ItemTypes(val ids: List<Int>, val names: List<String>, val selected: List<Int>)
+
+    /** 只有完整有效响应才更新该账号、该实际店铺的本地筛选；失败不抹掉旧有效值。 */
+    private fun parseItemTypes(response: JSONObject): ItemTypes {
+        val data = response.optJSONObject("data") ?: response
+        val rawItems = data.optJSONArray("itemSwitchList") ?: throw IllegalArgumentException("接单类型列表缺失")
+        val ids = mutableListOf<Int>()
+        val names = mutableListOf<String>()
+        for (index in 0 until rawItems.length()) {
+            val item = rawItems.optJSONObject(index) ?: throw IllegalArgumentException("接单类型格式无效")
+            val id = com.doimty.dpgrabber.core.positiveItemId(item.opt("id"))
+                ?: throw IllegalArgumentException("接单类型 ID 无效")
+            require(id !in ids) { "接单类型 ID 重复" }
+            ids.add(id)
+            names.add(item.optString("name").ifBlank { "类型 $id" })
+        }
+        val rawSelected = data.optJSONArray("clerkItemSwitchIds") ?: throw IllegalArgumentException("接单类型选择缺失")
+        val selected = (0 until rawSelected.length()).map { index ->
+            com.doimty.dpgrabber.core.positiveItemId(rawSelected.opt(index))
+                ?: throw IllegalArgumentException("接单类型选择无效")
+        }.distinct()
+        return ItemTypes(ids, names, selected)
+    }
+
+    private fun validAccountRequest(generation: Long, revision: Long, phone: String): Boolean =
+        generation == accountGeneration && revision == SessionRepository.revision && store.loadPhone() == phone
+
+    private fun saveItemTypes(selected: List<Int>, phone: String, sid: String) {
+        val current = store.loadConfig()
+        store.saveConfig(current.copy(itemSwitchIds = selected,
+            itemSwitchAccountKey = HistoryStore.accountKey(phone), itemSwitchShopId = sid).validate())
+        renderItemTypesHint(phone, sid)
+    }
+
+    private fun renderItemTypesHint(phone: String, sid: String?) {
+        val config = store.loadConfig()
+        binding.itemTypesHint.text = when {
+            sid == null || config.itemSwitchAccountKey != HistoryStore.accountKey(phone) ||
+                config.itemSwitchShopId != sid -> "接单类型尚未读取"
+            else -> "已启用 ${config.itemSwitchIds.size} 类；关闭的类型不抢对应随机单，未知类型不猜测"
+        }
+    }
+
     private fun editItemTypes() = networkAction { client ->
         val revision = SessionRepository.revision
+        val generation = accountGeneration
+        val phone = store.loadPhone()
+        val session = client.session ?: throw ApiError(ApiError.Kind.AUTH, "请先登录")
         val response = client.getItemSwitchList()
-        val data = response.optJSONObject("data") ?: response
-        val items = data.optJSONArray("itemSwitchList") ?: throw IllegalArgumentException()
-        val selected = data.optJSONArray("clerkItemSwitchIds") ?: org.json.JSONArray()
-        val ids = (0 until items.length()).map { items.getJSONObject(it).getInt("id") }
-        val names = (0 until items.length()).map { items.getJSONObject(it).optString("name", ids[it].toString()) }.toTypedArray()
-        val checked = BooleanArray(ids.size) { index -> (0 until selected.length()).any { selected.optString(it) == ids[index].toString() } }
+        val types = parseItemTypes(response)
+        client.checkActive()
+        val ids = types.ids
+        val names = types.names.toTypedArray()
+        val checked = BooleanArray(ids.size) { ids[it] in types.selected }
         runOnUiThread {
-            if (isDestroyed || revision != SessionRepository.revision || client.isCancelled) return@runOnUiThread
+            if (isDestroyed || !validAccountRequest(generation, revision, phone) || client.isCancelled ||
+                client.session != session) return@runOnUiThread
+            saveItemTypes(types.selected, phone, session.sid)
             AlertDialog.Builder(this).setTitle("接单类型")
                 .setMultiChoiceItems(names, checked) { dialog, index, enabled ->
                     val list = (dialog as AlertDialog).listView
                     val before = !enabled
-                    if (networkBusy || ListenService.isRunning || revision != SessionRepository.revision) {
+                    if (networkBusy || ListenService.isRunning ||
+                        !validAccountRequest(generation, revision, phone) || client.isCancelled) {
                         checked[index] = before
                         list.setItemChecked(index, before)
                         return@setMultiChoiceItems
@@ -902,8 +962,18 @@ class MainActivity : AppCompatActivity() {
                     val chosen = ids.filterIndexed { i, _ -> if (i == index) enabled else checked[i] }
                     list.isEnabled = false
                     networkAction { api ->
-                        try { api.updateItemSwitch(ids[index], chosen); checked[index] = enabled }
-                        catch (e: Exception) {
+                        try {
+                            api.updateItemSwitch(ids[index], chosen)
+                            api.checkActive()
+                            // 平台写成功后立即保存同账号、同实际店铺的本地筛选作用域。
+                            // 即使随后刷新店员资料失败，也不能悄悄丢掉这次已确认的修改。
+                            runOnUiThread {
+                                if (validAccountRequest(generation, revision, phone)) {
+                                    checked[index] = enabled
+                                    saveItemTypes(chosen, phone, session.sid)
+                                }
+                            }
+                        } catch (e: Exception) {
                             checked[index] = before
                             runOnUiThread { list.setItemChecked(index, before) }
                             throw e
@@ -1005,13 +1075,6 @@ class MainActivity : AppCompatActivity() {
         /** clerk.status 取值：1=上线、2=下线（与 ApiClient.updateStatus 一致）。 */
         private const val STATUS_ONLINE = 1
         private const val STATUS_OFFLINE = 2
-        /** 头像缓存与下载限制。 */
-        private const val AVATAR_DIR = "avatars"
-        private const val MIN_AVATAR_BYTES = 1024L
-        private const val MAX_AVATAR_BYTES = 2L * 1024 * 1024
-        private const val AVATAR_TIMEOUT_MS = 10_000
-        /** 48dp 头像在最高密度下约 144px，用作物理解码上限。 */
-        private const val AVATAR_TARGET_PX = 144
         private val PAGE_TITLES = intArrayOf(
             R.string.tab_workbench,
             R.string.tab_rules,

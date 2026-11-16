@@ -4,6 +4,14 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.graphics.Rect
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import androidx.core.graphics.drawable.RoundedBitmapDrawable
+import com.doimty.dpgrabber.data.AvatarLoader
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.atomic.AtomicInteger
 import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
@@ -60,6 +68,9 @@ class UiReviewInstrumentedTest {
     private var main: ActivityScenario<MainActivity>? = null
     private var caseName = "setup"
     private lateinit var store: CredentialStore
+    private lateinit var savedAvatarTransport: Any
+    private val avatarCalls = AtomicInteger()
+    @Volatile private var avatarReply: () -> ByteArray? = { syntheticAvatar(Color.BLUE) }
 
     @Before
     fun prepare() {
@@ -67,6 +78,15 @@ class UiReviewInstrumentedTest {
         assertTrue("仅允许 debuggable 测试目标", context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
         assertTrue("未知屏幕配置", profile in setOf("compact-light", "compact-dark-large", "wide-light"))
         verifyNetworkIsolation()
+        val avatarField = AvatarLoader::class.java.getDeclaredField("transport").apply { isAccessible = true }
+        savedAvatarTransport = avatarField.get(null)
+        // 所有头像请求同样走替身；不存在真实网络回退。
+        avatarField.set(null, AvatarLoader.Transport { url ->
+            check(URI(url).scheme == "https" && URI(url).host == "avatar.invalid")
+            avatarCalls.incrementAndGet()
+            avatarReply()
+        })
+        File(context.cacheDir, "avatars").deleteRecursively()
         assertFalse("测试不得接管运行中的监听", ListenService.isRunning)
         store = CredentialStore(context)
         store.clearAccount()
@@ -86,6 +106,8 @@ class UiReviewInstrumentedTest {
                 .filterIsInstance<SettingsActivity>().forEach { it.finish() }
         }
         main?.close()
+        if (::savedAvatarTransport.isInitialized) AvatarLoader::class.java.getDeclaredField("transport")
+            .apply { isAccessible = true }.set(null, savedAvatarTransport)
         if (::store.isInitialized) store.clearAccount()
         val requests = JSONArray()
         fixtures.forEach { fixture -> fixture.requests.forEach { requests.put(it) } }
@@ -274,6 +296,20 @@ class UiReviewInstrumentedTest {
         scrollTo("globalWaitInput")
         device.findObject(By.res(PACKAGE, "globalWaitInput")).apply { click(); text = "2" }
         device.pressBack()
+        scrollTo("shopWaitInput")
+        device.findObject(By.res(PACKAGE, "shopWaitInput")).apply { click(); text = "92=1.5" }
+        device.pressBack()
+        awaitText("waitEffectiveText", "等待表 1.5 秒 + 微调 0.125 秒 = 1.625 秒")
+        scrollTo("autoWaitOffsetInput")
+        device.findObject(By.res(PACKAGE, "autoWaitOffsetInput")).apply { click(); text = "0.25" }
+        device.pressBack()
+        awaitText("waitEffectiveText", "等待表 1.5 秒 + 微调 0.25 秒 = 1.75 秒")
+        scrollTo("globalWaitInput")
+        assertFalse("店铺有等待表时，应保留但不参与计算全局等待", device.findObject(By.res(PACKAGE, "globalWaitInput")).isEnabled)
+        capture("settings-wait-offset-effective")
+        scrollTo("busyCooldownInput")
+        device.findObject(By.res(PACKAGE, "busyCooldownInput")).apply { click(); text = "45" }
+        device.pressBack()
         val before = store.loadConfig().autoStopAfterGrab
         // 开关在长表单底部；先完整滚到底，避免大字号时点击到被遮挡的半个控件。
         scrollBottom()
@@ -292,6 +328,9 @@ class UiReviewInstrumentedTest {
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
         assertEquals(9.0, store.loadConfig().requestTimeoutSec, 0.0)
         assertEquals(2.0, store.loadConfig().globalWaitSec, 0.0)
+        assertEquals(mapOf("92" to 1.5), store.loadConfig().confirmWaitByShop)
+        assertEquals(0.25, store.loadConfig().autoWaitOffset, 0.0)
+        assertEquals(45, store.loadConfig().busyCooldownSec)
         capture("settings-saved-return-home")
         main!!.recreate()
         // 重建后底部导航默认回到工作台，必须回到“我的”才能继续验收账号区。
@@ -304,6 +343,11 @@ class UiReviewInstrumentedTest {
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "shopIdInput")), WAIT_MS))
         scrollTo("requestTimeoutInput")
         assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "requestTimeoutInput").text("9")), WAIT_MS))
+        scrollTo("busyCooldownInput")
+        assertTrue("满额冷却须真实重新加载", device.wait(Until.hasObject(By.res(PACKAGE, "busyCooldownInput").text("45")), WAIT_MS))
+        scrollTo("autoWaitOffsetInput")
+        assertTrue("等待微调须真实重新加载", device.wait(Until.hasObject(By.res(PACKAGE, "autoWaitOffsetInput").text("0.25")), WAIT_MS))
+        awaitText("waitEffectiveText", "等待表 1.5 秒 + 微调 0.25 秒 = 1.75 秒")
         capture("settings-persisted-top")
         device.pressBack()
         scrollTop()
@@ -353,6 +397,197 @@ class UiReviewInstrumentedTest {
             fixture.requests.count { it.getString("path") == "/s/c/clerk/updateRandomOrderSwitch" })
         assertTrue(SessionRepository.hasLiveSession())
         assertFalse(ListenService.isRunning)
+    }
+
+    @Test(timeout = 180_000)
+    fun itemTypeSelectionPersistsAccountAndShopScope() {
+        caseName = "10-item-types"
+        store.saveAccount(PHONE, PASSWORD)
+        val fixture = injectFixture(Mode.SUCCESS)
+        launchMain()
+        selectTab("我的")
+        click("loginButton")
+        assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "profileCard")), WAIT_MS))
+        selectTab("工作台")
+        awaitText("accountOverview", "已上线")
+        awaitText("itemTypesHint", "已启用 3 类")
+        click("itemTypesButton")
+        assertTrue(device.wait(Until.hasObject(By.text("接单类型")), WAIT_MS))
+        val video = device.wait(Until.findObject(By.text("视频")), WAIT_MS)
+        assertNotNull("应通过真实类型对话框操作“视频”", video)
+        video!!.click()
+        // 对话框保持打开；轮询本地持久化而不是依赖后台资料刷新。
+        val persisted = run {
+            val deadline = SystemClock.elapsedRealtime() + WAIT_MS
+            while (SystemClock.elapsedRealtime() < deadline) {
+                if (store.loadConfig().itemSwitchIds == listOf(465, 2667)) return@run true
+                SystemClock.sleep(100)
+            }
+            false
+        }
+        assertTrue("平台确认后应立即保存类型选择", persisted)
+        val saved = store.loadConfig()
+        assertEquals(listOf(465, 2667), saved.itemSwitchIds)
+        assertEquals(HistoryStore.accountKey(PHONE), saved.itemSwitchAccountKey)
+        assertEquals("92", saved.itemSwitchShopId)
+        assertTrue(fixture.updatedItems.any {
+            it.getInt("switchId") == 2666 && it.getJSONArray("switchIds").toString() == "[465,2667]"
+        })
+        val done = device.wait(Until.findObject(By.res("android", "button1")), WAIT_MS)
+        assertNotNull("完成保存后应能关闭类型对话框", done)
+        done!!.click()
+        instrumentation.waitForIdleSync()
+        awaitText("itemTypesHint", "已启用 2 类")
+        capture("item-types-selection-saved")
+        // 另一个账号不能继承此账号、此店铺的类型筛选。
+        val other = store.loadConfig().copy(itemSwitchAccountKey = HistoryStore.accountKey("00000000001"))
+        assertFalse(com.doimty.dpgrabber.core.orderFilterFromConfig(other,
+            com.doimty.dpgrabber.core.ItemSwitchScope(HistoryStore.accountKey(PHONE), "92")).enabledItems.isNotEmpty())
+        val filter = com.doimty.dpgrabber.core.orderFilterFromConfig(saved,
+            com.doimty.dpgrabber.core.ItemSwitchScope(HistoryStore.accountKey(PHONE), "92"))
+        assertTrue(filter.check(JSONObject().put("id", "synthetic-video")
+            .put("itemId", 2666).put("totalAmount", 1000)).first.not())
+        assertTrue(filter.check(JSONObject().put("id", "synthetic-voice")
+            .put("itemId", 465).put("totalAmount", 1000)).first)
+    }
+
+    @Test(timeout = 180_000)
+    fun avatarImageCacheRecreationAndAbout() {
+        caseName = "08-avatar-cache"
+        store.saveAccount(PHONE, PASSWORD)
+        injectFixture(Mode.SUCCESS)
+        launchMain()
+        selectTab("我的")
+        click("loginButton")
+        awaitText("avatarStatusText", "已加载")
+        assertActualAvatar()
+        val downloads = avatarCalls.get()
+        assertTrue("应下载真实合成 PNG 字节", downloads > 0)
+        main!!.recreate()
+        selectTab("我的")
+        awaitText("avatarStatusText", "已加载")
+        assertActualAvatar()
+        assertEquals("重建必须复用缓存，不应重复下载", downloads, avatarCalls.get())
+        capture("avatar-after-recreate")
+        scrollTo("aboutVersionText")
+        awaitText("aboutVersionText", "build")
+        awaitText("aboutBuildText", "验证版")
+        awaitText("aboutUsageText", "停止监听不会退出账号")
+        assertFalse(textOf("aboutUsageText").contains("不注入"))
+        capture("about-runtime-version")
+        // 坏缓存不得被永久复用；必须回退下载，且真实 PNG 不依赖 Content-Type。
+        val cache = File(context.cacheDir, "avatars").walkTopDown().first { it.extension == "png" }
+        cache.writeText("<html>不是图片</html>")
+        val loader = AvatarLoader(context.cacheDir)
+        assertNotNull(loader.load(HistoryStore.accountKey(PHONE), 90001,
+            "https://avatar.invalid/avatar_90001.png?v=1"))
+        assertTrue(avatarCalls.get() > downloads)
+        assertEquals("https://avatar.invalid/a.png?sig=a%2Fb", AvatarLoader.normalizeUrl("http://avatar.invalid/a.png?sig=a%2Fb"))
+        assertEquals("https://avatar.invalid/a.png", AvatarLoader.normalizeUrl("//avatar.invalid/a.png"))
+        assertEquals(ApiClient.BASE_URL + "/avatars/a.png", AvatarLoader.normalizeUrl("/avatars/a.png"))
+        assertNull(AvatarLoader.normalizeUrl("file:///private/avatar.png"))
+        assertNull(AvatarLoader.normalizeUrl("https://user:password@avatar.invalid/a.png"))
+        avatarReply = { ByteArray(2 * 1024 * 1024 + 1) }
+        assertNull("超过2MB的内容必须拒绝", loader.load("size-boundary", 90001, "https://avatar.invalid/too-large.png"))
+        avatarReply = { "<html>伪装成图片的错误页</html>".toByteArray() }
+        assertNull("无论响应标签如何，HTML不能成为头像", loader.load("html-boundary", 90001, "https://avatar.invalid/error.png"))
+        avatarReply = { syntheticAvatar(Color.BLUE) }
+        // 真正失去会话时，重新出现的表单不能残留“登录成功”。
+        SessionRepository.invalidate()
+        main!!.onActivity { activity ->
+            MainActivity::class.java.getDeclaredMethod("refreshAccountHeader")
+                .apply { isAccessible = true }.invoke(activity)
+        }
+        selectTab("我的")
+        awaitText("loginStatus", "会话已失效")
+        assertFalse(textOf("loginStatus").contains("登录成功"))
+    }
+
+    @Test(timeout = 180_000)
+    fun avatarFailureRetryAndOldAccountResultCannotReturn() {
+        caseName = "09-avatar-retry-isolation"
+        avatarReply = { "<html>不是图片</html>".toByteArray() }
+        store.saveAccount(PHONE, PASSWORD)
+        injectFixture(Mode.SUCCESS)
+        launchMain()
+        selectTab("我的")
+        click("loginButton")
+        awaitText("avatarStatusText", "暂不可用")
+        main!!.onActivity { activity ->
+            assertFalse(activity.findViewById<TextView>(R.id.accountAvatarText).background is RoundedBitmapDrawable)
+        }
+        avatarReply = { syntheticAvatar(Color.BLUE) }
+        click("avatarStatusText")
+        awaitText("avatarStatusText", "已加载")
+        assertActualAvatar()
+        // 新版本的头像请求暂停，注销换号后再放行旧请求，证明不会串图。
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val returned = CountDownLatch(1)
+        avatarReply = {
+            entered.countDown()
+            // 故意忽略中断，模拟网络下载在注销后才完成。
+            var ready = false
+            while (!ready) try { release.await(45, TimeUnit.SECONDS); ready = true } catch (_: InterruptedException) { }
+            returned.countDown()
+            syntheticAvatar(Color.RED)
+        }
+        main!!.onActivity { activity ->
+            MainActivity::class.java.getDeclaredMethod("updateClerkProfile", JSONObject::class.java)
+                .apply { isAccessible = true }.invoke(activity, JSONObject().put("id", 90001)
+                    .put("name", "旧合成店员").put("avatarUrl", "https://avatar.invalid/old-delayed.png"))
+        }
+        assertTrue(entered.await(8, TimeUnit.SECONDS))
+        try {
+            click("logoutButton")
+            val confirm = device.wait(Until.findObject(By.res("android", "button1")), WAIT_MS)
+            assertNotNull(confirm)
+            confirm!!.click()
+            assertTrue(device.wait(Until.hasObject(By.res(PACKAGE, "phoneInput")), WAIT_MS))
+            assertFalse(textOf("loginStatus").contains("登录成功"))
+            val otherPhone = "00000000001"
+            store.saveAccount(otherPhone, PASSWORD)
+            avatarReply = { syntheticAvatar(Color.GREEN) }
+            val fixture = injectFixture(Mode.SUCCESS, phone = otherPhone)
+            fixture.clerkId = 90002
+            main!!.onActivity {
+                it.findViewById<android.widget.EditText>(R.id.phoneInput).setText(otherPhone)
+                it.findViewById<android.widget.EditText>(R.id.passwordInput).setText(PASSWORD)
+            }
+            click("loginButton")
+            awaitText("profileName", "90002")
+            release.countDown()
+            assertTrue(returned.await(8, TimeUnit.SECONDS))
+            awaitText("avatarStatusText", "已加载")
+            main!!.onActivity { activity ->
+                val drawable = activity.findViewById<TextView>(R.id.accountAvatarText).background as RoundedBitmapDrawable
+                assertEquals("旧账号红色头像不得闪回", Color.GREEN, drawable.bitmap!!.getPixel(0, 0))
+            }
+            assertFalse(ListenService.isRunning)
+            capture("avatar-after-account-change")
+        } finally { release.countDown() }
+    }
+
+    private fun assertActualAvatar() {
+        main!!.onActivity { activity ->
+            val view = activity.findViewById<TextView>(R.id.accountAvatarText)
+            assertTrue("必须是解码图片而非占位背景", view.background is RoundedBitmapDrawable)
+            assertTrue("真实头像不能叠手机号尾号", view.text.isEmpty())
+            assertEquals("店员头像已加载", view.contentDescription.toString())
+        }
+    }
+
+    private fun syntheticAvatar(color: Int): ByteArray {
+        val bitmap = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(color)
+        canvas.drawCircle(48f, 40f, 20f, Paint().apply { this.color = Color.WHITE })
+        canvas.drawRect(22f, 67f, 74f, 96f, Paint().apply { this.color = Color.WHITE })
+        return ByteArrayOutputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            bitmap.recycle()
+            out.toByteArray()
+        }
     }
 
     private fun openSettingsDirectly() {
@@ -494,7 +729,11 @@ class UiReviewInstrumentedTest {
     }
 
     /** 安全读取控件文本：节点缺失或 text 为 null 时返回空串，避免 NPE。 */
-    private fun textOf(id: String): String = device.findObject(By.res(PACKAGE, id))?.text ?: ""
+    private fun textOf(id: String): String = device.findObject(By.res(PACKAGE, id))?.text ?: run {
+        var text = ""
+        main?.onActivity { text = it.findViewById<TextView?>(R.id::class.java.getField(id).getInt(null))?.text?.toString().orEmpty() }
+        text
+    }
 
     /** TextInputEditText 空态会把 hint 当作无障碍 text 暴露，故“空或等于 hint”都算未填写。 */
     private fun isEffectivelyEmpty(id: String, hint: String): Boolean {
@@ -516,6 +755,13 @@ class UiReviewInstrumentedTest {
      * 先尽力滚动一次，再按文本片段轮询；只有需要交互的场景才用 scrollTo/click。
      */
     private fun awaitText(id: String, fragment: String, ms: Long = WAIT_MS) {
+        // 已加载头像的状态行会 GONE，仅保留无障碍描述；仍须核验真实 Bitmap。
+        if (id == "avatarStatusText" && fragment == "已加载") {
+            assertTrue("必须等待真实头像而非可见成功文案", device.wait(Until.hasObject(
+                By.res(PACKAGE, "accountAvatarText").descContains("店员头像已加载")), ms))
+            assertActualAvatar()
+            return
+        }
         // 目标可能因 GONE/不可见而无法 scrollIntoView，失败不中断等待。
         runCatching { scrollTo(id) }
         if (device.wait(Until.hasObject(By.res(PACKAGE, id).textContains(fragment)), ms)) return
@@ -601,10 +847,13 @@ class UiReviewInstrumentedTest {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(if (gated) 1 else 0)
         val requests = CopyOnWriteArrayList<JSONObject>()
+        val updatedItems = CopyOnWriteArrayList<JSONObject>()
         val unknown = CopyOnWriteArrayList<String>()
         @Volatile var failNextClerkRead = false
         private var onlineStatus = 1
         private var randomEnabled = true
+        private val selectedItems = mutableSetOf(465, 2666, 2667)
+        @Volatile var clerkId = 90001
 
         override fun cancelAll() { release.countDown() }
 
@@ -633,7 +882,8 @@ class UiReviewInstrumentedTest {
                         return json("""{"code":7,"msg":"合成状态读取失败"}""")
                     }
                     json(JSONObject().put("code", 0).put("clerk", JSONObject()
-                        .put("id", 90001).put("shopId", 92).put("name", "离线合成店员")
+                        .put("id", clerkId).put("shopId", 92).put("name", "离线合成店员")
+                        .put("avatarUrl", "https://avatar.invalid/avatar_$clerkId.png?v=1")
                         .put("status", onlineStatus).put("randomOrderSwitch", randomEnabled)).toString())
                 }
                 "/s/c/clerk/updateStatus" -> {
@@ -650,6 +900,28 @@ class UiReviewInstrumentedTest {
                     json("""{"code":0}""")
                 }
                 "/s/c/statistics/statisticsClerkOrder" -> json("""{"code":0,"data":{"orderCount":12,"orderAmount":240,"continuedAmount":60,"continuedCount":3,"continuedUserCount":2}}""")
+                "/s/c/clerk/getItemSwitchList" -> json(JSONObject().put("code", 0)
+                    .put("itemSwitchList", JSONArray(listOf(
+                        JSONObject().put("id", 465).put("name", "语音"),
+                        JSONObject().put("id", 2666).put("name", "视频"),
+                        JSONObject().put("id", 2667).put("name", "游戏"))))
+                    .put("clerkItemSwitchIds", JSONArray(selectedItems.toList())).toString())
+                "/s/c/clerk/updateItemSwitch" -> {
+                    val form = body?.toString(Charsets.UTF_8).orEmpty().split("&")
+                        .associate { part -> part.substringBefore("=") to part.substringAfter("=", "") }
+                    val selected = java.net.URLDecoder.decode(form["switchIds"], "UTF-8")
+                    val ids = if (selected.isNullOrBlank() || selected == "[]") emptyList() else
+                        JSONArray(selected).let { array -> (0 until array.length()).map { array.getInt(it) } }
+                    val switchId = requireNotNull(form["switchId"]?.toIntOrNull())
+                    check(switchId in setOf(465, 2666, 2667))
+                    check(ids.toSet().size == ids.size && ids.all { it in setOf(465, 2666, 2667) })
+                    synchronized(selectedItems) {
+                        selectedItems.clear()
+                        selectedItems.addAll(ids)
+                    }
+                    updatedItems.add(JSONObject().put("switchId", switchId).put("switchIds", JSONArray(ids)))
+                    json(JSONObject().put("code", 0).put("clerkItemSwitchIds", JSONArray(ids)).toString())
+                }
                 else -> throw AssertionError("白名单没有响应：$key")
             }
         }
@@ -659,7 +931,8 @@ class UiReviewInstrumentedTest {
         companion object {
             private val ALLOWED = setOf("POST /s/duopei-account/login", "GET /s/duopei-account/list-shop-account",
                 "POST /s/duopei-account/switch-account", "GET /s/c/clerk/get", "GET /s/c/statistics/statisticsClerkOrder",
-                "POST /s/c/clerk/updateStatus", "POST /s/c/clerk/updateRandomOrderSwitch")
+                "POST /s/c/clerk/updateStatus", "POST /s/c/clerk/updateRandomOrderSwitch",
+                "POST /s/c/clerk/getItemSwitchList", "POST /s/c/clerk/updateItemSwitch")
         }
     }
 

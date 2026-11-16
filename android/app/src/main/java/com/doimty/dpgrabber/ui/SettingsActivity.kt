@@ -3,7 +3,9 @@ package com.doimty.dpgrabber.ui
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.doAfterTextChanged
 import com.doimty.dpgrabber.R
+import com.doimty.dpgrabber.core.AppConfig
 import com.doimty.dpgrabber.data.CredentialStore
 import com.doimty.dpgrabber.databinding.ActivitySettingsBinding
 
@@ -17,6 +19,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var store: CredentialStore
+    private lateinit var loadedConfig: AppConfig
     private var rollingBack = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,6 +31,7 @@ class SettingsActivity : AppCompatActivity() {
         store = CredentialStore(this)
 
         val config = store.loadConfig()
+        loadedConfig = config
         binding.shopIdInput.setText(config.shopId.toString())
         binding.requestTimeoutInput.setText(trimNumber(config.requestTimeoutSec))
         binding.seenTtlInput.setText(trimNumber(config.seenTtlSec))
@@ -39,6 +43,13 @@ class SettingsActivity : AppCompatActivity() {
         binding.verifyTlsSwitch.isEnabled = false
         binding.shopWaitInput.setText(config.confirmWaitByShop.entries.joinToString("\n") { "${it.key}=${it.value}" })
         binding.globalWaitInput.setText(trimNumber(config.globalWaitSec))
+        binding.autoWaitOffsetInput.setText(trimNumber(config.autoWaitOffset))
+        binding.busyCooldownInput.setText(config.busyCooldownSec.toString())
+        listOf(binding.shopIdInput, binding.shopWaitInput, binding.globalWaitInput,
+            binding.autoWaitOffsetInput).forEach { input ->
+            input.doAfterTextChanged { updateEffectiveWait() }
+        }
+        updateEffectiveWait()
         binding.runDurationInput.setText(trimNumber(config.runDurationSec))
         binding.restDurationInput.setText(trimNumber(config.restDurationSec))
         binding.autoStopSwitch.isChecked = config.autoStopAfterGrab
@@ -73,9 +84,9 @@ class SettingsActivity : AppCompatActivity() {
     private fun save() {
         try {
             val current = store.loadConfig()
-            val updated = current.copy(
-                shopId = binding.shopIdInput.text.toString().toIntOrNull()
-                    ?: throw IllegalArgumentException("店铺 ID 必须是整数"),
+            val updated = readWaitDraft(current).copy(
+                busyCooldownSec = binding.busyCooldownInput.text.toString().trim().toIntOrNull()
+                    ?: throw IllegalArgumentException("冷却须为整数"),
                 requestTimeoutSec = binding.requestTimeoutInput.text.toString().toDoubleOrNull()
                     ?: throw IllegalArgumentException("请求超时必须是数字"),
                 seenTtlSec = binding.seenTtlInput.text.toString().toDoubleOrNull()
@@ -85,12 +96,6 @@ class SettingsActivity : AppCompatActivity() {
                 aesKeyHexAlt = binding.aesKeyAltInput.text.toString().trim().lowercase(),
                 aesIvHexAlt = binding.aesIvAltInput.text.toString().trim().lowercase(),
                 verifyTls = true,
-                confirmWaitByShop = binding.shopWaitInput.text.toString().lines().filter { it.isNotBlank() }.associate { line ->
-                    val parts = line.split("=")
-                    require(parts.size == 2) { "店铺等待须为 sid=秒" }
-                    parts[0].trim() to (parts[1].trim().toDoubleOrNull() ?: throw IllegalArgumentException("等待必须为数字"))
-                },
-                globalWaitSec = binding.globalWaitInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("全局等待无效"),
                 runDurationSec = binding.runDurationInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("运行秒数无效"),
                 restDurationSec = binding.restDurationInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("休息秒数无效"),
                 autoStopAfterGrab = binding.autoStopSwitch.isChecked,
@@ -106,9 +111,69 @@ class SettingsActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Toast.makeText(
                 this,
-                getString(R.string.advanced_invalid, e.message ?: ""),
+                when {
+                    e is IllegalArgumentException -> "设置无效，请检查范围、小数位及密钥格式"
+                    com.doimty.dpgrabber.service.ListenService.isRunning -> "请先停止监听再修改连接设置"
+                    else -> "保存失败，请重试"
+                },
                 Toast.LENGTH_LONG
             ).show()
+        }
+    }
+
+    private fun readWaitDraft(base: AppConfig): AppConfig {
+        val offsetText = binding.autoWaitOffsetInput.text.toString().trim()
+        require(offsetText.toBigDecimalOrNull()?.scale()?.let { it <= 3 } == true) {
+            "微调最多3位小数"
+        }
+        return base.copy(
+            shopId = binding.shopIdInput.text.toString().trim().toIntOrNull()
+                ?: throw IllegalArgumentException("店铺 ID 必须是整数"),
+            confirmWaitByShop = binding.shopWaitInput.text.toString().lines()
+                .filter { it.isNotBlank() }.associate { line ->
+                    val parts = line.split("=")
+                    require(parts.size == 2) { "店铺等待须为 sid=秒" }
+                    parts[0].trim() to (parts[1].trim().toDoubleOrNull()
+                        ?: throw IllegalArgumentException("等待必须为数字"))
+                },
+            globalWaitSec = binding.globalWaitInput.text.toString().trim().toDoubleOrNull()
+                ?: throw IllegalArgumentException("全局等待无效"),
+            autoWaitOffset = offsetText.toDoubleOrNull()
+                ?: throw IllegalArgumentException("等待微调无效")
+        )
+    }
+
+    private fun updateEffectiveWait() {
+        binding.globalWaitInput.isEnabled = true
+        binding.globalWaitHintText.text = "仅当当前店铺没有等待表配置时使用；保留此值供其他店铺回退。"
+        try {
+            val draft = readWaitDraft(loadedConfig).validate()
+            // 登录店铺是实际认证对象；编辑优先店铺时展示即将保存的草稿目标。
+            val actualSid = com.doimty.dpgrabber.data.SessionRepository.currentShopId()
+            val sid = if (actualSid != null && draft.shopId == loadedConfig.shopId) actualSid else draft.shopId
+            val shopWait = draft.confirmWaitByShop[sid.toString()]
+            val baseWait = shopWait ?: draft.globalWaitSec
+            val source = if (shopWait != null) "等待表" else "使用全局等待"
+            binding.globalWaitInput.isEnabled = shopWait == null
+            if (shopWait != null) {
+                binding.globalWaitHintText.text = "店铺 $sid 已使用等待表，全局等待不参与本店铺计算；保留此值供其他店铺回退。"
+            }
+            val detail = if (sid in setOf(50, 105, 1391)) {
+                val total = java.math.BigDecimal.valueOf(baseWait)
+                    .add(java.math.BigDecimal.valueOf(draft.autoWaitOffset))
+                    .max(java.math.BigDecimal.ZERO).stripTrailingZeros().toPlainString()
+                "$source ${trimNumber(baseWait)} 秒 + 微调 ${trimNumber(draft.autoWaitOffset)} 秒 = $total 秒"
+            } else {
+                "$source ${trimNumber(baseWait)} 秒；此店铺不应用微调"
+            }
+            val scopeLabel = when {
+                actualSid != null && sid == actualSid -> "当前登录店铺 $sid"
+                actualSid != null -> "保存后优先店铺 $sid"
+                else -> "优先店铺 $sid（实际以登录店铺为准）"
+            }
+            binding.waitEffectiveText.text = "$scopeLabel：$detail；实际确认时会扣除订单已等待时间。"
+        } catch (_: IllegalArgumentException) {
+            binding.waitEffectiveText.text = "请完成等待设置"
         }
     }
 

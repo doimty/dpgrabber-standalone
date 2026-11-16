@@ -42,6 +42,7 @@
     <string name="btn_random_on">开启随机单</string>
     <string name="btn_random_off">关闭随机单</string>
     <string name="btn_item_types">接单类型</string>
+    <string name="item_types_not_read">接单类型尚未读取</string>
 
     <!-- 监听设置 -->
     <string name="section_settings">接单规则</string>
@@ -84,7 +85,14 @@
     <!-- 我的 -->
     <string name="btn_advanced_settings">高级设置</string>
     <string name="title_about">关于</string>
-    <string name="about_text">DPGrabber 独立版 · 手机号 + 密码登录 · 不注入宿主 App</string>
+    <string name="about_text">停止监听不会退出账号；退出登录在「我的」中操作。\n历史保存在当前应用本机。</string>
+    <string name="about_version">版本 %1$s（build %2$d）</string>
+    <string name="about_verification">当前为验证版</string>
+    <string name="login_session_expired">会话已失效，请重新登录</string>
+    <string name="avatar_loading">头像加载中…</string>
+    <string name="avatar_loaded">店员头像已加载</string>
+    <string name="avatar_missing">未读取到有效头像地址，点击重试</string>
+    <string name="avatar_unavailable">头像暂不可用，点击重试</string>
 
     <!-- 高级设置 -->
     <string name="menu_advanced">高级设置</string>

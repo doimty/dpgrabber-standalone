@@ -299,6 +299,210 @@ class EngineTest {
         assertEquals(1, transport.calls.count { it.url.contains("/order/get") })
     }
 
+    @Test fun `忙碌只确认一次预写更新同attempt且落库后才冷却`() {
+        val transport = transport()
+        transport.script("/confirm", 200, """{"code":0,"msg":"同时接单数超过限制的10单"}""")
+        val enteredCooldown = CountDownLatch(1)
+        val hold = CountDownLatch(1)
+        val attempts = CopyOnWriteArrayList<OrderOutcome>()
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> },
+            onAttemptStarted = { attempts.add(it) }, onOutcome = { outcomes.add(it) },
+            sleeper = { if (outcomes.isNotEmpty()) { enteredCooldown.countDown(); hold.await(3, TimeUnit.SECONDS) } })
+        engine.start("10000000000", "test")
+        assertTrue(enteredCooldown.await(3, TimeUnit.SECONDS))
+        engine.stop()
+        assertTrue(engine.awaitStopped())
+        assertEquals(OutcomeType.UNKNOWN, attempts.single().type)
+        assertEquals(OutcomeType.SKIPPED, outcomes.single().type)
+        assertEquals(attempts.single().attemptId, outcomes.single().attemptId)
+        assertTrue(outcomes.single().reason.contains("10单"))
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        assertTrue(transport.calls.none { it.url.contains("/order/get") })
+    }
+
+    @Test fun `忙碌默认60秒冷却再轮询且旧单不会再次确认`() {
+        val transport = transport()
+        transport.script("/confirm", 200, """{"code":1,"msg":"同时接单数超过限制的3单"}""")
+        val elapsed = java.util.concurrent.atomic.AtomicLong()
+        val polls = java.util.concurrent.atomic.AtomicInteger()
+        val repolled = CountDownLatch(1)
+        transport.scriptDynamic("/randomList") {
+            if (polls.incrementAndGet() >= 3) repolled.countDown()
+            FakeTransport.Scripted(200, """{"code":0,"list":[{"id":"busy","totalAmount":2500}]}""".toByteArray())
+        }
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> },
+            monotonicNs = { elapsed.get() * 1000000 }, sleeper = { elapsed.addAndGet(it) }, onOutcome = { outcomes.add(it) })
+        engine.start("10000000000", "test")
+        assertTrue(repolled.await(3, TimeUnit.SECONDS))
+        engine.stop()
+        assertTrue(engine.awaitStopped())
+        assertTrue(elapsed.get() >= 60000)
+        assertEquals(OutcomeType.SKIPPED, outcomes.single().type)
+        assertTrue(outcomes.single().reason.contains("3单"))
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        assertTrue(transport.calls.none { it.url.contains("/order/get") })
+    }
+
+    @Test fun `提交后网络未知即使只读pending也不得自动重发`() {
+        val transport = transport()
+        transport.script("/confirm", 500, "{}")
+        transport.script("/order/get", 200, """{"code":0,"status":0}""")
+        val recorded = CountDownLatch(1)
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> }, onOutcome = { outcomes.add(it); recorded.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(recorded.await(3, TimeUnit.SECONDS))
+        engine.stop()
+        assertTrue(engine.awaitStopped())
+        assertEquals(OutcomeType.UNKNOWN, outcomes.single().type)
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        assertEquals(1, transport.calls.count { it.url.contains("/order/get") })
+    }
+
+    @Test fun `忙碌冷却使用热配置并继续扫描而不重发旧单`() {
+        val transport = transport()
+        val elapsed = java.util.concurrent.atomic.AtomicLong()
+        val confirms = java.util.concurrent.atomic.AtomicInteger()
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val done = CountDownLatch(1)
+        transport.scriptDynamic("/randomList") {
+            val id = if (outcomes.isEmpty()) "busy" else "next"
+            FakeTransport.Scripted(200, """{"code":0,"list":[{"id":"$id","totalAmount":2500}]}""".toByteArray())
+        }
+        transport.scriptDynamic("/confirm") {
+            val response = if (confirms.incrementAndGet() == 1) """{"code":1,"msg":"接单数超过限制"}""" else """{"code":0}"""
+            FakeTransport.Scripted(200, response.toByteArray())
+        }
+        val engine = ListenEngine(TestKit.client(transport), config, { _, _ -> },
+            configSnapshot = { config.copy(busyCooldownSec = 7) },
+            monotonicNs = { elapsed.get() * 1000000 }, sleeper = { elapsed.addAndGet(it) },
+            onOutcome = { outcomes.add(it) }, onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertEquals(listOf(OutcomeType.SKIPPED, OutcomeType.SUCCESS), outcomes.map { it.type })
+        assertTrue(elapsed.get() >= 7000)
+        assertTrue(elapsed.get() < 8000)
+        assertEquals(2, confirms.get())
+    }
+
+    @Test fun `等待期间关闭订单类型提交前立即热读生效`() {
+        val transport = transport()
+        val key = accountKeyForPhone("10000000000")
+        val initial = config.copy(confirmWaitByShop = mapOf("92" to 1.0),
+            itemSwitchIds = listOf(465), itemSwitchAccountKey = key, itemSwitchShopId = "92")
+        val latest = java.util.concurrent.atomic.AtomicReference(initial)
+        val elapsed = java.util.concurrent.atomic.AtomicLong()
+        val client = TestKit.client(transport).apply { session = Session("test", "92") }
+        val engine = ListenEngine(client, initial, { _, _ -> }, configSnapshot = { latest.get() },
+            monotonicNs = { elapsed.get() * 1000000 }, sleeper = { elapsed.addAndGet(it); latest.set(initial.copy(itemSwitchIds = listOf(2666))) })
+        engine.handleOrder(JSONObject().put("id", "o").put("totalAmount", 2500).put("itemId", 465), "o", "10000000000", "test")
+        assertTrue(elapsed.get() >= 1000)
+        assertTrue(transport.calls.none { it.url.contains("/confirm") })
+    }
+
+    @Test fun `重复确认前关闭类型不再写入并保留unknown`() {
+        val transport = transport()
+        val initial = config.copy(itemSwitchIds = listOf(465), itemSwitchAccountKey = accountKeyForPhone("10000000000"), itemSwitchShopId = "92")
+        val latest = java.util.concurrent.atomic.AtomicReference(initial)
+        transport.scriptDynamic("/confirm") {
+            latest.set(initial.copy(itemSwitchIds = listOf(2666)))
+            FakeTransport.Scripted(200, """{"code":2,"msg":"稍后再试"}""".toByteArray())
+        }
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val client = TestKit.client(transport).apply { session = Session("test", "92") }
+        val engine = ListenEngine(client, initial, { _, _ -> }, configSnapshot = { latest.get() }, onOutcome = { outcomes.add(it) })
+        val order = JSONObject().put("id", "o").put("totalAmount", 2500).put("itemId", 465)
+        engine.handleOrder(order, "o", "10000000000", "test")
+        engine.handleOrder(order, "o", "10000000000", "test")
+        assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        assertEquals(OutcomeType.UNKNOWN, outcomes.single().type)
+    }
+
+    @Test fun `引擎类型缓存跨账号和店铺不误过滤`() {
+        for (scopeMismatch in listOf("account", "shop")) {
+            val transport = transport()
+            transport.script("/confirm", 200, """{"code":0}""")
+            transport.scriptDynamic("/randomList") {
+                FakeTransport.Scripted(200, """{"code":0,"list":[{"id":"o","totalAmount":2500,"itemId":465}]}""".toByteArray())
+            }
+            val cfg = config.copy(itemSwitchIds = listOf(2666),
+                itemSwitchAccountKey = accountKeyForPhone(if (scopeMismatch == "account") "10000000001" else "10000000000"),
+                itemSwitchShopId = if (scopeMismatch == "shop") "105" else "92")
+            val done = CountDownLatch(1)
+            val engine = ListenEngine(TestKit.client(transport), cfg, { _, _ -> }, onStateChange = { if (!it) done.countDown() })
+            engine.start("10000000000", "test")
+            assertTrue(done.await(3, TimeUnit.SECONDS))
+            assertTrue(engine.awaitStopped())
+            assertEquals(1, transport.calls.count { it.url.contains("/confirm") })
+        }
+    }
+
+    @Test fun `缺类型仅提示一次且保留列表后续扫描`() {
+        val transport = transport()
+        val logs = CopyOnWriteArrayList<String>()
+        val outcomes = CopyOnWriteArrayList<OrderOutcome>()
+        val done = CountDownLatch(1)
+        transport.scriptDynamic("/randomList") {
+            val id = "o-${outcomes.size}"
+            FakeTransport.Scripted(200, """{"code":0,"list":[{"id":"disabled","totalAmount":2500,"itemId":2666},{"id":"$id","totalAmount":2500,"itemName":"30分钟体验"}]}""".toByteArray())
+        }
+        transport.script("/confirm", 200, """{"code":0}""")
+        val cfg = config.copy(autoStopAfterGrab = false, itemSwitchIds = listOf(465), itemSwitchAccountKey = accountKeyForPhone("10000000000"), itemSwitchShopId = "92")
+        lateinit var engine: ListenEngine
+        engine = ListenEngine(TestKit.client(transport), cfg, { _, text -> logs.add(text) },
+            onOutcome = { outcomes.add(it); if (outcomes.size == 2) engine.abort() }, onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertEquals(2, outcomes.size)
+        assertEquals(1, logs.count { it.contains("订单缺少可识别的类型") })
+        assertTrue(transport.calls.filter { it.url.contains("/confirm") }.none { it.url.contains("disabled") })
+    }
+
+    @Test fun `网络相同错误首次和每10次汇总并只报告一次恢复`() {
+        val transport = transport()
+        val polls = java.util.concurrent.atomic.AtomicInteger()
+        transport.scriptDynamic("/randomList") {
+            if (polls.incrementAndGet() <= 21) throw java.io.IOException("测试离线")
+            FakeTransport.Scripted(200, """{"code":0,"list":[]}""".toByteArray())
+        }
+        val elapsed = java.util.concurrent.atomic.AtomicLong()
+        val recovered = CountDownLatch(1)
+        val logs = CopyOnWriteArrayList<String>()
+        val engine = ListenEngine(TestKit.client(transport), config, { _, text -> logs.add(text); if (text.contains("网络已恢复")) recovered.countDown() },
+            monotonicNs = { elapsed.get() * 1000000 }, sleeper = { elapsed.addAndGet(it) })
+        engine.start("10000000000", "test")
+        assertTrue(recovered.await(3, TimeUnit.SECONDS))
+        engine.stop()
+        assertTrue(engine.awaitStopped())
+        assertEquals(1, logs.count { it.contains("网络连接中断") })
+        assertEquals(2, logs.count { it.contains("同类轮询错误") })
+        assertEquals(1, logs.count { it.contains("网络已恢复，此前连续失败21次") })
+        assertTrue(elapsed.get() >= (5 + 10 + 20 + 18 * 30) * 1000L)
+    }
+
+    @Test fun `同类业务拒绝不刷轮次日志且保留五次熔断`() {
+        val transport = transport()
+        transport.scriptDynamic("/randomList") {
+            FakeTransport.Scripted(200, """{"code":7,"msg":"店铺未上线"}""".toByteArray())
+        }
+        val elapsed = java.util.concurrent.atomic.AtomicLong()
+        val logs = CopyOnWriteArrayList<String>()
+        val done = CountDownLatch(1)
+        val engine = ListenEngine(TestKit.client(transport), config, { _, text -> logs.add(text) },
+            monotonicNs = { elapsed.get() * 1000000 }, sleeper = { elapsed.addAndGet(it) }, onStateChange = { if (!it) done.countDown() })
+        engine.start("10000000000", "test")
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertTrue(engine.awaitStopped())
+        assertEquals(5, transport.calls.count { it.url.contains("/randomList") })
+        assertEquals(1, logs.count { it.contains("抢单请求被平台拒绝：") })
+        assertEquals(1, logs.count { it.contains("店铺未上线，抢单请求被拒绝") })
+        assertTrue(transport.calls.none { it.url.contains("/confirm") })
+    }
+
     @Test fun `被他人接走记录skipped且资质拒绝failed`() {
         for ((message, expected) in listOf("已被其他人抢走" to OutcomeType.SKIPPED, "资质不符合" to OutcomeType.FAILED)) {
             val transport = transport()

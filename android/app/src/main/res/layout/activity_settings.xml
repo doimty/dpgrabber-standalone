@@ -112,7 +112,38 @@
         <TextView style="@style/FieldLabel" android:text="店铺等待秒数：每行 sid=秒" />
         <EditText android:id="@+id/shopWaitInput" style="@style/FieldInput" android:inputType="textMultiLine" android:minLines="4" />
         <TextView style="@style/FieldLabel" android:text="其他店铺全局等待秒数（0–120）" />
-        <EditText android:id="@+id/globalWaitInput" style="@style/FieldInput" android:inputType="numberDecimal" />
+        <EditText android:id="@+id/globalWaitInput" style="@style/FieldInput" android:inputType="numberDecimal" android:minHeight="48dp" />
+        <TextView
+            android:id="@+id/globalWaitHintText"
+            style="@style/CardBody"
+            android:text="仅当当前店铺没有等待表配置时使用；保留此值供其他店铺回退。" />
+        <TextView style="@style/FieldLabel" android:text="确认等待微调（−0.5 至 0.5 秒，最多 3 位小数）" />
+        <EditText
+            android:id="@+id/autoWaitOffsetInput"
+            style="@style/FieldInput"
+            android:inputType="numberDecimal|numberSigned"
+            android:minHeight="48dp"
+            android:maxLines="1" />
+        <TextView
+            style="@style/CardBody"
+            android:text="仅店铺 50、105、1391 在等待表或全局等待上叠加微调；92 及其他店铺不应用。" />
+        <TextView
+            android:id="@+id/waitEffectiveText"
+            style="@style/CardBody"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:accessibilityLiveRegion="polite"
+            android:text="请完成等待设置" />
+        <TextView style="@style/FieldLabel" android:text="名额已满冷却秒数（整数，1–600）" />
+        <EditText
+            android:id="@+id/busyCooldownInput"
+            style="@style/FieldInput"
+            android:inputType="number"
+            android:minHeight="48dp"
+            android:maxLines="1" />
+        <TextView
+            style="@style/CardBody"
+            android:text="名额已满时暂停轮询，不会再次提交刚才的订单。" />
         <TextView style="@style/FieldLabel" android:text="连续运行秒数（0 不限制；休息不是多账号轮换）" />
         <EditText android:id="@+id/runDurationInput" style="@style/FieldInput" android:inputType="numberDecimal" />
         <TextView style="@style/FieldLabel" android:text="休息秒数" />

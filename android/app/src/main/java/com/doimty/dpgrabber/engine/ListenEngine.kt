@@ -4,7 +4,9 @@ import com.doimty.dpgrabber.core.ApiClient
 import com.doimty.dpgrabber.core.ApiError
 import com.doimty.dpgrabber.core.AppConfig
 import com.doimty.dpgrabber.core.ConfirmOutcome
-import com.doimty.dpgrabber.core.OrderFilter
+import com.doimty.dpgrabber.core.ItemSwitchScope
+import com.doimty.dpgrabber.core.accountKeyForPhone
+import com.doimty.dpgrabber.core.orderItemIds
 import com.doimty.dpgrabber.core.ReconcileResult
 import com.doimty.dpgrabber.core.ReconcileVerdict
 import com.doimty.dpgrabber.core.amountYuanFromCents
@@ -93,8 +95,12 @@ class ListenEngine(
     private val seen = LinkedHashMap<String, Long>()
     private val seenTtlMs: Long = (config.seenTtlSec * 1000).toLong()
     private var consecutiveFailures = 0
-    /** 最近一条轮询失败日志的内容：连续相同错误只记一次，避免每 2-3 秒刷屏。 */
+    /** 相同轮询错误仅首次及每10次摘要，避免短周期刷屏。 */
     private var lastFailureLog: String? = null
+    private var sameFailureLogCount = 0
+    private var networkFailureCount = 0
+    private var busyCooldownPending = false
+    private var missingItemTypeWarned = false
     /** 同一类业务拒绝（code!=0 且 messageText 未变）的连续次数，用于熔断。 */
     private var sameRejectStreak = 0
     private var lastRejectText: String? = null
@@ -227,14 +233,14 @@ class ListenEngine(
     }
 
     /**
-     * 连续相同的轮询失败只记一次：同一个 messageText 不重复刷屏，内容一旦
-     * 变化（比如换成另一台设备在监听、或换了一个 code）立即再记一条；
-     * 轮询恢复后由 pollLoop 清空去重键。只影响日志，不动轮询间隔与时序。
+     * 相同错误仅首次及每10次摘要；错误分类变化立即记一条。
+     * 轮询恢复后清空去重键；不改变现有熔断、退避间隔与时序。
      */
     private fun logFailureOnce(level: LogLevel, text: String) {
-        if (text == lastFailureLog) return
+        sameFailureLogCount = if (text == lastFailureLog) sameFailureLogCount + 1 else 1
         lastFailureLog = text
-        log(level, text)
+        if (sameFailureLogCount == 1) log(level, text)
+        else if (sameFailureLogCount % 10 == 0) log(level, "同类轮询错误已连续发生${sameFailureLogCount}次，仍在退避重试")
     }
 
     /**
@@ -287,7 +293,6 @@ class ListenEngine(
             val current = configSnapshot()
             val interval = (current.pollIntervalSec + kotlin.random.Random.nextDouble(-1.0, 1.0) * current.pollJitterSec).coerceAtLeast(0.1)
             val timeout = current.requestTimeoutSec
-            val filter = orderFilterFromConfig(current)
             if (current.runDurationSec > 0 && monotonicNs() - runStarted >= current.runDurationSec * 1_000_000_000) {
                 log(LogLevel.INFO, "进入定时休息")
                 if (!sleepInterruptible(current.restDurationSec)) return
@@ -308,11 +313,12 @@ class ListenEngine(
                         continue
                     }
                     ApiError.Kind.NETWORK -> {
+                        networkFailureCount++
                         // 传输层：根本拿不到业务响应（TLS EOF/超时/拒绝连接），
                         // 高频重试只会继续撞限流，故用更硬的 5/10/20/30 秒退避。
                         val delaySec = TRANSPORT_BACKOFF_SEC[minOf(transportBackoffStep, TRANSPORT_BACKOFF_SEC.size - 1)]
                         if (transportBackoffStep < TRANSPORT_BACKOFF_SEC.size - 1) transportBackoffStep++
-                        // 文案不带具体秒数：这样同一类错误只记一条（错误类型变化才再记）。
+                        // 文案不带变化中的秒数，确保相同故障可以合并计数。
                         logFailureOnce(LogLevel.WARNING,
                             "网络连接中断，正在退避重试（最长 30 秒）：${e.messageText}")
                         if (!sleepInterruptible(delaySec)) return
@@ -331,7 +337,7 @@ class ListenEngine(
                             return
                         }
                         logFailureOnce(LogLevel.WARNING,
-                            "抢单请求被平台拒绝（第 ${sameRejectStreak}/$REJECT_STOP_THRESHOLD 次）：$text")
+                            "抢单请求被平台拒绝：$text")
                         if (!sleepInterruptible(minOf(60.0, interval * (1 shl minOf(consecutiveFailures, 6))))) return
                         continue
                     }
@@ -340,7 +346,12 @@ class ListenEngine(
             if (stopFlag.get()) return
             consecutiveFailures = 0
             // 轮询恢复正常：清掉去重键与熔断/退避计数，下次同样的失败会重新记并重新计数。
+            if (networkFailureCount > 0) {
+                log(LogLevel.INFO, "网络已恢复，此前连续失败${networkFailureCount}次")
+                networkFailureCount = 0
+            }
             lastFailureLog = null
+            sameFailureLogCount = 0
             sameRejectStreak = 0
             lastRejectText = null
             transportBackoffStep = 0
@@ -355,7 +366,11 @@ class ListenEngine(
                 if (orderId.isEmpty() || isSeen(orderId) || orderId in completedOrders || orderId in blockedOrderIds || isPersistentlyBlocked(client.session?.sid ?: "", orderId)) continue
                 markSeen(orderId)
                 val latest = configSnapshot()
-                val latestFilter = orderFilterFromConfig(latest)
+                val latestFilter = orderFilterFromConfig(latest, itemScope(phone))
+                if (latestFilter.enabledItems.isNotEmpty() && orderItemIds(order).isEmpty() && !missingItemTypeWarned) {
+                    missingItemTypeWarned = true
+                    log(LogLevel.WARNING, "订单缺少可识别的类型，类型联动暂不限制；名称仅映射已知语音/视频/游戏，特殊店铺归属待核验")
+                }
                 if (!latestFilter.check(order).first) {
                     log(LogLevel.INFO, "订单不符合本地过滤条件")
                     continue
@@ -363,6 +378,12 @@ class ListenEngine(
                 val amount = amountYuanFromCents(order.opt("totalAmount"))
                 log(LogLevel.INFO, "检测到新订单：金额 %.2f 元".format(amount))
                 if (handleOrder(order, orderId, phone, password)) return
+                if (busyCooldownPending) {
+                    busyCooldownPending = false
+                    val cooldown = configSnapshot().busyCooldownSec
+                    log(LogLevel.INFO, "同时接单名额已满，已记录跳过，冷却${cooldown}秒后继续监听")
+                    if (!sleepInterruptible(cooldown.toDouble())) return
+                }
                 break // 每轮只串行确认一单，但首项被过滤或已处理不会遮挡后续订单。
             }
             if (!sleepInterruptible(interval)) return
@@ -414,15 +435,18 @@ class ListenEngine(
      * window deadline. Returns true when the grab succeeded (the caller
      * stops the whole listen loop).
      */
+    private fun itemScope(phone: String) = ItemSwitchScope(accountKeyForPhone(phone), client.session?.sid.orEmpty())
+
     fun handleOrder(order: JSONObject, orderId: String, phone: String, password: String): Boolean {
-        if (stopFlag.get()) return false
+        busyCooldownPending = false
+        if (stopFlag.get() || orderId in completedOrders || orderId in blockedOrderIds ||
+            isPersistentlyBlocked(client.session?.sid.orEmpty(), orderId)) return false
         val current = configSnapshot()
         val waitSec = com.doimty.dpgrabber.core.confirmWaitSeconds(order, client.session?.sid ?: config.shopId.toString(), current, nowEpochMs())
         if (!sleepInterruptible(waitSec)) return false
-        if (!orderFilterFromConfig(configSnapshot()).check(order).first) return false
+        if (!orderFilterFromConfig(configSnapshot(), itemScope(phone)).check(order).first) return false
         val attempt = java.util.UUID.randomUUID().toString()
-        val accountKey = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(phone.toByteArray()).joinToString("") { "%02x".format(it.toInt() and 255) }
+        val accountKey = accountKeyForPhone(phone)
         attemptRecord = OrderOutcome(accountKey, client.session?.sid ?: config.shopId.toString(),
             orderId, runId, attempt, nowEpochMs(), OutcomeType.UNKNOWN, "请求可能已提交，待核对", order)
         submitted = false
@@ -465,6 +489,7 @@ class ListenEngine(
                 config.requestTimeoutSec,
                 maxOf(0.1, remainingNs / 1_000_000_000.0)
             )
+            if (!orderFilterFromConfig(configSnapshot(), itemScope(phone)).check(order).first) return false
             val result: JSONObject
             if (!submitted) {
                 try { onAttemptStarted(checkNotNull(attemptRecord)) }
@@ -511,8 +536,8 @@ class ListenEngine(
                                 return false
                             }
                             ReconcileVerdict.PENDING -> {
-                                if (!sleepRetry(deadlineMonoNs)) return false
-                                continue
+                                outcome(OutcomeType.UNKNOWN, "请求响应未知，回查仍待确认；禁止自动重发")
+                                return false
                             }
                             ReconcileVerdict.UNKNOWN -> {
                                 log(LogLevel.WARNING, "⚠ 确认结果未知，停止盲重试: $number")
@@ -527,6 +552,12 @@ class ListenEngine(
             when (classification.outcome) {
                 ConfirmOutcome.OK ->
                     return grabSuccess(order, orderId, confirmCalls)
+                ConfirmOutcome.BUSY -> {
+                    outcome(OutcomeType.SKIPPED, classification.reason)
+                    busyCooldownPending = true
+                    log(LogLevel.WARNING, classification.reason)
+                    return false
+                }
                 ConfirmOutcome.FAIL -> {
                     outcome(if (classification.reason == "被其他人抢走") OutcomeType.SKIPPED else OutcomeType.FAILED, classification.reason)
                     log(

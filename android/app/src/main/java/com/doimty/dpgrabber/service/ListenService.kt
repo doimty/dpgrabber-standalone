@@ -205,11 +205,7 @@ class ListenService : Service() {
                         startRuntimeTicker()
                         notifyNow()
                     }
-                    if (!active) {
-                        engine = null
-                        history.close()
-                        cleanup(startId)
-                    }
+                    if (!active) finishEngine(history, currentGeneration, startId)
                 }
             } })
         engine = task
@@ -218,16 +214,37 @@ class ListenService : Service() {
         // 今日统计基线要查库，只在后台线程做；基线就绪后再让引擎开跑，
         // “基线 + 本次增量”才不会和本次写入重复计数。
         Thread({
-            loadTodayBaseline(history, accountKey, currentGeneration)
             try {
-                task.start(phone, password)
+                loadTodayBaseline(history, accountKey, currentGeneration)
+                // 与 ACTION_STOP 在主线程串行：停止发生在启动之前时，绝不再启动旧任务。
+                main.post {
+                    if (generation != currentGeneration || engine !== task || client.isCancelled) {
+                        finishEngine(history, currentGeneration, startId)
+                    } else {
+                        try {
+                            task.start(phone, password)
+                        } catch (error: Throwable) {
+                            LogBus.post(LogLevel.ERROR, "监听启动失败：" + failureText(error))
+                            finishEngine(history, currentGeneration, startId)
+                        }
+                    }
+                }
             } catch (error: Throwable) {
                 LogBus.post(LogLevel.ERROR, "监听启动失败：" + failureText(error))
-                postGuarded("监听启动收尾") {
-                    if (generation == currentGeneration) cleanup(startId)
-                }
+                main.post { finishEngine(history, currentGeneration, startId) }
             }
         }, "dpgrabber-today-baseline").apply { isDaemon = true; start() }
+    }
+
+    private fun finishEngine(history: HistoryStore, forGeneration: Long, startId: Int) {
+        try { history.close() }
+        catch (_: Throwable) { LogBus.post(LogLevel.WARNING, "监听历史存储关闭失败") }
+        finally {
+            if (generation == forGeneration) {
+                engine = null
+                cleanup(startId)
+            }
+        }
     }
 
     /** 新一次监听会话：清零计数增量、重置运行时长，通知立即可读。 */

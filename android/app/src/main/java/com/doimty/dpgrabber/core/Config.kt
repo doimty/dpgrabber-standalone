@@ -33,6 +33,11 @@ data class AppConfig(
     val pollJitterSec: Double = 0.2,
     val confirmWaitByShop: Map<String, Double> = mapOf("92" to 5.0, "50" to 3.0, "105" to 3.0, "1391" to 3.0),
     val globalWaitSec: Double = 0.0,
+    val busyCooldownSec: Int = 60,
+    val autoWaitOffset: Double = 0.0,
+    val itemSwitchIds: List<Int> = emptyList(),
+    val itemSwitchAccountKey: String = "",
+    val itemSwitchShopId: String = "",
     val runDurationSec: Double = 0.0,
     val restDurationSec: Double = 0.0,
     val autoStopAfterGrab: Boolean = true,
@@ -74,6 +79,14 @@ data class AppConfig(
                     waits.keys().asSequence().associateWith { waits.getDouble(it) }
                 } ?: base.confirmWaitByShop,
                 globalWaitSec = json.optDouble("global_wait_sec", base.globalWaitSec),
+                busyCooldownSec = if (json.has("busy_cooldown_sec")) requireNotNull(positiveItemId(json.opt("busy_cooldown_sec"))) { "忙碌冷却必须为整数" } else base.busyCooldownSec,
+                autoWaitOffset = if (json.has("auto_wait_offset")) json.getDouble("auto_wait_offset") else base.autoWaitOffset,
+                itemSwitchIds = if (json.has("item_switch_ids")) {
+                    val ids = json.getJSONArray("item_switch_ids")
+                    (0 until ids.length()).map { requireNotNull(positiveItemId(ids.opt(it))) { "接单类型必须为正整数" } }.distinct()
+                } else base.itemSwitchIds,
+                itemSwitchAccountKey = json.optString("item_switch_account_key", ""),
+                itemSwitchShopId = json.optString("item_switch_shop_id", ""),
                 runDurationSec = json.optDouble("run_duration_sec", 0.0),
                 restDurationSec = json.optDouble("rest_duration_sec", 0.0),
                 autoStopAfterGrab = json.optBoolean("auto_stop_after_grab", true),
@@ -105,6 +118,11 @@ data class AppConfig(
         json.put("poll_jitter_sec", pollJitterSec)
         json.put("confirm_wait_by_shop", JSONObject(confirmWaitByShop))
         json.put("global_wait_sec", globalWaitSec)
+        json.put("busy_cooldown_sec", busyCooldownSec)
+        json.put("auto_wait_offset", autoWaitOffset)
+        json.put("item_switch_ids", JSONArray(itemSwitchIds.distinct()))
+        json.put("item_switch_account_key", itemSwitchAccountKey)
+        json.put("item_switch_shop_id", itemSwitchShopId)
         json.put("run_duration_sec", runDurationSec)
         json.put("rest_duration_sec", restDurationSec)
         json.put("auto_stop_after_grab", autoStopAfterGrab)
@@ -145,6 +163,12 @@ data class AppConfig(
         }
         require(pollIntervalSec.isFinite() && pollIntervalSec > 0) { "poll_interval_sec must be positive" }
         require(pollJitterSec.isFinite() && pollJitterSec >= 0) { "轮询抖动必须为非负数" }
+        require(busyCooldownSec in 1..600) { "忙碌冷却必须为1–600秒" }
+        require(autoWaitOffset.isFinite() && autoWaitOffset in -0.5..0.5 &&
+            java.math.BigDecimal.valueOf(autoWaitOffset).stripTrailingZeros().scale() <= 3) { "等待偏移须为-0.5至0.5秒，最多3位小数" }
+        require(itemSwitchIds.all { it > 0 }) { "接单类型必须为正整数" }
+        require(itemSwitchAccountKey.isEmpty() || itemSwitchAccountKey.matches(Regex("[0-9a-f]{64}"))) { "接单类型账号作用域必须为SHA256摘要" }
+        require(itemSwitchShopId.isEmpty() || positiveItemId(itemSwitchShopId) != null) { "接单类型店铺作用域无效" }
         require(globalWaitSec.isFinite() && globalWaitSec in 0.0..120.0) { "全局等待必须为0–120秒" }
         require(confirmWaitByShop.all { it.key.toIntOrNull()?.let { id -> id > 0 } == true && it.value.isFinite() && it.value in 0.0..120.0 }) { "店铺等待必须为0–120秒" }
         require(runDurationSec.isFinite() && runDurationSec >= 0 && restDurationSec.isFinite() && restDurationSec >= 0) { "运行/休息时长必须为非负数" }
@@ -156,7 +180,8 @@ data class AppConfig(
         return copy(
             memoKeywords = memoKeywords.map { it.trim() }.filter { it.isNotEmpty() },
             blacklist = blacklist.map { it.trim() }.filter { it.isNotEmpty() },
-            phone = phone.trim()
+            phone = phone.trim(),
+            itemSwitchIds = itemSwitchIds.distinct()
         )
     }
 }

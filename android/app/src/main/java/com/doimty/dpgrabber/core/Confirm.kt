@@ -15,6 +15,15 @@ import org.json.JSONObject
 /** A confirm reply whose message contains one of these means success. */
 val CONFIRMED_WORDS = listOf("已接单", "已确认", "接单成功", "确认成功")
 
+val BUSY_WORDS = listOf("同时接单数超过限制", "接单数超过限制", "超过限制的")
+
+fun busyCapFrom(message: String): Int? =
+    Regex("超过限制的\\s*(\\d+)\\s*单").find(message)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 0 }
+
+fun busyReason(message: String): String = busyCapFrom(message)?.let {
+    "同时接单名额已满（上限${it}单），本次跳过"
+} ?: "同时接单名额已满，本次跳过"
+
 /** A confirm reply whose message contains one of these is terminally failed. */
 val QUALIFICATION_WORDS = listOf("续费率", "达标", "资质", "资格", "额度", "次数不足", "上限", "本周订单")
 val TERMINAL_WORDS = listOf("取消", "已被", "不存在", "无权", "权限", "失效", "超时", "跑走", "跑掉") + QUALIFICATION_WORDS
@@ -37,8 +46,10 @@ fun terminalReason(message: String?): String {
 
 /** Outcome of classifying one confirm response. */
 enum class ConfirmOutcome {
-    /** code 0 or a confirmed message. */
+    /** code 0 且没有冲突文案。 */
     OK,
+    /** 明确同时接单名额已满：终止本单，不再确认或回读。 */
+    BUSY,
     /** A terminal message; [reason] explains it. */
     FAIL,
     /** Success-like wording with a nonzero code requires readback, not another write. */
@@ -50,13 +61,15 @@ enum class ConfirmOutcome {
 data class ConfirmClassification(val outcome: ConfirmOutcome, val reason: String)
 
 /**
- * Classify one confirm response (DPGEngine.m stepLoop): code 0 wins over
- * the message text, then confirmed words, then terminal words.
+ * 明确忙碌及终态拒绝优先于 code 0；非零成功文案仍须只读核验。
  */
 fun classifyConfirm(result: JSONObject?): ConfirmClassification {
     if (result == null) return ConfirmClassification(ConfirmOutcome.RETRY, "")
     val code = ApiClient.parseCode(result)
-    val message = result.optString("msg", result.optString("message", ""))
+    val message = result.optString("msg", "").ifBlank { result.optString("message", "") }
+    if (BUSY_WORDS.any { message.contains(it) }) {
+        return ConfirmClassification(ConfirmOutcome.BUSY, busyReason(message))
+    }
     if (TERMINAL_WORDS.any { message.contains(it) }) {
         return ConfirmClassification(ConfirmOutcome.FAIL, terminalReason(message))
     }
@@ -81,7 +94,9 @@ fun confirmBudgetSeconds(order: JSONObject?, windowSec: Double, fallbackSec: Dou
 }
 
 fun confirmWaitSeconds(order: JSONObject, sid: String, config: AppConfig, nowMs: Long): Double {
-    val wait = config.confirmWaitByShop[sid] ?: config.globalWaitSec
+    val base = config.confirmWaitByShop[sid] ?: config.globalWaitSec
+    val offset = if (sid in setOf("50", "105", "1391")) config.autoWaitOffset else 0.0
+    val wait = maxOf(0.0, base + offset)
     val created = normalizeMs(order.opt("createTime"))
     val age = if (created > 0) maxOf(0.0, (nowMs - created) / 1000.0) else 0.0
     return maxOf(0.0, wait - age)

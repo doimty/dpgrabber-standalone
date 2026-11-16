@@ -246,16 +246,25 @@ class ApiClient(
             throw ApiError(ApiError.Kind.NETWORK, transportFailureText(e))
         }
         checkActive()
-        if (resp.statusCode == 401 || resp.statusCode == 403) {
-            try { decodeResponse(resp.body) } catch (e: ApiError) {
-                if (e.kind == ApiError.Kind.PERMISSION) throw e
+        return try {
+            if (resp.statusCode == 401 || resp.statusCode == 403) {
+                try { decodeResponse(resp.body) } catch (e: ApiError) {
+                    if (e.kind == ApiError.Kind.PERMISSION) throw e
+                }
+                throw ApiError(ApiError.Kind.AUTH, "会话失效 (HTTP ${resp.statusCode})")
             }
-            throw ApiError(ApiError.Kind.AUTH, "会话失效 (HTTP ${resp.statusCode})")
+            if (resp.statusCode >= 400) {
+                throw ApiError(ApiError.Kind.NETWORK, "HTTP ${resp.statusCode}")
+            }
+            decodeResponse(resp.body)
+        } catch (error: ApiError) {
+            // 本地停止只取消传输，认证仍保留；真正的认证拒绝才清会话。
+            // 只清发出本次请求的同一对象，迟到旧请求不能清掉后来刷新出的会话。
+            if (error.kind == ApiError.Kind.AUTH && useSession != null && this.session === useSession) {
+                this.session = null
+            }
+            throw error
         }
-        if (resp.statusCode >= 400) {
-            throw ApiError(ApiError.Kind.NETWORK, "HTTP ${resp.statusCode}")
-        }
-        return decodeResponse(resp.body)
     }
 
     /** RFC 3986 percent-encoding (unreserved set A-Z a-z 0-9 -._~). */
