@@ -3272,6 +3272,25 @@ class AdvancedDialog(QDialog):
         h = QLabel("叠加在当前店铺等待之上（仅 50 / 105 / 1391）；正值延后、负值提前")
         h.setObjectName("hint")
         grid.addWidget(h, auto_row, 2)
+
+        scale_row = auto_row + 1
+        scale_lab = QLabel("界面缩放")
+        scale_lab.setObjectName("fieldLabel")
+        scale_lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(scale_lab, scale_row, 0)
+        self.ui_scale_box = QComboBox()
+        for label, value in (("自动（按屏幕）", "auto"), ("90%", 0.9), ("100%", 1.0),
+                             ("110%", 1.1), ("125%", 1.25), ("150%", 1.5)):
+            self.ui_scale_box.addItem(label, value)
+        current_scale = self.cfg.get("ui_scale", "auto")
+        for index in range(self.ui_scale_box.count()):
+            if str(self.ui_scale_box.itemData(index)) == str(current_scale):
+                self.ui_scale_box.setCurrentIndex(index)
+                break
+        grid.addWidget(self.ui_scale_box, scale_row, 1)
+        scale_hint = QLabel("整体缩放（含字体与间距）；改完重启生效")
+        scale_hint.setObjectName("hint")
+        grid.addWidget(scale_hint, scale_row, 2)
         root.addWidget(form)
 
         lists_row = QHBoxLayout()
@@ -3432,6 +3451,7 @@ class AdvancedDialog(QDialog):
                 else:
                     self.cfg[key] = value
             self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
+            self.cfg["ui_scale"] = self.ui_scale_box.currentData()
             self.cfg["notify_enabled"] = self.notify_check.isChecked()
             self.cfg["rotate_enabled"] = self.rotate_check.isChecked()
             self.cfg["rotate_minutes"] = int(self.rotate_minutes_spin.value())
