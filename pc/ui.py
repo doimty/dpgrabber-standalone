@@ -3367,6 +3367,20 @@ class AdvancedDialog(QDialog):
         grid.addWidget(scale_hint, scale_row, 2)
         root.addWidget(form)
 
+        map_title = QLabel("接单类型匹配词（每行：类型ID=关键词，逗号分隔）")
+        map_title.setObjectName("fieldLabel")
+        root.addWidget(map_title)
+        map_hint = QLabel("订单只带条目名称，只能按词匹配；认不出的订单会照常抢，不会误拦")
+        map_hint.setObjectName("hint")
+        root.addWidget(map_hint)
+        self.item_map_edit = QPlainTextEdit()
+        self.item_map_edit.setFixedHeight(76)
+        lines = []
+        for key, words in (self.cfg.get("item_name_map") or {}).items():
+            lines.append("%s=%s" % (key, ",".join(words)))
+        self.item_map_edit.setPlainText("\n".join(lines))
+        root.addWidget(self.item_map_edit)
+
         lists_row = QHBoxLayout()
         bl_box = QVBoxLayout()
         bl_title = QLabel("黑名单微信号（一行一个）")
@@ -3526,6 +3540,19 @@ class AdvancedDialog(QDialog):
                     self.cfg[key] = value
             self.cfg["auto_wait_offset"] = float(self.auto_wait_offset_spin.value())
             self.cfg["ui_scale"] = self.ui_scale_box.currentData()
+            name_map = {}
+            for line in self.item_map_edit.toPlainText().splitlines():
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                key, _, words = line.partition("=")
+                key = key.strip()
+                if not key.isdigit():
+                    continue
+                items = [w.strip() for w in words.replace("，", ",").split(",") if w.strip()]
+                if items:
+                    name_map[key] = items
+            self.cfg["item_name_map"] = name_map
             self.cfg["notify_enabled"] = self.notify_check.isChecked()
             self.cfg["rotate_enabled"] = self.rotate_check.isChecked()
             self.cfg["rotate_minutes"] = int(self.rotate_minutes_spin.value())
