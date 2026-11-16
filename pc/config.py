@@ -119,11 +119,15 @@ DEFAULT_CONFIG = {
     # 「文字语音条」「新客首单体验-30分钟文语体验单」没有证据归到任何类型，留空
     # 平台返回的接单类型名缓存（id -> 名字），离线时也能显示
     "item_switch_names": {},
+    # 接单类型只控制这三类；「文字语音条」是基础类型，平台根本不让关（只能离线），
+    # 所以永远放行，别拿它去匹配 465——否则关掉连麦时会把这些单静默丢掉。
     "item_name_map": {
         "465": ["连麦"],
         "2666": ["视频"],
         "2667": ["游戏"],
-    },            # UI theme id (see themes.py); unknown values fall back to "day"
+    },
+    # 基础类型条目名：出现即放行，不受接单类型开关影响
+    "item_always_types": ["文字语音条", "文语体验单"],            # UI theme id (see themes.py); unknown values fall back to "day"
 }
 
 
@@ -312,6 +316,12 @@ def validate(cfg: dict) -> dict:
     merged["blacklist"] = [str(x).strip() for x in merged["blacklist"] if str(x).strip()]
     merged["phone"] = str(merged.get("phone") or "").strip()
     merged["password"] = str(merged.get("password") or "")
+    always = merged.get("item_always_types")
+    if isinstance(always, str):
+        always = [w for w in always.replace("，", ",").split(",")]
+    if not isinstance(always, list):
+        raise ConfigError("item_always_types must be a list")
+    merged["item_always_types"] = [str(w).strip() for w in always if str(w).strip()]
     name_map = merged.get("item_name_map")
     if not isinstance(name_map, dict):
         raise ConfigError("item_name_map must be an object")
