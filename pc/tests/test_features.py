@@ -1085,5 +1085,33 @@ class MemoModeTests(unittest.TestCase):
         self.assertTrue(ok)
 
 
+class RealOrderSchemaTests(unittest.TestCase):
+    """实测订单结构（2026-11-16）：类型信息在 item.names / itemCategory.name。"""
+
+    REAL = {"createTime": 1763269555000, "id": 15670051, "no": "26111616455001028324",
+            "totalAmount": 1000, "servicePrice": 1000, "num": 1, "type": "random",
+            "status": 0, "userWechatId": "13456215657", "userMemo": "",
+            "item": {"names": ["文字语音条", "30分钟"], "ids": [59245, 59246], "ratioType": 1},
+            "itemCategory": {"name": "糖恋", "id": 273}}
+
+    def test_names_are_parsed_from_nested_fields(self):
+        from engine import order_item_names
+        names = order_item_names(self.REAL)
+        self.assertIn("文字语音条", names)
+        self.assertIn("糖恋", names)
+
+    def test_matching_is_decidable(self):
+        from engine import order_matches_items
+        self.assertIs(order_matches_items(self.REAL, [465]), True)   # 连麦（语音条）
+        self.assertIs(order_matches_items(self.REAL, [2666]), False)  # 视频
+
+    def test_filter_blocks_closed_type(self):
+        from engine import OrderFilter
+        filt = OrderFilter(10, 0, 0, [], [], enabled_items=[2666])
+        ok, why = filt.check(self.REAL)
+        self.assertFalse(ok)
+        self.assertIn("文字语音条", why)
+
+
 if __name__ == "__main__":
     unittest.main()
