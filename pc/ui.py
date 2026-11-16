@@ -1629,6 +1629,18 @@ class App(QMainWindow):
         grid.addWidget(lab, row, 0)
         grid.addWidget(widget, row, 1)
 
+    def _sync_keyword_editor(self, index: int | None = None):
+        """备注检测选了关键词模式才显示关键词框，提示文字跟着变。"""
+        box = getattr(self, "keyword_box", None)
+        if box is None:
+            return
+        index = self.memo_mode_box.currentIndex() if index is None else int(index)
+        box.setVisible(index >= 2)
+        hint = getattr(self, "keyword_hint", None)
+        if hint is not None:
+            hint.setText("备注必须包含其中一个，否则不抢" if index == 3
+                         else "命中任意一个就不抢")
+
     def _sync_wait_fields(self):
         """当前店铺在店铺表里时，把等待两个框灰掉并显示实际生效值。"""
         lo = getattr(self, "confirm_wait_min_spin", None)
@@ -1807,9 +1819,12 @@ class App(QMainWindow):
                        self.poll_interval_edit):
             widget.setFixedWidth(150)
         self.memo_mode_box = QComboBox()
-        self.memo_mode_box.addItems(["不检测备注", "有备注不抢"])
+        self.memo_mode_box.addItems(["不检测备注", "有备注不抢",
+                                     "排除关键词", "只抢关键词"])
+        self.memo_mode_box.setToolTip("后两项使用下面的备注关键词")
+        self.memo_mode_box.currentIndexChanged.connect(self._sync_keyword_editor)
         self._form_row(grid, 3, "备注检测", self.memo_mode_box,
-                       "有备注即跳过")
+                       "有备注即跳过 / 按关键词筛选")
         self.confirm_wait_min_spin = QDoubleSpinBox()
         self.confirm_wait_min_spin.setRange(0.0, 120.0)
         self.confirm_wait_min_spin.setDecimals(1)
@@ -1829,6 +1844,24 @@ class App(QMainWindow):
                        self.confirm_wait_max_spin):
             widget.setFixedWidth(150)
         card_layout.addWidget(inner, 0, Qt.AlignLeft)
+
+        # 备注关键词：只在"排除关键词 / 只抢关键词"时出现，和下拉放在一起
+        self.keyword_box = QWidget()
+        kw_layout = QVBoxLayout(self.keyword_box)
+        kw_layout.setContentsMargins(0, 6, 0, 0)
+        kw_layout.setSpacing(2)
+        self.keyword_hint = QLabel("命中任意一个就不抢")
+        self.keyword_hint.setObjectName("hint")
+        kw_layout.addWidget(self.keyword_hint)
+        self.keyword_text = QPlainTextEdit()
+        self.keyword_text.setObjectName("listEdit")
+        self.keyword_text.setPlaceholderText("一行一个，例如：加急")
+        self.keyword_text.setFixedHeight(52)
+        self.keyword_text.setFixedWidth(500)
+        kw_layout.addWidget(self.keyword_text)
+        self.keyword_box.setVisible(False)
+        card_layout.addWidget(self.keyword_box, 0, Qt.AlignLeft)
+
         tip = self._hint("悬停任意输入框可查看该项说明")
         card_layout.addWidget(tip)
 
@@ -2171,6 +2204,12 @@ class App(QMainWindow):
             QGuiApplication.clipboard().setText(str(entry.get("no") or ""))
             self.log("info", "订单号已复制到剪贴板")
 
+    def _refresh_keyword_editor(self):
+        box = getattr(self, "keyword_text", None)
+        if box is not None:
+            _set_lines(box, self.cfg.get("memo_keywords") or [])
+            self._sync_keyword_editor()
+
     def _append_to_config_list(self, key: str, value: str, message: str):
         """Append to blacklist / memo_keywords, persist, and say so."""
         value = (value or "").strip()
@@ -2186,6 +2225,8 @@ class App(QMainWindow):
                 self.log("warning", "保存配置失败：%s" % exc)
                 return
         self.log("success", "%s：%s" % (message, value))
+        if key == "memo_keywords":
+            self._refresh_keyword_editor()
 
     def _on_clear_history(self):
         history_mod.clear_history()
@@ -2243,7 +2284,15 @@ class App(QMainWindow):
         self.min_amount_edit.setText(str(self.cfg.get("min_amount", 10.0)))
         self.max_amount_edit.setText(str(self.cfg.get("max_amount", 0.0)))
         self.poll_interval_edit.setText(str(self.cfg.get("poll_interval_sec", 0.5)))
-        self.memo_mode_box.setCurrentIndex(1 if int(self.cfg.get("memo_mode", 0)) == 1 else 0)
+        mode = int(self.cfg.get("memo_mode", 0) or 0)
+        keywords = [str(k) for k in (self.cfg.get("memo_keywords") or []) if str(k).strip()]
+        # 老配置：关键词非空但模式是"不检测"，自动升级成"排除关键词"并说明
+        if mode == 0 and keywords:
+            mode = 2
+            self.log("info", "检测到已有备注关键词，备注检测已切换为「排除关键词」")
+        self.memo_mode_box.setCurrentIndex(max(0, min(3, mode)))
+        _set_lines(self.keyword_text, keywords)
+        self._sync_keyword_editor(mode)
         self.confirm_wait_min_spin.setValue(int(self.cfg.get("confirm_wait_min", 0) or 0))
         self.confirm_wait_max_spin.setValue(int(self.cfg.get("confirm_wait_max", 0) or 0))
         self.run_rest_check.setChecked(bool(self.cfg.get("run_rest_enabled", True)))
@@ -2290,7 +2339,8 @@ class App(QMainWindow):
             "min_amount": min_amount,
             "max_amount": max_amount,
             "poll_interval_sec": poll_interval,
-            "memo_mode": 1 if self.memo_mode_box.currentIndex() == 1 else 0,
+            "memo_mode": int(self.memo_mode_box.currentIndex()),
+            "memo_keywords": _lines(self.keyword_text),
             "confirm_wait_min": confirm_min,
             "confirm_wait_max": confirm_max,
             "run_rest_enabled": run_enabled,
@@ -2982,21 +3032,6 @@ class AdvancedDialog(QDialog):
         root.addWidget(form)
 
         lists_row = QHBoxLayout()
-        kw_box = QVBoxLayout()
-        kw_title = QLabel("备注关键词（一行一个）")
-        kw_title.setObjectName("fieldLabel")
-        kw_box.addSpacing(4)
-        kw_box.addWidget(kw_title)
-        kw_hint = QLabel("命中任意一个就不抢")
-        kw_hint.setObjectName("hint")
-        kw_box.addWidget(kw_hint)
-        self.keyword_text = QPlainTextEdit()
-        self.keyword_text.setObjectName("listEdit")
-        self.keyword_text.setPlaceholderText("例如：加急")
-        self.keyword_text.setFixedHeight(58)
-        _set_lines(self.keyword_text, self.cfg.get("memo_keywords", []))
-        kw_box.addWidget(self.keyword_text)
-        lists_row.addLayout(kw_box, 1)
         bl_box = QVBoxLayout()
         bl_title = QLabel("黑名单微信号（一行一个）")
         bl_title.setObjectName("fieldLabel")
@@ -3186,7 +3221,6 @@ class AdvancedDialog(QDialog):
             self.cfg["notify_provider"] = str(self.notify_provider_box.currentData() or "serverchan")
             self.cfg["verify_tls"] = self.verify_check.isChecked()
             self.cfg["voice_enabled"] = self.voice_check.isChecked()
-            self.cfg["memo_keywords"] = _lines(self.keyword_text)
             new_blacklist = _lines(self.blacklist_text)
             old_blacklist = self.cfg.get("blacklist", [])
             if _blacklist_would_overwrite(old_blacklist, new_blacklist):
