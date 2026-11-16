@@ -233,8 +233,9 @@ def validate(cfg: dict) -> dict:
         raise ConfigError("max_amount must be 0 (unlimited) or >= min_amount")
     if float(merged["poll_interval_sec"]) <= 0:
         raise ConfigError("poll_interval_sec must be positive")
-    if int(merged["memo_mode"]) not in (0, 1):
-        raise ConfigError("memo_mode must be 0 (ignore memos) or 1 (drop memo orders)")
+    # 0 不检测 / 1 有备注不抢 / 2 排除关键词 / 3 只抢关键词
+    if int(merged["memo_mode"]) not in (0, 1, 2, 3):
+        raise ConfigError("memo_mode must be 0..3 (ignore / drop-memo / exclude-keywords / include-keywords)")
     for name in ("random_confirm_window_sec", "random_confirm_fallback_sec"):
         value = float(merged[name])
         if not 0.1 <= value <= 86400:
