@@ -72,6 +72,7 @@ from PySide6.QtGui import (QColor, QImage, QPainter, QPainterPath, QPalette,
                            QPixmap, QRegion, QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -89,6 +90,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QMenu,
     QPlainTextEdit,
+    QRadioButton,
     QScrollArea,
     QPushButton,
     QScrollArea,
@@ -431,6 +433,14 @@ QPushButton#ghost {
 QPushButton#ghost:hover { background: %(SELECTION_BG)s; border-color: %(BLUE)s; }
 QPushButton#secondary:disabled { background: %(BTN_DISABLED_BG)s; color: %(BTN_DISABLED_TEXT)s; border-color: %(ENTRY_BORDER)s; }
 QCheckBox { color: %(TEXT_DARK)s; font-size: 13px; spacing: 6px; }
+QRadioButton { color: %(TEXT_DARK)s; }
+QRadioButton::indicator {
+    width: 16px; height: 16px; border-radius: 8px;
+    border: 1px solid %(ENTRY_BORDER)s; background: %(ENTRY_BG)s;
+}
+QRadioButton::indicator:checked {
+    border: 5px solid %(BLUE)s; background: %(ENTRY_BG)s;
+}
 QCheckBox#sidebarCheck { color: %(SIDEBAR_TEXT)s; }
 QCheckBox::indicator { width: 16px; height: 16px; }
 QCheckBox::indicator:unchecked {
@@ -761,7 +771,7 @@ class App(QMainWindow):
         except Exception:
             pass
         self._build_widgets()
-        self._reload_account_picker()
+        self._refresh_pending_account()
         self._load_settings_into_widgets()
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_buttons)
@@ -1091,10 +1101,26 @@ class App(QMainWindow):
             return
         super().mouseDoubleClickEvent(event)
 
-    def _sidebar_card(self, parent_layout, title):
+    def _sidebar_card(self, parent_layout, title, action=None):
+        """侧栏卡片。``action`` = (文案, 回调) 时，标题行右侧加一个文字按钮。"""
         title_label = QLabel(title)
         title_label.setObjectName("sidebarTitle")
-        parent_layout.addWidget(title_label)
+        if action:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(title_label)
+            row.addStretch(1)
+            text, callback = action
+            btn = QPushButton(text)
+            btn.setObjectName("titleAction")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(callback)
+            row.addWidget(btn)
+            row.setContentsMargins(14, 6, 12, 0)
+            title_label.setContentsMargins(0, 0, 0, 0)
+            parent_layout.addLayout(row)
+        else:
+            parent_layout.addWidget(title_label)
         # Indent the title like the old UI (padx=14).
         # 13px above the title, 8px between the title and its card: the old
         # 2px bottom margin made every heading look like it sat on the card.
@@ -1111,7 +1137,8 @@ class App(QMainWindow):
         return card, card_layout
 
     def _build_login_section(self, sidebar_layout):
-        card, layout = self._sidebar_card(sidebar_layout, "账号登录")
+        card, layout = self._sidebar_card(
+            sidebar_layout, "账号登录", action=("切换 ›", self._open_account_switcher))
 
         # --- signed-out form ------------------------------------------------
         self.login_form = QWidget()
@@ -1125,9 +1152,10 @@ class App(QMainWindow):
         self.phone_edit.setFixedHeight(34)
         self.phone_edit.setPlaceholderText("11 位手机号")
         form.addWidget(self.phone_edit)
-        hint = QLabel("登录用的手机号，11 位数字")
-        hint.setObjectName("sidebarHint")
-        form.addWidget(hint)
+        self.pending_account_label = QLabel("")
+        self.pending_account_label.setObjectName("sidebarHint")
+        self.pending_account_label.setWordWrap(True)
+        form.addWidget(self.pending_account_label)
         pw_label = QLabel("密码")
         pw_label.setObjectName("sidebarLabel")
         form.addWidget(pw_label)
@@ -1329,30 +1357,24 @@ class App(QMainWindow):
             hint.setObjectName("sidebarHint")
             holder.addWidget(hint)
 
-    def _reload_account_picker(self):
-        """No picker in the UI any more; the per-account files stay behind it."""
-        combo = getattr(self, "account_combo", None)
-        if combo is None:
+    def _refresh_pending_account(self):
+        """未登录态那一行：告诉用户"下一步会登进哪个账号"。"""
+        label = getattr(self, "pending_account_label", None)
+        if label is None:
             return
-        combo.blockSignals(True)
-        combo.clear()
-        self._account_items = accounts_mod.list_accounts()
-        for meta in self._account_items:
-            combo.addItem(accounts_mod.label_for(meta), meta["phone"])
-        if not self._account_items:
-            combo.addItem("（暂无账号，点 ＋ 新建）", "")
-        current = str(self.cfg.get("phone") or "")
-        index = combo.findData(current)
-        combo.setCurrentIndex(index if index >= 0 else 0)
-        combo.blockSignals(False)
-
-    def _on_account_picked(self, index: int):
-        phone = self.account_combo.itemData(index)
-        if phone:
-            self._activate_account(str(phone))
+        phone = str(self.cfg.get("phone") or "")
+        if not phone:
+            label.setText("还没有账号配置，登录后会自动建档")
+            return
+        meta = next((m for m in accounts_mod.list_accounts()
+                     if str(m.get("phone")) == phone), None)
+        if meta is None:
+            label.setText("将登录 %s（无配置文件）" % cfgmod.mask_phone(phone))
+            return
+        label.setText("将登录 %s" % accounts_mod.label_for(meta))
 
     def _activate_account(self, phone: str):
-        """Switch the whole app to another account's configuration file."""
+        """只做"换配置文件 + 回登录态"，界面重绑由 _switch_account 负责。"""
         if phone == str(self.cfg.get("phone") or ""):
             return
         try:
@@ -1363,13 +1385,61 @@ class App(QMainWindow):
         if self.engine is not None and self.engine.running:
             self._on_stop_listen()
         self.cfg = cfg
-        self.client.session = None
+        if getattr(self, "client", None) is not None:
+            self.client.session = None
         self._show_account_card(False)
         self._load_settings_into_widgets()
         self.phone_edit.setText(phone)
         self.login_state_label.setText("请输入手机号和密码后登录")
         self.log("info", "已切换到账号 %s" % cfgmod.mask_phone(phone))
-        self._reload_account_picker()
+        self._refresh_pending_account()
+
+    def _open_account_switcher(self):
+        accounts = accounts_mod.list_accounts()
+        if not accounts:
+            self._on_add_account()
+            return
+        listening = bool(self.engine is not None and self.engine.running)
+        rotating = bool(getattr(self, "_rotate_timer", None) is not None
+                        and self._rotate_timer.isActive())
+        dialog = AccountSwitchDialog(self, accounts,
+                                     str(self.cfg.get("phone") or ""),
+                                     listening=listening, rotating=rotating)
+        code = dialog.exec()
+        if dialog.wants_add():
+            self._on_add_account()
+            return
+        if code != QDialog.Accepted:
+            return
+        target = dialog.chosen()
+        if target and target != str(self.cfg.get("phone") or ""):
+            self._switch_account(target)
+
+    def _switch_account(self, phone: str):
+        """切号：先把当前界面的编辑存回旧账号，再重绑全部账号相关状态。"""
+        if phone == str(self.cfg.get("phone") or ""):
+            return
+        try:
+            updates = self._read_settings_from_widgets()
+            self.cfg.update(updates)
+            self._save_cfg()
+        except Exception as exc:
+            self.log("warning", "切号前保存当前账号设置失败：%s" % str(exc)[:80])
+        if self.engine is not None and self.engine.running:
+            self._on_stop_listen()
+        # 清掉上一个账号的会话态与派生数据，否则会串号
+        self._clerk_name = ""
+        self._clerk_id = ""
+        self._session_sid = ""
+        self._week_stats = None
+        if getattr(self, "renewal_chip", None) is not None:
+            self.renewal_chip.setVisible(False)
+        self._activate_account(phone)
+        try:
+            self._refresh_history()
+            self._sync_wait_fields()
+        except Exception:
+            pass
 
     def _on_add_account(self):
         dialog = AskTextDialog(self, "新增账号", "手机号（11 位）")
@@ -1389,7 +1459,6 @@ class App(QMainWindow):
         self.log("success", "已新增账号 %s，配置：%s"
                  % (cfgmod.mask_phone(digits), accounts_mod.path_for(digits)))
         self._activate_account(digits)
-        self._reload_account_picker()
 
     def _on_auto_stop_toggled(self, checked: bool):
         self.cfg["auto_stop_after_grab"] = bool(checked)
@@ -1584,6 +1653,7 @@ class App(QMainWindow):
     def _show_account_card(self, signed_in: bool):
         """Signed in: the form collapses into avatar + identity + logout."""
         self.login_form.setVisible(not signed_in)
+        self._refresh_pending_account()
         self.account_box.setVisible(signed_in)
         if signed_in:
             self._refresh_account_card()
@@ -2408,7 +2478,7 @@ class App(QMainWindow):
             _QTimer.singleShot(1500, self._on_start_listen)
 
     def _on_advanced_saved(self, new_cfg: dict):
-        switch_to = str(new_cfg.pop("switch_to_account", "") or "")
+        new_cfg.pop("switch_to_account", None)   # 旧版在高级设置里切号，现已迁到侧栏
         self.cfg = new_cfg
         try:
             self._save_cfg()
@@ -2419,8 +2489,6 @@ class App(QMainWindow):
         from notify import Notifier
         self.notifier = Notifier(new_cfg)
         self.log("success", "高级设置已保存")
-        if switch_to:
-            self._activate_account(switch_to)
 
     # -- logging (signal-driven; worker threads only emit) ------------------
 
@@ -2546,7 +2614,6 @@ class App(QMainWindow):
         self.login_state_label.setText(text)
         if text.startswith("已登录"):
             self._show_account_card(True)
-            self._reload_account_picker()
         elif text.startswith(("未登录", "已注销", "登录失败")):
             self._show_account_card(False)
 
@@ -2824,6 +2891,100 @@ class MessageDialog(QDialog):
                    confirm=True, confirm_text=confirm_text).exec() == QDialog.Accepted
 
 
+class AccountSwitchDialog(QDialog):
+    """切换账号：列出所有账号文件，选中后确认才切。"""
+
+    def __init__(self, parent, accounts: list, current_phone: str,
+                 listening: bool = False, rotating: bool = False):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self._drag_offset = None
+        self._accounts = accounts
+        self._current = str(current_phone or "")
+        self._chosen = self._current
+        self.setFixedWidth(460)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 12, 16, 14)
+        outer.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("切换账号")
+        title.setObjectName("dialogTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+        close_btn = QPushButton("✕")
+        close_btn.setObjectName("dialogClose")
+        close_btn.setFixedSize(28, 28)
+        close_btn.clicked.connect(self.reject)
+        header.addWidget(close_btn)
+        outer.addLayout(header)
+
+        warning = ""
+        if listening:
+            warning = "当前正在监听：切换会停止监听并退出登录"
+        elif rotating:
+            warning = "账号轮换已开启：手动切换会从现在这个账号重新计时"
+        if warning:
+            warn = QLabel(warning)
+            warn.setObjectName("dialogBodyError")
+            warn.setWordWrap(True)
+            outer.addWidget(warn)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        for index, meta in enumerate(accounts):
+            phone = str(meta.get("phone") or "")
+            row = QRadioButton(accounts_mod.label_for(meta))
+            row.setObjectName("sidebarCheck")
+            row.setProperty("phone", phone)
+            if phone == current_phone:
+                row.setChecked(True)
+                row.setText(row.text() + "（当前）")
+            self._group.addButton(row, index)
+            row.toggled.connect(
+                lambda checked, phone=phone: self._on_radio(phone, checked))
+            outer.addWidget(row)
+        add_row = QPushButton("＋ 新增账号…")
+        add_row.setObjectName("secondary")
+        add_row.clicked.connect(self._on_add)
+        outer.addWidget(add_row)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton("取消")
+        cancel.setObjectName("secondary")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        self.ok_button = QPushButton("停止监听并切换" if listening else "切换")
+        self.ok_button.setObjectName("primary")
+        self.ok_button.setDefault(True)
+        self.ok_button.setEnabled(False)     # 未选到别的账号前不可点
+        self.ok_button.clicked.connect(self.accept)
+        btns.addWidget(self.ok_button)
+        outer.addLayout(btns)
+
+        # 每个单选按钮自己连了 toggled，这里不需要 group 信号
+        self._add_requested = False
+
+    def _on_radio(self, phone: str, checked: bool):
+        if not checked:
+            return
+        self._chosen = str(phone or "")
+        self.ok_button.setEnabled(bool(self._chosen) and self._chosen != self._current)
+
+    def _on_add(self):
+        self._add_requested = True
+        self.done(QDialog.Accepted + 1)      # 特殊返回码：新增账号
+
+    def chosen(self) -> str:
+        return self._chosen
+
+    def wants_add(self) -> bool:
+        return self._add_requested
+
+
 class AskTextDialog(QDialog):
     """Ask for one line of text, styled like the rest of the app.
 
@@ -2941,29 +3102,6 @@ class AdvancedDialog(QDialog):
         header.addWidget(close_button)
         outer.addLayout(header)
 
-        # 账号切换放在这里：登录卡保持干净，但能力还在
-        account_row = QHBoxLayout()
-        account_label = QLabel("账号")
-        account_label.setObjectName("fieldLabel")
-        account_label.setFixedWidth(96)
-        account_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        account_row.addWidget(account_label)
-        self.account_combo = QComboBox()
-        self.account_combo.setMinimumWidth(260)
-        self._account_choices = []
-        current_phone = str(self.cfg.get("phone") or "")
-        for meta in accounts_mod.list_accounts():
-            self.account_combo.addItem(accounts_mod.label_for(meta), meta["phone"])
-            self._account_choices.append(meta["phone"])
-            if meta["phone"] == current_phone:
-                self.account_combo.setCurrentIndex(self.account_combo.count() - 1)
-        self.account_combo.addItem("＋ 新增账号…", "__new__")
-        self.account_combo.activated.connect(self._on_account_activated)
-        account_row.addWidget(self.account_combo)
-        add_hint = QLabel("每个账号一份配置文件；切换后需要重新登录")
-        add_hint.setObjectName("hint")
-        account_row.addWidget(add_hint, 1)
-        outer.addLayout(account_row)
 
         content = QWidget()
         root = QVBoxLayout(content)
@@ -3177,32 +3315,6 @@ class AdvancedDialog(QDialog):
             "%s 测试推送失败（检查密钥 / 网络 / 渠道）" % provider
         )
 
-    def _on_account_activated(self, index: int):
-        """选中「＋ 新增账号…」就立刻弹输入框，不再等保存。"""
-        if str(self.account_combo.itemData(index) or "") != "__new__":
-            return
-        dialog = AskTextDialog(self, "新增账号", "手机号（11 位）")
-        phone = dialog.value() if dialog.exec() == QDialog.Accepted else ""
-        ok = bool(phone)
-        digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
-        if not ok or len(digits) < 6:
-            # 取消：回到原来的账号
-            current = str(self.cfg.get("phone") or "")
-            back = self.account_combo.findData(current)
-            self.account_combo.setCurrentIndex(back if back >= 0 else 0)
-            return
-        try:
-            accounts_mod.load_account(digits)
-        except Exception as exc:
-            MessageDialog.show_error(self, "新增账号失败", str(exc))
-            return
-        meta = [m for m in accounts_mod.list_accounts() if m["phone"] == digits]
-        insert_at = max(0, self.account_combo.count() - 1)
-        self.account_combo.insertItem(
-            insert_at, accounts_mod.label_for(meta[0]) if meta else digits, digits)
-        self.account_combo.setCurrentIndex(insert_at)
-        self.cfg["switch_to_account"] = digits
-        self.setToolTip("已新增账号 %s，配置文件：%s" % (digits, accounts_mod.path_for(digits)))
 
     def _save(self):
         try:
@@ -3232,21 +3344,6 @@ class AdvancedDialog(QDialog):
                 ):
                     return
             self.cfg["blacklist"] = new_blacklist
-            chosen = str(self.account_combo.currentData() or "")
-            if chosen == "__new__":
-                dialog = AskTextDialog(self, "新增账号", "手机号（11 位）")
-                phone = dialog.value() if dialog.exec() == QDialog.Accepted else ""
-                ok = bool(phone)
-                digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
-                if ok and len(digits) >= 6:
-                    try:
-                        accounts_mod.load_account(digits)
-                        self.cfg["switch_to_account"] = digits
-                    except Exception as exc:
-                        MessageDialog.show_error(self, "新增账号失败", str(exc))
-                        return
-            elif chosen and chosen != str(self.cfg.get("phone") or ""):
-                self.cfg["switch_to_account"] = chosen
         except (cfgmod.ConfigError, ValueError) as exc:
             MessageDialog.show_error(self, "保存失败", str(exc))
             return
