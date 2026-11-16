@@ -733,6 +733,8 @@ class App(QMainWindow):
     listen_state_signal = Signal(str)
     history_entry_signal = Signal(dict)
     refresh_history_signal = Signal()
+    # (session, phone, clerk) —— 登录线程只做网络，界面改动一律回到主线程
+    session_ready_signal = Signal(object, str, object)
 
     def __init__(self, cfg: dict):
         super().__init__()
@@ -786,6 +788,7 @@ class App(QMainWindow):
         self.week_orders_signal.connect(self._on_week_orders)
         self.clerk_state_signal.connect(self._on_clerk_state)
         self.item_switch_revert_signal.connect(self._on_item_switch_revert)
+        self.session_ready_signal.connect(self._on_session_ready)
         self.avatar_signal.connect(self._on_avatar)
         self.listen_state_signal.connect(self._on_listen_state)
         self.history_entry_signal.connect(self._on_history_entry)
@@ -2807,18 +2810,28 @@ class App(QMainWindow):
         )
         self._login_thread.start()
 
-    def _publish_session(self, session, phone: str, announce: bool = True):
+    def _on_session_ready(self, session, phone, clerk):
+        """主线程：确认这份登录结果属于当前账号，再发布。"""
+        current = str(self.cfg.get("phone") or "")
+        if phone and current and phone != current:
+            self.log("warning", "忽略 %s 的登录结果（已切换到 %s）"
+                     % (cfgmod.mask_phone(phone), cfgmod.mask_phone(current)))
+            return
+        self._publish_session(session, phone or current, clerk=clerk, announce=True)
+
+    def _publish_session(self, session, phone: str, announce: bool = True,
+                         clerk=None):
         """做登录后的一切界面同步；界面登录和引擎登录都走这里。
 
         The engine logs in by itself when the user presses 开始监听 without
         logging in first; without this the hero kept saying 未登录 and the
         account card never appeared ("各干各的").
         """
-        clerk = None
-        try:
-            clerk = extract_clerk(self.client.clerk_get(session))
-        except ApiError:
-            clerk = None
+        if clerk is None:
+            try:
+                clerk = extract_clerk(self.client.clerk_get(session))
+            except ApiError:
+                clerk = None
         self._clerk_name = str((clerk or {}).get("name") or "")
         self._clerk_id = str((clerk or {}).get("id") or "")
         self._session_sid = str(getattr(session, "sid", "") or "")
@@ -2846,7 +2859,7 @@ class App(QMainWindow):
     def _on_engine_session(self, session):
         """Engine callback: an engine-side login must reach the UI as well."""
         try:
-            self._publish_session(session, str(self.cfg.get("phone") or ""), announce=False)
+            self.session_ready_signal.emit(session, str(self.cfg.get("phone") or ""), None)
         except Exception:
             pass
 
@@ -2856,7 +2869,12 @@ class App(QMainWindow):
                 phone, password, int(self.cfg.get("shop_id", 0)),
             on_note=lambda note: self.log("info", note)
             )
-            self._publish_session(session, phone)
+            # 这里在线程里：只取数据，界面/配置交给主线程
+            try:
+                clerk = extract_clerk(self.client.clerk_get(session))
+            except ApiError:
+                clerk = None
+            self.session_ready_signal.emit(session, phone, clerk)
         except ApiError as exc:
             self.log("error", "登录失败：%s" % exc.message)
             self.status_signal.emit("未登录")
