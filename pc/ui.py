@@ -795,6 +795,7 @@ class App(QMainWindow):
             pass
         self._build_widgets()
         self._refresh_pending_account()
+        self._apply_responsive()
         self._load_settings_into_widgets()
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_buttons)
@@ -883,6 +884,40 @@ class App(QMainWindow):
 
     GOLDEN = 1.6180339887
 
+    #: 窄于这个宽度就把侧栏收起来（表单和日志优先）
+    NARROW_WIDTH = 980
+
+    def _apply_responsive(self):
+        """侧栏宽度按窗口比例走，窄屏自动收起。"""
+        host = getattr(self, "_sidebar_host", None)
+        sidebar = getattr(self, "_sidebar", None)
+        if host is None or sidebar is None:
+            return
+        width = self.width()
+        narrow = width < self.NARROW_WIDTH
+        forced = getattr(self, "_sidebar_forced", None)
+        visible = (not narrow) if forced is None else bool(forced)
+        host.setVisible(visible)
+        toggle = getattr(self, "_sidebar_toggle", None)
+        if toggle is not None:
+            toggle.setVisible(narrow and forced is None)
+        # 侧栏按窗口宽度的 23.5% 取，夹在 210–300（原固定 279）
+        target = int(round(width * 0.235))
+        target = max(210, min(300, target))
+        if host.width() != target:
+            host.setFixedWidth(target)
+            sidebar.setFixedWidth(target)
+        return visible
+
+    def _toggle_sidebar(self):
+        """窄屏下临时显示/隐藏侧栏。"""
+        host = getattr(self, "_sidebar_host", None)
+        if host is None:
+            return
+        self._sidebar_forced = not host.isVisible()
+        self._apply_responsive()
+        self._apply_golden_split()
+
     def _apply_golden_split(self):
         """form : right = 1 : phi, recomputed whenever the window resizes.
 
@@ -894,21 +929,18 @@ class App(QMainWindow):
         sidebar = getattr(self, "_sidebar", None)
         if wrap is None or sidebar is None:
             return
-        available = self.width() - 28 - 12 - sidebar.width() - 12
+        # 侧栏被隐藏时不再占宽度
+        sidebar_width = sidebar.width() if sidebar.isVisible() else 0
+        available = self.width() - 28 - 12 - sidebar_width - 12
         if available <= 0:
             return
-        form_width = int(round(available / (1.0 + self.GOLDEN)))
-        # never below what the form actually needs: at 324 the labels and the
-        # controls overlapped, because the column was narrower than its own
-        # minimumSizeHint (342 after the label shortening)
         needed = wrap.minimumSizeHint().width()
-        # 中栏内容本身最宽 ~510（表单 500 + 卡片内边距），再宽只是空白，
-        # 所以给个上限，把省下来的宽度让给接单历史/日志那一栏。
-        # 内容偏好宽度：关键词框 500 + 卡片内边距，再窄就会溢出
-        content_cap = 486
-        form_width = min(form_width, content_cap)
-        form_width = max(form_width, needed, min(content_cap, 520))
-        form_width = min(form_width, available - 260)
+        golden = available / (1.0 + self.GOLDEN)
+        # 目标宽度：黄金比例，夹在 440（表单可读下限）与 486（内容上限）之间
+        target = min(486, max(golden, 440.0))
+        target = max(target, needed)                       # 不低于自身最小需求
+        target = min(target, max(needed, available - 260))  # 右边至少留 260 给日志/历史
+        form_width = int(round(max(0.0, target)))
         if wrap.width() != form_width:
             wrap.setFixedWidth(form_width)
 
@@ -940,6 +972,7 @@ class App(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_window_mask()
+        self._apply_responsive()
         self._apply_golden_split()
         self._apply_window_mask()
         grip = getattr(self, "size_grip", None)
@@ -996,6 +1029,7 @@ class App(QMainWindow):
         sidebar_layout.addStretch(1)
         sidebar_host.setWidget(sidebar)
         body_layout.addWidget(sidebar_host)
+        self._sidebar_host = sidebar_host
 
         main_area = QWidget()
         main_layout = QHBoxLayout(main_area)
@@ -1069,6 +1103,13 @@ class App(QMainWindow):
         self.theme_box.currentIndexChanged.connect(self._on_theme_changed)
         layout.addWidget(self.theme_box)
         layout.addSpacing(8)
+        self._sidebar_toggle = QPushButton("☰")
+        self._sidebar_toggle.setObjectName("heroButton")
+        self._sidebar_toggle.setFixedSize(34, 34)
+        self._sidebar_toggle.setToolTip("显示/隐藏侧栏")
+        self._sidebar_toggle.clicked.connect(self._toggle_sidebar)
+        self._sidebar_toggle.setVisible(False)
+        layout.addWidget(self._sidebar_toggle)
         advanced = QPushButton("高级设置")
         advanced.setObjectName("heroButton")
         advanced.setFixedHeight(34)
