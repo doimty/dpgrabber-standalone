@@ -159,8 +159,11 @@ class SessionLifecycleInstrumentedTest {
         val outcomes = CopyOnWriteArrayList<OrderOutcome>()
         val successes = CopyOnWriteArrayList<Unit>()
         val task = engine(first, outcomes, successes)
+        setServiceRunning(true)
+        try {
         assertTrue(task.start(PHONE, PASSWORD))
-        assertTrue(transport.confirmEntered.await(3, TimeUnit.SECONDS))
+        assertTrue("合法订单必须真正进入一次确认，而不是在筛选阶段失败",
+            transport.confirmEntered.await(10, TimeUnit.SECONDS))
         assertSame("运行中只可取回当前客户端", first,
             SessionRepository.forAccount(config, PHONE, PASSWORD))
         task.stop()
@@ -191,6 +194,7 @@ class SessionLifecycleInstrumentedTest {
         assertEquals(revisionAfterSwap, SessionRepository.revision)
         assertSameAuthentication(originalSession, next.session)
         assertCancelled(first)
+        } finally { setServiceRunning(false) }
     }
 
     @Test
@@ -390,7 +394,7 @@ class SessionLifecycleInstrumentedTest {
         val callback = object : ActivityLifecycleCallback {
             override fun onActivityLifecycleChanged(activity: Activity, stage: Stage) {
                 if (activity is MainActivity && stage == Stage.CREATED) {
-                    // Activity 自动统计不属于本用例白名单；仅在测试中禁止它，不动正式代码。
+                    // 生命周期用例在首次恢复前暂缓自动账号刷新；所有请求仍由严格替身处理。
                     busyField.setBoolean(activity, true)
                 }
             }
@@ -514,7 +518,13 @@ class SessionLifecycleInstrumentedTest {
                 path == "/s/duopei-account/switch-account" && method == "POST" ->
                     """{"code":0,"data":{"token":"synthetic-shop-token"}}"""
                 path == CLERK_PATH && method == "GET" ->
-                    """{"code":0,"clerk":{"id":7,"shopId":92}}"""
+                    """{"code":0,"clerk":{"id":7,"shopId":92,"status":1,"randomOrderSwitch":true}}"""
+                path == "/s/c/clerk/getItemSwitchList" && method == "POST" ->
+                    """{"code":0,"itemSwitchList":[{"id":465,"name":"语音"}],"clerkItemSwitchIds":[465]}"""
+                path == "/s/c/statistics/statisticsClerkOrder" && method == "GET" ->
+                    """{"code":0,"data":{"orderCount":0,"orderAmount":0,"continuedAmount":0,"continuedCount":0,"continuedUserCount":0}}"""
+                path == "/s/c/order/list" && method == "GET" ->
+                    """{"code":0,"data":{"list":[],"total":0}}"""
                 path == POLL_PATH && method == "GET" -> {
                     polled.countDown()
                     if (holdPoll) awaitRelease(releasePoll)

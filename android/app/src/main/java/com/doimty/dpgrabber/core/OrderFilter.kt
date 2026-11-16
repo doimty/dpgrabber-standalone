@@ -25,7 +25,7 @@ class OrderFilter(
         if (!order.has("totalAmount") || order.isNull("totalAmount")) {
             return false to "订单缺少金额字段"
         }
-        if (orderIdOf(order.toMap()).isEmpty()) return false to "订单缺少 id 字段"
+        if (orderIdOf(order.toFieldMap()).isEmpty()) return false to "订单缺少 id 字段"
         val amount = amountYuanFromCents(order.opt("totalAmount"))
         if (!amount.isFinite() || amount < 0) return false to "订单金额无效"
         val wechat = order.optString("userWechatId", "")
@@ -54,8 +54,11 @@ class OrderFilter(
     }
 }
 
-/** JSONObject -> Map<String, Any?> bridge for [orderIdOf]. */
-fun JSONObject.toMap(): Map<String, Any?> {
+/**
+ * 自有字段转换：JVM 的 org.json 自带 toMap()，Android 系统 JSONObject 没有该方法。
+ * 名称不能相同，否则 JVM 优先绑定到成员函数，运行到设备时才出现 NoSuchMethodError。
+ */
+fun JSONObject.toFieldMap(): Map<String, Any?> {
     val map = LinkedHashMap<String, Any?>()
     val keys = keys()
     while (keys.hasNext()) {

@@ -15,7 +15,7 @@ import com.doimty.dpgrabber.core.confirmBudgetSeconds
 import com.doimty.dpgrabber.core.orderFilterFromConfig
 import com.doimty.dpgrabber.core.orderIdOf
 import com.doimty.dpgrabber.core.reconcileOrder
-import com.doimty.dpgrabber.core.toMap
+import com.doimty.dpgrabber.core.toFieldMap
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -362,7 +362,7 @@ class ListenEngine(
             for (index in 0 until orders.length()) {
                 if (stopFlag.get()) return
                 val order = orders.optJSONObject(index) ?: continue
-                val orderId = orderIdOf(order.toMap())
+                val orderId = orderIdOf(order.toFieldMap())
                 if (orderId.isEmpty() || isSeen(orderId) || orderId in completedOrders || orderId in blockedOrderIds || isPersistentlyBlocked(client.session?.sid ?: "", orderId)) continue
                 markSeen(orderId)
                 val latest = configSnapshot()

@@ -299,11 +299,11 @@ class UiReviewInstrumentedTest {
         scrollTo("shopWaitInput")
         device.findObject(By.res(PACKAGE, "shopWaitInput")).apply { click(); text = "92=1.5" }
         device.pressBack()
-        awaitText("waitEffectiveText", "等待表 1.5 秒 + 微调 0.125 秒 = 1.625 秒")
+        awaitText("waitEffectiveText", "等待表 1.5 秒；此店铺不应用微调")
         scrollTo("autoWaitOffsetInput")
         device.findObject(By.res(PACKAGE, "autoWaitOffsetInput")).apply { click(); text = "0.25" }
         device.pressBack()
-        awaitText("waitEffectiveText", "等待表 1.5 秒 + 微调 0.25 秒 = 1.75 秒")
+        awaitText("waitEffectiveText", "等待表 1.5 秒；此店铺不应用微调")
         scrollTo("globalWaitInput")
         assertFalse("店铺有等待表时，应保留但不参与计算全局等待", device.findObject(By.res(PACKAGE, "globalWaitInput")).isEnabled)
         capture("settings-wait-offset-effective")
@@ -347,7 +347,7 @@ class UiReviewInstrumentedTest {
         assertTrue("满额冷却须真实重新加载", device.wait(Until.hasObject(By.res(PACKAGE, "busyCooldownInput").text("45")), WAIT_MS))
         scrollTo("autoWaitOffsetInput")
         assertTrue("等待微调须真实重新加载", device.wait(Until.hasObject(By.res(PACKAGE, "autoWaitOffsetInput").text("0.25")), WAIT_MS))
-        awaitText("waitEffectiveText", "等待表 1.5 秒 + 微调 0.25 秒 = 1.75 秒")
+        awaitText("waitEffectiveText", "等待表 1.5 秒；此店铺不应用微调")
         capture("settings-persisted-top")
         device.pressBack()
         scrollTop()
@@ -459,13 +459,15 @@ class UiReviewInstrumentedTest {
         launchMain()
         selectTab("我的")
         click("loginButton")
-        awaitText("avatarStatusText", "已加载")
+        assertTrue("头像成功后状态行应消失，不留下空白点击区域",
+            device.wait(Until.gone(By.res(PACKAGE, "avatarStatusText")), WAIT_MS))
         assertActualAvatar()
         val downloads = avatarCalls.get()
         assertTrue("应下载真实合成 PNG 字节", downloads > 0)
         main!!.recreate()
         selectTab("我的")
-        awaitText("avatarStatusText", "已加载")
+        assertTrue("头像成功后状态行应消失，不留下空白点击区域",
+            device.wait(Until.gone(By.res(PACKAGE, "avatarStatusText")), WAIT_MS))
         assertActualAvatar()
         assertEquals("重建必须复用缓存，不应重复下载", downloads, avatarCalls.get())
         capture("avatar-after-recreate")
@@ -518,7 +520,8 @@ class UiReviewInstrumentedTest {
         }
         avatarReply = { syntheticAvatar(Color.BLUE) }
         click("avatarStatusText")
-        awaitText("avatarStatusText", "已加载")
+        assertTrue("头像成功后状态行应消失，不留下空白点击区域",
+            device.wait(Until.gone(By.res(PACKAGE, "avatarStatusText")), WAIT_MS))
         assertActualAvatar()
         // 新版本的头像请求暂停，注销换号后再放行旧请求，证明不会串图。
         val entered = CountDownLatch(1)
@@ -558,7 +561,8 @@ class UiReviewInstrumentedTest {
             awaitText("profileName", "90002")
             release.countDown()
             assertTrue(returned.await(8, TimeUnit.SECONDS))
-            awaitText("avatarStatusText", "已加载")
+            assertTrue("头像成功后状态行应消失，不留下空白点击区域",
+            device.wait(Until.gone(By.res(PACKAGE, "avatarStatusText")), WAIT_MS))
             main!!.onActivity { activity ->
                 val drawable = activity.findViewById<TextView>(R.id.accountAvatarText).background as RoundedBitmapDrawable
                 assertEquals("旧账号红色头像不得闪回", Color.GREEN, drawable.bitmap!!.getPixel(0, 0))
@@ -681,6 +685,8 @@ class UiReviewInstrumentedTest {
      * 因此先按“当前可见的页容器 id”定位（隐藏页不参与，避免误取 GONE 容器），再回退到类名/scrollable。
      */
     private fun pageScroller(): UiScrollable {
+        val settings = UiSelector().resourceId("$PACKAGE:id/settingsScroll")
+        if (device.findObject(settings).exists()) return UiScrollable(settings)
         for (page in PAGE_CONTAINERS) {
             val selector = UiSelector().resourceId("$PACKAGE:id/$page")
             if (isOnScreen(selector)) return UiScrollable(selector)

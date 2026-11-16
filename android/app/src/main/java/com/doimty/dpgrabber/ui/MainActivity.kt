@@ -155,6 +155,11 @@ class MainActivity : AppCompatActivity() {
      */
     private fun configureWindowInsets() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= 27) {
+            window.navigationBarColor = ContextCompat.getColor(this, R.color.surface)
+            WindowCompat.getInsetsController(window, binding.root).isAppearanceLightNavigationBars =
+                resources.getBoolean(R.bool.light_system_bars)
+        }
         val left = binding.root.paddingLeft
         val top = binding.root.paddingTop
         val right = binding.root.paddingRight
@@ -479,8 +484,13 @@ class MainActivity : AppCompatActivity() {
             refreshProfileName()
         } else {
             val text = binding.loginStatus.text.toString()
-            if (text == getString(R.string.login_success) ||
-                ((previouslyAuthenticated || store.loadPhone().isNotBlank()) && text.isBlank())) {
+            // 曾经持有会话才提示失效；已存手机号本身不代表登录过。重建后的 XML 默认
+            // “未登录”也必须被替换，否则真实认证丢失会被误显示成从未登录。
+            // 主动注销会先将 previouslyAuthenticated 置 false，不显示过期提示。
+            if (previouslyAuthenticated && text != getString(R.string.login_checking) &&
+                !text.startsWith(getString(R.string.login_failed))) {
+                binding.loginStatus.setText(R.string.login_session_expired)
+            } else if (text == getString(R.string.login_success)) {
                 binding.loginStatus.setText(R.string.login_session_expired)
             }
             renderProfileMetrics(null)
@@ -891,47 +901,51 @@ class MainActivity : AppCompatActivity() {
         else -> null
     }
 
-    private data class ItemTypes(val ids: List<Int>, val names: List<String>, val selected: List<Int>)
+    private data class ItemTypeSelection(
+        val ids: List<Int>, val names: List<String>, val selected: List<Int>
+    )
 
-    /** 只有完整有效响应才更新该账号、该实际店铺的本地筛选；失败不抹掉旧有效值。 */
-    private fun parseItemTypes(response: JSONObject): ItemTypes {
+    private fun parseItemTypes(response: org.json.JSONObject): ItemTypeSelection {
         val data = response.optJSONObject("data") ?: response
-        val rawItems = data.optJSONArray("itemSwitchList") ?: throw IllegalArgumentException("接单类型列表缺失")
-        val ids = mutableListOf<Int>()
-        val names = mutableListOf<String>()
-        for (index in 0 until rawItems.length()) {
-            val item = rawItems.optJSONObject(index) ?: throw IllegalArgumentException("接单类型格式无效")
-            val id = com.doimty.dpgrabber.core.positiveItemId(item.opt("id"))
-                ?: throw IllegalArgumentException("接单类型 ID 无效")
-            require(id !in ids) { "接单类型 ID 重复" }
-            ids.add(id)
-            names.add(item.optString("name").ifBlank { "类型 $id" })
+        val items = data.optJSONArray("itemSwitchList") ?: throw IllegalArgumentException("缺少接单类型列表")
+        val selected = data.optJSONArray("clerkItemSwitchIds") ?: throw IllegalArgumentException("缺少已选接单类型")
+        val ids = (0 until items.length()).map { index ->
+            val id = items.getJSONObject(index).opt("id")?.toString()?.toIntOrNull()
+            require(id != null && id > 0) { "接单类型ID必须为正整数" }
+            id
         }
-        val rawSelected = data.optJSONArray("clerkItemSwitchIds") ?: throw IllegalArgumentException("接单类型选择缺失")
-        val selected = (0 until rawSelected.length()).map { index ->
-            com.doimty.dpgrabber.core.positiveItemId(rawSelected.opt(index))
-                ?: throw IllegalArgumentException("接单类型选择无效")
+        require(ids.toSet().size == ids.size) { "接单类型ID重复" }
+        val chosen = (0 until selected.length()).map { index ->
+            val id = selected.opt(index)?.toString()?.toIntOrNull()
+            require(id != null && id > 0 && id in ids) { "已选接单类型无效" }
+            id
         }.distinct()
-        return ItemTypes(ids, names, selected)
+        val names = (0 until items.length()).map { items.getJSONObject(it).optString("name", ids[it].toString()) }
+        return ItemTypeSelection(ids, names, chosen)
     }
 
     private fun validAccountRequest(generation: Long, revision: Long, phone: String): Boolean =
-        generation == accountGeneration && revision == SessionRepository.revision && store.loadPhone() == phone
+        !isDestroyed && generation == accountGeneration && revision == SessionRepository.revision &&
+            phone.isNotBlank() && phone == store.loadPhone() && hasValidSession()
 
-    private fun saveItemTypes(selected: List<Int>, phone: String, sid: String) {
-        val current = store.loadConfig()
-        store.saveConfig(current.copy(itemSwitchIds = selected,
-            itemSwitchAccountKey = HistoryStore.accountKey(phone), itemSwitchShopId = sid).validate())
+    private fun saveItemTypes(ids: List<Int>, phone: String, sid: String) {
+        require(ids.all { it > 0 } && sid.toIntOrNull()?.let { it > 0 } == true)
+        val updated = store.loadConfig().copy(itemSwitchIds = ids.distinct(),
+            itemSwitchAccountKey = HistoryStore.accountKey(phone), itemSwitchShopId = sid).validate()
+        store.saveConfig(updated)
         renderItemTypesHint(phone, sid)
     }
 
     private fun renderItemTypesHint(phone: String, sid: String?) {
         val config = store.loadConfig()
-        binding.itemTypesHint.text = when {
-            sid == null || config.itemSwitchAccountKey != HistoryStore.accountKey(phone) ||
-                config.itemSwitchShopId != sid -> "接单类型尚未读取"
-            else -> "已启用 ${config.itemSwitchIds.size} 类；关闭的类型不抢对应随机单，未知类型不猜测"
+        val matches = sid != null && config.itemSwitchAccountKey == HistoryStore.accountKey(phone) &&
+            config.itemSwitchShopId == sid
+        val text = when {
+            !matches -> "接单类型尚未读取\n关闭的类型不抢该类随机单；无可识别类型信息时不限制。"
+            config.itemSwitchIds.isEmpty() -> "当前未启用本地类型限制\n关闭的类型不抢该类随机单；无可识别类型信息时不限制。"
+            else -> "关闭的类型不抢该类随机单；无可识别类型信息时不限制。"
         }
+        if (binding.itemTypesHint.text.toString() != text) binding.itemTypesHint.text = text
     }
 
     private fun editItemTypes() = networkAction { client ->

@@ -21,9 +21,9 @@
         <item name="android:colorBackground">@color/surface</item>
         <item name="android:windowBackground">@color/surface</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@color/surface</item>
+        <!-- API 24–26 保留深色导航栏，较新系统在 Activity 中通过兼容接口跟随主题。 -->
+        <item name="android:navigationBarColor">@android:color/black</item>
         <item name="android:windowLightStatusBar">@bool/light_system_bars</item>
-        <item name="android:windowLightNavigationBar">@bool/light_system_bars</item>
     </style>
 
     <!-- 工具栏大标题 -->

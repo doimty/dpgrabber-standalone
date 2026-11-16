@@ -3,6 +3,8 @@ package com.doimty.dpgrabber.ui
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doAfterTextChanged
 import com.doimty.dpgrabber.R
 import com.doimty.dpgrabber.core.AppConfig
@@ -26,6 +28,21 @@ class SettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        if (android.os.Build.VERSION.SDK_INT >= 27) {
+            window.navigationBarColor = androidx.core.content.ContextCompat.getColor(this, R.color.surface)
+            androidx.core.view.WindowCompat.getInsetsController(window, binding.root).isAppearanceLightNavigationBars =
+                resources.getBoolean(R.bool.light_system_bars)
+        }
+        // 保持整个设置表单在系统栏和键盘上方可滚动，不把 IME 高度叠加到内容底部。
+        // padding 只改变可视窗口，ScrollView 的滚动范围与真实表单内容保持一致。
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or
+                WindowInsetsCompat.Type.displayCutout())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.root)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         title = getString(R.string.title_advanced)
         store = CredentialStore(this)
@@ -148,9 +165,9 @@ class SettingsActivity : AppCompatActivity() {
         binding.globalWaitHintText.text = "仅当当前店铺没有等待表配置时使用；保留此值供其他店铺回退。"
         try {
             val draft = readWaitDraft(loadedConfig).validate()
-            // 登录店铺是实际认证对象；编辑优先店铺时展示即将保存的草稿目标。
+            // 登录店铺是实际认证对象；只有编辑优先店铺时才展示即将保存的草稿目标。
             val actualSid = com.doimty.dpgrabber.data.SessionRepository.currentShopId()
-            val sid = if (actualSid != null && draft.shopId == loadedConfig.shopId) actualSid else draft.shopId
+            val sid = actualSid ?: draft.shopId
             val shopWait = draft.confirmWaitByShop[sid.toString()]
             val baseWait = shopWait ?: draft.globalWaitSec
             val source = if (shopWait != null) "等待表" else "使用全局等待"
@@ -166,10 +183,14 @@ class SettingsActivity : AppCompatActivity() {
             } else {
                 "$source ${trimNumber(baseWait)} 秒；此店铺不应用微调"
             }
-            val scopeLabel = when {
-                actualSid != null && sid == actualSid -> "当前登录店铺 $sid"
-                actualSid != null -> "保存后优先店铺 $sid"
-                else -> "优先店铺 $sid（实际以登录店铺为准）"
+            val scopeLabel = if (actualSid != null) {
+                if (draft.shopId != loadedConfig.shopId) {
+                    "当前登录店铺 $sid；保存后优先店铺 ${draft.shopId}"
+                } else {
+                    "当前登录店铺 $sid"
+                }
+            } else {
+                "优先店铺 $sid（实际以登录店铺为准）"
             }
             binding.waitEffectiveText.text = "$scopeLabel：$detail；实际确认时会扣除订单已等待时间。"
         } catch (_: IllegalArgumentException) {
