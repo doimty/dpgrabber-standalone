@@ -41,6 +41,11 @@ struct ContentView: View {
                 .tag(3)
         }
         .tint(accent)
+        .onAppear {
+            #if DEBUG
+            if UserDefaults.standard.bool(forKey: "uiReviewSettings") { showingSettings = true }
+            #endif
+        }
         .sheet(isPresented: $showingSettings) {
             NavigationContainer { SettingsView(viewModel: viewModel) }
                 .tint(accent)

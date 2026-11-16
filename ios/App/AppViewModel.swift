@@ -54,6 +54,8 @@ final class AppViewModel: ObservableObject {
     var connectionEditingDisabled: Bool { isRunning || isBusy }
     var serverControlsDisabled: Bool { !isLoggedIn || isRunning || isBusy || !storageReady }
     private var currentAccountID: String { loginPasswordDigest(phone.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    private var currentItemAccountKey: String { accountKeyForItemSwitch(phone) }
+    private var displayedItemScope: (account: String, shop: String)?
 
     init() {
         var initial = DPGConfig()
@@ -94,6 +96,7 @@ final class AppViewModel: ObservableObject {
         weeklyStats = WeeklyStatistics(raw: [:])
         itemOptions = []
         selectedItemIDs = []
+        displayedItemScope = nil
         listenIssue = nil
         listenRetryAt = nil
         lastPollAt = nil
@@ -248,16 +251,52 @@ final class AppViewModel: ObservableObject {
     }
 
     func setItem(_ itemID: Int, enabled: Bool) {
+        guard let session = client?.session, itemOptions.contains(where: { $0.id == itemID }),
+              displayedItemScope?.account == currentItemAccountKey, displayedItemScope?.shop == session.sid else {
+            lastError = "请先刷新当前账号和店铺的接单类型"; return
+        }
         var ids = selectedItemIDs
         if enabled { ids.insert(itemID) } else { ids.remove(itemID) }
         let chosen = ids.sorted()
-        serverAction { api in try await api.updateItemSwitch(switchID: itemID, enabledIDs: chosen) }
+        let id = generation
+        let account = currentItemAccountKey
+        let fingerprint = identity()
+        serverAction { [weak self] api in
+            guard api.session == session else { return }
+            try await api.updateItemSwitch(switchID: itemID, enabledIDs: chosen)
+            guard let self, self.generation == id, !Task.isCancelled, self.foregroundActive,
+                  self.currentItemAccountKey == account, self.identity() == fingerprint,
+                  self.client === api, api.session == session else { return }
+            // 成功响应先落盘，即使随后资料刷新失败也保留本次有效选择。
+            try self.persistItemSelection(chosen, account: account, shop: session.sid)
+            self.selectedItemIDs = Set(chosen)
+        }
+    }
+
+    private func persistItemSelection(_ ids: [Int], account: String, shop: String) throws {
+        guard configurationReady, !account.isEmpty else { throw ConfigError("类型设置暂不可保存") }
+        var updated = config
+        updated.itemSwitchIds = Array(Set(ids)).sorted()
+        updated.itemSwitchAccountKey = account
+        updated.itemSwitchShopId = shop
+        updated = try updated.validated()
+        try saveConfig(updated)
+        persistedConfig = updated
+        restoreConfiguration(updated)
+        engine?.updateConfig(updated)
     }
 
     func refreshAccount() { serverAction { _ in } }
 
     private func refreshAccountData(_ api: ApiClient, id: UUID) async {
         guard let session = api.session else { return }
+        let itemAccount = currentItemAccountKey
+        let fingerprint = identity()
+        if displayedItemScope?.account != itemAccount || displayedItemScope?.shop != session.sid {
+            itemOptions = []
+            selectedItemIDs = []
+            displayedItemScope = nil
+        }
         do {
             let decoded = try await api.clerkGet(session: session)
             guard generation == id, !Task.isCancelled, api.session == session else { return }
@@ -294,23 +333,20 @@ final class AppViewModel: ObservableObject {
         weeklyStats = WeeklyStatistics(raw: rawStats, fallbackCount: fallback)
         do {
             let response = try await api.getItemSwitchList()
-            guard generation == id, !Task.isCancelled, api.session == session else { return }
-            let data = response["data"] as? [String: Any] ?? response
-            guard let items = data["itemSwitchList"] as? [[String: Any]], let enabled = data["clerkItemSwitchIds"] as? [Any] else {
-                throw ApiError(.api, "接单类型数据缺失")
-            }
-            var unique: [Int: ItemSwitchOption] = [:]
-            for item in items {
-                if let value = parseCode(["code": item["id"] ?? NSNull()]), value > 0 {
-                    unique[value] = ItemSwitchOption(id: value, name: item["name"] as? String ?? "类型 \(value)")
-                }
-            }
-            itemOptions = unique.values.sorted { $0.id < $1.id }
-            selectedItemIDs = Set(enabled.compactMap { parseCode(["code": $0]) })
+            guard generation == id, !Task.isCancelled, foregroundActive, client === api,
+                  api.session == session, currentItemAccountKey == itemAccount, identity() == fingerprint else { return }
+            let selection = try parseItemSwitchSelection(response)
+            // 每次完整读取都更新，避免其他已授权客户端修改后本地筛选长期过期。
+            try persistItemSelection(selection.enabledIDs, account: itemAccount, shop: session.sid)
+            itemOptions = selection.options
+            selectedItemIDs = Set(selection.enabledIDs)
+            displayedItemScope = (itemAccount, session.sid)
         } catch {
-            guard generation == id, !Task.isCancelled else { return }
-            itemOptions = []
-            selectedItemIDs = []
+            guard generation == id, !Task.isCancelled, client === api, api.session == session,
+                  currentItemAccountKey == itemAccount, identity() == fingerprint else { return }
+            if (error as? ApiError)?.kind == .auth { invalidateSession(); return }
+            // 同作用域的旧有效值保留；换号/换店已在入口清空，不能借刷新失败串用旧界面。
+            logStore.append(.warning, "接单类型读取或保存未完成，保留当前账号店铺的上次有效值")
         }
         refreshHistory()
     }

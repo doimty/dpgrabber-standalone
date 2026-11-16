@@ -1,25 +1,37 @@
 // DPGrabber iOS - Confirm task (DPGConfirmationTask, DPGEngine.m).
 // Pure helpers, shared semantics with the PC / Android engines.
 //
-// A passing order is confirmed immediately inside a window (no precise
-// wait, no reTime / confirmCountDown): POST /s/c/order/confirm is
-// retried every `confirmRetryDelaySec` until the window deadline, then
-// verified once more with GET /s/c/order/get.
+// A passing order waits for its configured shop delay, then uses one bounded
+// confirmation window. Explicit retry responses may retry inside that window;
+// ambiguous transport outcomes get one readback and are never blindly resubmitted.
 
 import Foundation
 
 /// A confirm reply whose message contains one of these means success.
 public let CONFIRMED_WORDS = ["已接单", "已确认", "接单成功", "确认成功"]
+public let BUSY_WORDS = ["同时接单数超过限制", "接单数超过限制", "超过限制的"]
+
+public func busyCapFrom(_ message: String) -> Int? {
+    guard let regex = try? NSRegularExpression(pattern: "超过限制的\\s*(\\d+)\\s*单"),
+          let match = regex.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
+          let range = Range(match.range(at: 1), in: message),
+          let cap = Int(message[range]), cap > 0 else { return nil }
+    return cap
+}
+
+public func busyReason(_ message: String) -> String {
+    if let cap = busyCapFrom(message) { return "同时接单名额已满（上限\(cap)单），本次跳过" }
+    return "同时接单名额已满，本次跳过"
+}
 
 /// A confirm reply whose message contains one of these is terminally failed.
 public let QUALIFICATION_WORDS = ["续费率", "达标", "资质", "资格", "额度", "次数不足", "上限", "本周订单"]
 public let TERMINAL_WORDS = ["取消", "已被", "不存在", "无权", "权限", "失效", "超时", "跑走", "跑掉"] + QUALIFICATION_WORDS
 
 public func orderWaitSeconds(order: [String: Any], sid: String, config: DPGConfig, now: TimeInterval) -> TimeInterval {
-    let wait: Double
-    if config.useShopWait {
-        wait = config.confirmWaitByShop[sid] ?? config.globalWaitSec
-    } else { wait = config.globalWaitSec }
+    let base = config.useShopWait ? (config.confirmWaitByShop[sid] ?? config.globalWaitSec) : config.globalWaitSec
+    let offset = ["50", "105", "1391"].contains(sid) ? config.autoWaitOffset : 0
+    let wait = max(0, base + offset)
     let created = Double(normalizeMs(order["createTime"])) / 1000
     let elapsed = created > 0 ? max(0, now - created) : 0
     return max(0, wait - elapsed)
@@ -44,6 +56,8 @@ public func terminalReason(_ message: String?) -> String {
 public enum ConfirmOutcome: Equatable {
     /// code 0 or a confirmed message.
     case ok
+    /// 接单名额满：跳过本单，不再确认或回读。
+    case busy
     /// A terminal message; `reason` explains it.
     case fail
     /// A non-success code with success-like wording requires one ownership readback, never a blind resubmit.
@@ -62,12 +76,14 @@ public struct ConfirmClassification: Equatable {
     }
 }
 
-/// Classify one confirm response (DPGEngine.m stepLoop): code 0 wins over
-/// the message text, then confirmed words, then terminal words.
+/// 满额与终态拒绝优先于 code 0；非零成功文案仍须只读核验。
 public func classifyConfirm(_ result: [String: Any]?) -> ConfirmClassification {
     guard let result else { return ConfirmClassification(outcome: .retry, reason: "") }
     let code = parseCode(result)
-    let message = (result["msg"] as? String) ?? (result["message"] as? String) ?? ""
+    let message = responseMessage(result)
+    if BUSY_WORDS.contains(where: { message.contains($0) }) {
+        return ConfirmClassification(outcome: .busy, reason: busyReason(message))
+    }
     if TERMINAL_WORDS.contains(where: { message.contains($0) }) {
         return ConfirmClassification(outcome: .fail, reason: terminalReason(message))
     }

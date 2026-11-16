@@ -15,7 +15,9 @@
 #
 # Contract with the app (ContentView, DEBUG builds only):
 #   -uiReviewTab 0 | 1 | 2 | 3   -> 工作台 | 规则 | 记录 | 我的
-#   The launch argument is only honoured when the app is built with the Debug
+#   -uiReviewSettings YES        -> 高级设置（真实页面，未登录）
+#   -uiReviewWaitSection YES     -> 程序化定位等待微调区域（不代表手势/保存验收）
+#   The launch arguments are only honoured when the app is built with the Debug
 #   configuration (SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG), so this script
 #   must be pointed at a Debug simulator build.
 #
@@ -45,7 +47,7 @@ trap 'printf "::error::ui-review failed at line %s: %s\n" "$LINENO" "$BASH_COMMA
 BUNDLE_ID="${IOS_BUNDLE_ID:-com.doimty.dpgrabber}"
 APP_PATH="${IOS_SIM_APP:-ios/build/Debug-iphonesimulator/DPGrabber.app}"
 SETTLE_SECONDS="${UI_REVIEW_SETTLE_SECONDS:-8}"
-TABS="0 1 2 3"
+TABS="0 1 2 3 settings settings-wait"
 CREATED_UDIDS=""
 FAILURES=0
 LAUNCH_FAILURES=0
@@ -299,15 +301,18 @@ run_round() {
       || log "warning: could not switch appearance to $appearance"
     sleep 2
     for tab in $TABS; do
-      local shot status bytes dimensions launch_rc=0
+      local shot status bytes dimensions launch_rc=0 initial_tab="$tab" settings_review=NO wait_review=NO
+      if [ "$tab" = settings ] || [ "$tab" = settings-wait ]; then initial_tab=3; settings_review=YES; fi
+      if [ "$tab" = settings-wait ]; then wait_review=YES; fi
       shot="$OUT/${runtime_key}-${appearance}-tab${tab}.png"
       xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
       xcrun simctl launch "$udid" "$BUNDLE_ID" \
         -AppleLanguages "(zh-Hans)" -AppleLocale zh_CN \
-        -uiReviewTab "$tab" \
+        -uiReviewTab "$initial_tab" -uiReviewSettings "$settings_review" -uiReviewWaitSection "$wait_review" \
         > "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>&1 || launch_rc=$?
       if [ "$launch_rc" -ne 0 ]; then
         LAUNCH_FAILURES=$((LAUNCH_FAILURES + 1))
+        FAILURES=$((FAILURES + 1))
         log "launch exited $launch_rc for $appearance tab$tab; launch log follows"
         head -c 2000 "$OUT/${runtime_key}-${appearance}-tab${tab}-launch.log" 2>/dev/null \
           | sed -E 's/[[:digit:]]{11}/<phone>/g' >&2 || true
@@ -365,7 +370,7 @@ if [ -n "$LEGACY" ]; then
 else
   ROUNDS=1
 fi
-EXPECTED=$(( ROUNDS * 2 * 4 ))
+EXPECTED=$(( ROUNDS * 2 * 6 ))
 ACTUAL="$(wc -l < "$TSV" | tr -d ' ')"
 SUMMARY="$OUT/summary.md"
 
@@ -376,7 +381,7 @@ SUMMARY="$OUT/summary.md"
   echo "- Runner 镜像：${ImageOS:-unknown} ${ImageVersion:-unknown}（$(uname -m)）"
   echo "- Xcode：$XCODE_VERSION"
   echo "- Bundle ID：\`$BUNDLE_ID\`（Debug 模拟器构建）"
-  echo "- 启动参数契约：\`-uiReviewTab 0/1/2/3\` → 工作台 / 规则 / 记录 / 我的，仅 DEBUG 生效"
+  echo "- 启动参数契约：\`-uiReviewTab 0/1/2/3\` → 工作台 / 规则 / 记录 / 我的；\`-uiReviewSettings YES\` 打开高级设置，\`-uiReviewWaitSection YES\` 定位新增等待设置，仅 DEBUG 生效"
   echo "- 语言/区域：\`-AppleLanguages (zh-Hans)\`、\`-AppleLocale zh_CN\`"
   echo "- 主轮次 runtime：$(printf '%s' "$PRIMARY" | cut -f1)（$(printf '%s' "$PRIMARY" | cut -f2)）"
   if [ -n "$LEGACY" ]; then
@@ -410,8 +415,8 @@ SUMMARY="$OUT/summary.md"
   echo
   echo "## 未覆盖"
   echo
-  echo "- 滚动与交互手势：\`simctl\` 不提供触摸注入，未做滚动截图（需要 XCUITest 才能覆盖）。"
-  echo "- 真机、签名与推送：本流程只做无签名模拟器截图。"
+  echo "- 真实点击与手势：设置等待区由 DEBUG 参数程序化定位，并非真实滚动或保存回归；需要 XCUITest 或真机进一步覆盖。"
+  echo "- 真机、签名与推送：模拟器采用临时 ad-hoc 签名，设备 IPA 未签名；本流程不能证明真机安装或业务验收。"
 } > "$SUMMARY"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

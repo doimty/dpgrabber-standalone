@@ -14,6 +14,7 @@
 // works"). Both pairs are editable in Advanced settings.
 
 import Foundation
+import CoreFoundation
 
 /// Errors raised by config validation / IO.
 public struct ConfigError: Error, Equatable {
@@ -56,6 +57,16 @@ public struct DPGConfig: Codable, Equatable {
     public var useShopWait: Bool = true
     public var globalWaitSec: Double = 3
     public var confirmWaitByShop: [String: Double] = ["92": 5, "50": 3, "105": 3, "1391": 3]
+    /// 同时接单名额满（busy）后的暂停时长（秒）。
+    public var busyCooldownSec: Int = 60
+    /// 特殊店铺（50/105/1391）的等待微调（秒）；92 及其他店铺不应用。
+    public var autoWaitOffset: Double = 0
+    /// 当前启用的接单类型 ID（仅在下方作用域匹配时用于过滤）。
+    public var itemSwitchIds: [Int] = []
+    /// 接单类型缓存归属的 SHA-256 账号摘要；独立于已有历史记录的 MD5 键。
+    public var itemSwitchAccountKey: String = ""
+    /// 接单类型缓存归属的店铺 sid。
+    public var itemSwitchShopId: String = ""
     public var runRestEnabled: Bool = false
     public var runDurationSec: Double = 1800
     public var restDurationSec: Double = 300
@@ -87,6 +98,11 @@ public struct DPGConfig: Codable, Equatable {
         case useShopWait = "use_shop_wait"
         case globalWaitSec = "global_wait_sec"
         case confirmWaitByShop = "confirm_wait_by_shop"
+        case busyCooldownSec = "busy_cooldown_sec"
+        case autoWaitOffset = "auto_wait_offset"
+        case itemSwitchIds = "item_switch_ids"
+        case itemSwitchAccountKey = "item_switch_account_key"
+        case itemSwitchShopId = "item_switch_shop_id"
         case runRestEnabled = "run_rest_enabled"
         case runDurationSec = "run_duration_sec"
         case restDurationSec = "rest_duration_sec"
@@ -149,10 +165,35 @@ public struct DPGConfig: Codable, Equatable {
         cfg.onlineAfterLogin = decode(Bool.self, "online_after_login", false)
         cfg.useShopWait = decode(Bool.self, "use_shop_wait", true)
         cfg.globalWaitSec = decode(Double.self, "global_wait_sec", 3)
+        if let value = raw["busy_cooldown_sec"] {
+            guard let seconds = positiveItemID(value) else { throw ConfigError("满额冷却必须为正整数") }
+            cfg.busyCooldownSec = seconds
+        }
+        if let value = raw["auto_wait_offset"] {
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                throw ConfigError("等待微调必须是数值")
+            }
+            cfg.autoWaitOffset = number.doubleValue
+        }
+        if let value = raw["item_switch_ids"] {
+            guard let values = value as? [Any] else { throw ConfigError("接单类型必须为正整数数组") }
+            cfg.itemSwitchIds = try values.map { value in
+                guard let id = positiveItemID(value) else { throw ConfigError("接单类型必须为正整数") }
+                return id
+            }
+        }
+        if let value = raw["item_switch_account_key"] {
+            guard let key = value as? String else { throw ConfigError("接单类型账号作用域必须为字符串") }
+            cfg.itemSwitchAccountKey = key
+        }
+        if let value = raw["item_switch_shop_id"] {
+            guard let sid = value as? String else { throw ConfigError("接单类型店铺作用域必须为字符串") }
+            cfg.itemSwitchShopId = sid
+        }
         if let table = raw["confirm_wait_by_shop"] as? [String: Any] {
             var waits: [String: Double] = [:]
             for (sid, value) in table {
-                guard let number = value as? NSNumber, String(cString: number.objCType) != "c" else {
+                guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
                     throw ConfigError("店铺等待必须是数值")
                 }
                 waits[sid] = number.doubleValue
@@ -183,6 +224,25 @@ public struct DPGConfig: Codable, Equatable {
         guard cfg.globalWaitSec.isFinite, (0...120).contains(cfg.globalWaitSec),
               cfg.runDurationSec.isFinite, cfg.runDurationSec > 0, cfg.runDurationSec <= 86400,
               cfg.restDurationSec.isFinite, cfg.restDurationSec >= 0, cfg.restDurationSec <= 86400 else { throw ConfigError("等待与运行休息时间无效") }
+        guard cfg.busyCooldownSec >= 1, cfg.busyCooldownSec <= 600 else {
+            throw ConfigError("满额冷却必须为 1–600 秒")
+        }
+        let offsetScale = cfg.autoWaitOffset * 1000
+        guard cfg.autoWaitOffset.isFinite, (-0.5...0.5).contains(cfg.autoWaitOffset),
+              offsetScale.rounded() / 1000 == cfg.autoWaitOffset else {
+            throw ConfigError("等待微调必须为 -0.5 至 0.5 秒，最多 3 位小数")
+        }
+        guard cfg.itemSwitchIds.allSatisfy({ $0 > 0 }) else {
+            throw ConfigError("接单类型必须为正整数")
+        }
+        guard cfg.itemSwitchAccountKey.isEmpty || (cfg.itemSwitchAccountKey.count == 64 &&
+              cfg.itemSwitchAccountKey.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })) else {
+            throw ConfigError("接单类型账号作用域必须为 SHA-256 小写十六进制摘要")
+        }
+        guard cfg.itemSwitchShopId.isEmpty || (positiveItemID(cfg.itemSwitchShopId) != nil &&
+              cfg.itemSwitchShopId.utf8.allSatisfy({ (48...57).contains($0) })) else {
+            throw ConfigError("接单类型店铺作用域必须为正整数字符串")
+        }
         guard cfg.confirmWaitByShop.allSatisfy({
             (Int($0.key) ?? 0) > 0 && $0.value.isFinite && (0...120).contains($0.value)
         }) else { throw ConfigError("店铺等待必须为 0–120 秒，店铺 ID 必须为正整数") }

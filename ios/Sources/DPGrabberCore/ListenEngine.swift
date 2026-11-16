@@ -20,6 +20,8 @@ public final class ListenEngine: @unchecked Sendable {
     private var seen: [String: TimeInterval] = [:]
     private var runID = ""
     private var accountID = ""
+    private var itemAccountKey = ""
+    private var busyCooldownPending = false
     public private(set) var clerk: DPGClerk?
     public var onGrabSuccess: (([String: Any]) -> Void)?
     public var onHistoryChange: (() -> Void)?
@@ -62,8 +64,10 @@ public final class ListenEngine: @unchecked Sendable {
             guard task == nil else { return false }
             credentials = (cleanPhone, password)
             accountID = loginPasswordDigest(cleanPhone)
+            itemAccountKey = accountKeyForItemSwitch(cleanPhone)
             runID = UUID().uuidString
             seen.removeAll()
+            busyCooldownPending = false
             running = true
             task = Task { [weak self] in
                 guard let self else { return }
@@ -150,7 +154,7 @@ public final class ListenEngine: @unchecked Sendable {
         var activeSince = monotonic()
         var failures = 0
         log(.info, "开始监听新订单（仅限前台）")
-        while !stopped {
+        polling: while !stopped {
             let cfg = config
             if cfg.runRestEnabled, monotonic() - activeSince >= cfg.runDurationSec {
                 log(.info, "进入定时休息")
@@ -174,13 +178,23 @@ public final class ListenEngine: @unchecked Sendable {
                     seen[id] = now()
                     let latest = config
                     let filter = OrderFilter(minAmount: latest.minAmount, maxAmount: latest.maxAmount,
-                        memoMode: latest.memoMode, memoKeywords: latest.memoKeywords, blacklist: latest.blacklist)
+                        memoMode: latest.memoMode, memoKeywords: latest.memoKeywords, blacklist: latest.blacklist,
+                        enabledItems: latest.itemSwitchScope(accountKey: itemAccountKey, shopKey: client.session?.sid ?? ""))
                     guard filter.check(order: order).passed else {
                         log(.info, "订单不符合当前过滤条件（客户信息已脱敏）")
                         continue
                     }
                     log(.info, "检测到新订单：金额 \(String(format: "%.2f", amountYuan(fromCents: order["totalAmount"]))) 元")
                     await handleOrder(order, orderID: id)
+                    if busyCooldownPending {
+                        busyCooldownPending = false
+                        let cooldown = config.busyCooldownSec
+                        log(.info, "名额已满，已记录跳过；冷却 \(cooldown) 秒后继续监听")
+                        onPollStatus?(PollStatus(issue: "同时接单名额已满，正在冷却",
+                            retryAt: Date(timeIntervalSince1970: now() + Double(cooldown))))
+                        guard await sleep(Double(cooldown)) else { return }
+                        continue polling
+                    }
                     break // At most one serial confirmation per poll; a blocked first item cannot starve later items.
                 }
             } catch let error as ApiError {
@@ -263,7 +277,8 @@ public final class ListenEngine: @unchecked Sendable {
         guard await sleep(delay), client.session == session else { return }
         let latest = config
         let filter = OrderFilter(minAmount: latest.minAmount, maxAmount: latest.maxAmount,
-            memoMode: latest.memoMode, memoKeywords: latest.memoKeywords, blacklist: latest.blacklist)
+            memoMode: latest.memoMode, memoKeywords: latest.memoKeywords, blacklist: latest.blacklist,
+            enabledItems: latest.itemSwitchScope(accountKey: itemAccountKey, shopKey: client.session?.sid ?? ""))
         guard filter.check(order: order).passed else { return }
         let attempt = UUID().uuidString
         var row = OrderHistoryRecord(id: "\(runID):\(attempt)", accountID: accountID, shopID: session.sid,
@@ -289,6 +304,14 @@ public final class ListenEngine: @unchecked Sendable {
             windowSec: cfg.randomConfirmWindowSec, fallbackSec: cfg.randomConfirmFallbackSec)
         log(.info, "尝试接单 ***\(orderID.suffix(4))")
         while !stopped, client.session == session, monotonic() < deadline {
+            let current = config
+            let currentFilter = OrderFilter(minAmount: current.minAmount, maxAmount: current.maxAmount,
+                memoMode: current.memoMode, memoKeywords: current.memoKeywords, blacklist: current.blacklist,
+                enabledItems: current.itemSwitchScope(accountKey: itemAccountKey, shopKey: session.sid))
+            guard currentFilter.check(order: order).passed else {
+                row.reason = "提交规则已变更；未再次提交，请核验先前结果"
+                return
+            }
             attempted = true
             do {
                 let response = try await client.orderConfirm(orderID: orderID,
@@ -297,6 +320,12 @@ public final class ListenEngine: @unchecked Sendable {
                 let result = classifyConfirm(response)
                 switch result.outcome {
                 case .ok: row.outcome = .success; row.reason = "平台确认成功"; return
+                case .busy:
+                    row.outcome = .skipped
+                    row.reason = result.reason
+                    busyCooldownPending = true
+                    log(.info, result.reason)
+                    return
                 case .fail:
                     row.reason = result.reason
                     row.outcome = Self.failureOutcome(result.reason)
@@ -331,7 +360,7 @@ public final class ListenEngine: @unchecked Sendable {
                     case .ok: row.outcome = .success; row.reason = "回查确认成功"; return
                     case .fail: row.outcome = Self.failureOutcome(checked.reason); row.reason = checked.reason; return
                     case .unknown: row.reason = "结果未知，禁止自动重发；请只读核验"; return
-                    case .pending: break
+                    case .pending: row.reason = "提交响应未知，回查仍待确认；禁止自动重发"; return
                     }
                 }
             } catch { row.reason = "请求异常，需人工核验"; return }

@@ -188,6 +188,185 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
     }
 
+    func testTimeoutWithPendingReadbackNeverResubmitsAcrossRestarts() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("order/confirm") { throw URLError(.timedOut) }
+            if url.path.contains("order/get") {
+                return (200, plainEnvelope(["code": 0, "order": ["status": 0]]))
+            }
+            return try original(method, url, headers, body)
+        }
+        let history = OrderHistoryStore.inMemory()
+        for _ in 0..<2 {
+            var sleeps = 0
+            var engine: ListenEngine!
+            engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
+                sleeps += 1
+                if sleeps >= 4 { engine.stop(); return false }
+                return true
+            }, history: history)
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+        }
+        XCTAssertEqual(history.all.count, 1)
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+        XCTAssertEqual(history.all.first?.accountID, loginPasswordDigest("offline"))
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
+    }
+
+    func testBusyStopsConfirmationAndPersistsBeforeCancelableCooldown() async throws {
+        let transport = stub(confirm: ["code": 0, "msg": "同时接单数超过限制的3单，已达上限"])
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig()
+        cfg.busyCooldownSec = 75
+        var sleeps: [TimeInterval] = []
+        var persistedAtCooldown = false
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { seconds in
+            sleeps.append(seconds)
+            if seconds == 75 {
+                persistedAtCooldown = history.all.first?.outcome == .skipped
+                engine.stop()
+                return false
+            }
+            if sleeps.count > 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertTrue(persistedAtCooldown)
+        XCTAssertEqual(sleeps, [5, 75])
+        XCTAssertEqual(history.all.first?.outcome, .skipped)
+        XCTAssertEqual(history.all.first?.reason, "同时接单名额已满（上限3单），本次跳过")
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/get") })
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("randomList") }.count, 1)
+    }
+
+    func testBusyCooldownResumesAtNextPollWithoutAnotherConfirm() async throws {
+        let transport = stub(confirm: ["code": 2, "msg": "接单数超过限制"])
+        let original = transport.handler!
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig(); cfg.busyCooldownSec = 90
+        var polls = 0
+        var sleeps: [TimeInterval] = []
+        var engine: ListenEngine!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") {
+                polls += 1
+                if polls == 2 { engine.stop() }
+            }
+            return try original(method, url, headers, body)
+        }
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { seconds in
+            sleeps.append(seconds)
+            if sleeps.count > 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(polls, 2)
+        XCTAssertEqual(sleeps, [5, 90])
+        XCTAssertEqual(history.all.first?.outcome, .skipped)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/get") })
+    }
+
+    func testItemScopeRejectsDisabledTypeAndAllowsEnabledType() async throws {
+        for enabled in [false, true] {
+            let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465])
+            let history = OrderHistoryStore.inMemory()
+            var cfg = DPGConfig()
+            cfg.itemSwitchIds = enabled ? [465] : [2666]
+            cfg.itemSwitchAccountKey = accountKeyForItemSwitch("offline")
+            cfg.itemSwitchShopId = "92"
+            var sleeps = 0
+            var engine: ListenEngine!
+            engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in
+                sleeps += 1
+                if sleeps > 2 { engine.stop(); return false }
+                return true
+            }, history: history)
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+            XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, enabled ? 1 : 0)
+            if enabled { XCTAssertEqual(history.all.first?.outcome, .success) }
+            else { XCTAssertTrue(history.all.isEmpty) }
+        }
+    }
+
+    func testItemFilterIgnoresOtherAccountOrShopScope() async throws {
+        for otherAccount in [false, true] {
+            let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465])
+            let history = OrderHistoryStore.inMemory()
+            var cfg = DPGConfig()
+            cfg.itemSwitchIds = [2666]
+            cfg.itemSwitchAccountKey = accountKeyForItemSwitch(otherAccount ? "another" : "offline")
+            cfg.itemSwitchShopId = otherAccount ? "92" : "50"
+            let engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in true }, history: history)
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+            XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+            XCTAssertEqual(history.all.first?.outcome, .success)
+        }
+    }
+
+    func testRuleChangeDuringRetryPreventsAnotherConfirmation() async throws {
+        let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465],
+                             confirm: ["code": 2, "msg": "稍后再试"])
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig()
+        cfg.itemSwitchIds = [465]
+        cfg.itemSwitchAccountKey = accountKeyForItemSwitch("offline")
+        cfg.itemSwitchShopId = "92"
+        var sleeps = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps == 2 {
+                var changed = cfg
+                changed.itemSwitchIds = [2666]
+                engine.updateConfig(changed)
+            }
+            if sleeps >= 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+        XCTAssertTrue(history.all.first?.reason.contains("规则已变更") ?? false)
+    }
+
+    func testItemFilterRechecksLatestConfigAfterShopWait() async throws {
+        let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465])
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig()
+        cfg.itemSwitchIds = [465]
+        cfg.itemSwitchAccountKey = accountKeyForItemSwitch("offline")
+        cfg.itemSwitchShopId = "92"
+        var sleeps = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps == 1 {
+                var changed = cfg
+                changed.itemSwitchIds = [2666]
+                engine.updateConfig(changed)
+                return true
+            }
+            engine.stop()
+            return false
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertTrue(history.all.isEmpty)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") })
+    }
+
     func testSuccessfulEmptyHallPublishesHealthyStatusWithoutConfirmation() async throws {
         let transport = stub()
         let original = transport.handler!

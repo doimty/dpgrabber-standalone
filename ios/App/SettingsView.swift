@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var showingProtocolSettings = false
 
     var body: some View {
+        ScrollViewReader { proxy in
         Form {
             Section(footer: Text("设置会自动保存。店铺与协议参数只能在任务停止后修改，修改后需重新登录。")) {
                 Label("按需调整，默认即可使用", systemImage: "gearshape.2.fill")
@@ -37,6 +38,20 @@ struct SettingsView: View {
                 }
                 Stepper("通用等待：\(String(format: "%.1f", viewModel.config.globalWaitSec)) 秒",
                         value: $viewModel.config.globalWaitSec, in: 0...120, step: 0.5)
+                VStack(alignment: .leading, spacing: 6) {
+                    Stepper("等待微调：\(String(format: "%.3f", viewModel.config.autoWaitOffset)) 秒",
+                            value: Binding(get: { viewModel.config.autoWaitOffset },
+                                           set: { viewModel.config.autoWaitOffset = ($0 * 1000).rounded() / 1000 }),
+                            in: -0.5...0.5, step: 0.05)
+                    Text("仅店铺 50/105/1391 叠加；92 及其他店铺不应用")
+                        .font(.footnote).foregroundColor(.secondary)
+                }.id("wait-offset")
+                VStack(alignment: .leading, spacing: 6) {
+                    Stepper("满额冷却：\(viewModel.config.busyCooldownSec) 秒",
+                            value: $viewModel.config.busyCooldownSec, in: 1...600, step: 5)
+                    Text("同时接单名额满后暂停该时长再继续监听")
+                        .font(.footnote).foregroundColor(.secondary)
+                }
             }
             Section(header: Text("定时休息"), footer: Text("仅对前台运行生效。此功能不切换账号；切到后台仍会停止任务。")) {
                 Toggle("运行一段时间后休息", isOn: $viewModel.config.runRestEnabled)
@@ -72,12 +87,20 @@ struct SettingsView: View {
                 }
             }
         }
+        .onAppear {
+            #if DEBUG
+            if UserDefaults.standard.bool(forKey: "uiReviewWaitSection") {
+                DispatchQueue.main.async { proxy.scrollTo("wait-offset", anchor: .top) }
+            }
+            #endif
+        }
         .navigationTitle("高级设置")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarItems(trailing: Button("完成") { presentationMode.wrappedValue.dismiss() })
         .alert(isPresented: viewModel.hasError) {
             Alert(title: Text("设置提示"), message: Text(viewModel.lastError ?? ""),
                   dismissButton: .default(Text("好")) { viewModel.lastError = nil })
+        }
         }
     }
 

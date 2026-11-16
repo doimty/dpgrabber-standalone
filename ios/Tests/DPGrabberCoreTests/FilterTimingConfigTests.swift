@@ -348,6 +348,171 @@ final class FilterTimingConfigTests: XCTestCase {
         XCTAssertNil(parseCode(["code": "nan"]))
     }
 
+    func testItemAccountSHA256IsIndependentFromLegacyHistoryKey() throws {
+        XCTAssertEqual(accountKeyForItemSwitch("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        XCTAssertEqual(accountKeyForItemSwitch(String(repeating: "a", count: 64)), "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb")
+        XCTAssertEqual(accountKeyForItemSwitch("账号测试"), "cbce8c754af35883cd1134d6be017136415c10f2516ce658d2f7890b91baa0a0")
+        XCTAssertEqual(accountKeyForItemSwitch(" offline \n"), "8e2c7ac508139a02af859de64a4743c1f3946837279332c35ec8f5ddf20654ae")
+        XCTAssertEqual(accountKeyForItemSwitch(" \n"), "")
+        XCTAssertEqual(loginPasswordDigest("offline").count, 32)
+        var cfg = DPGConfig()
+        cfg.itemSwitchIds = [465]
+        cfg.itemSwitchShopId = "92"
+        cfg.itemSwitchAccountKey = accountKeyForItemSwitch("offline")
+        XCTAssertNoThrow(try cfg.validated())
+        XCTAssertEqual(cfg.itemSwitchScope(accountKey: accountKeyForItemSwitch(" offline "), shopKey: "92"), [465])
+        XCTAssertEqual(cfg.itemSwitchScope(accountKey: loginPasswordDigest("offline"), shopKey: "92"), [])
+    }
+
+    func testItemSelectionRejectsIncompleteOrContradictoryResponses() throws {
+        let valid: [String: Any] = ["data": ["itemSwitchList": [["id": 465, "name": "语音"], ["id": "2666", "name": "视频"]],
+                                          "clerkItemSwitchIds": [465, "2666", 465]]]
+        let parsed = try parseItemSwitchSelection(valid)
+        XCTAssertEqual(parsed.options.map { $0.id }, [465, 2666])
+        XCTAssertEqual(parsed.enabledIDs, [465, 2666])
+        let invalidResponses: [[String: Any]] = [
+            [:], ["itemSwitchList": []],
+            ["itemSwitchList": [["id": 465], ["id": 465]], "clerkItemSwitchIds": [465]],
+            ["itemSwitchList": [["id": true]], "clerkItemSwitchIds": []],
+            ["itemSwitchList": [["id": 465]], "clerkItemSwitchIds": [2666]],
+            ["itemSwitchList": [["id": 465]], "clerkItemSwitchIds": [true]]
+        ]
+        for invalid in invalidResponses {
+            XCTAssertThrowsError(try parseItemSwitchSelection(invalid))
+        }
+        XCTAssertTrue(try parseItemSwitchSelection(["itemSwitchList": [], "clerkItemSwitchIds": []]).enabledIDs.isEmpty)
+    }
+
+    func testEmptyMessageDoesNotHideBusyOrTerminalStatus() {
+        XCTAssertEqual(classifyConfirm(["code": 0, "msg": "", "message": "同时接单数超过限制的3单"]).outcome, .busy)
+        XCTAssertEqual(classifyConfirm(["code": 0, "msg": " ", "message": "无确认权限"]).outcome, .fail)
+    }
+
+    func testBusyClassificationPrecedesSuccessAndTerminalWords() {
+        for code in [0, 2] {
+            let result = classifyConfirm(["code": code, "msg": "同时接单数超过限制的 3 单，已达上限"])
+            XCTAssertEqual(result.outcome, .busy)
+            XCTAssertEqual(result.reason, "同时接单名额已满（上限3单），本次跳过")
+        }
+        XCTAssertEqual(classifyConfirm(["code": 0, "message": "接单数超过限制"]).outcome, .busy)
+        XCTAssertEqual(classifyConfirm(["code": 0, "msg": " ", "message": "接单数超过限制"]).outcome, .busy)
+        XCTAssertEqual(busyCapFrom("超过限制的 12 单"), 12)
+        XCTAssertNil(busyCapFrom("超过限制的0单"))
+        XCTAssertNil(busyCapFrom("超过限制的999999999999999999999999单"))
+        XCTAssertNil(busyCapFrom("其他信息"))
+        XCTAssertEqual(busyReason("接单数超过限制"), "同时接单名额已满，本次跳过")
+    }
+
+    func testWaitOffsetOnlyAppliesToSelectedShops() {
+        var cfg = DPGConfig()
+        cfg.autoWaitOffset = 0.3
+        let now = 1_800_000_000.0
+        for sid in ["50", "105", "1391"] {
+            XCTAssertEqual(orderWaitSeconds(order: [:], sid: sid, config: cfg, now: now), 3.3, accuracy: 0.0001)
+            for created in [now - 2, (now - 2) * 1000] {
+                XCTAssertEqual(orderWaitSeconds(order: ["createTime": created], sid: sid, config: cfg, now: now), 1.3, accuracy: 0.0001)
+            }
+        }
+        XCTAssertEqual(orderWaitSeconds(order: [:], sid: "92", config: cfg, now: now), 5)
+        XCTAssertEqual(orderWaitSeconds(order: [:], sid: "999", config: cfg, now: now), 3)
+        cfg.useShopWait = false
+        cfg.globalWaitSec = 1
+        XCTAssertEqual(orderWaitSeconds(order: [:], sid: "50", config: cfg, now: now), 1.3, accuracy: 0.0001)
+        cfg.autoWaitOffset = -0.5
+        cfg.globalWaitSec = 0.1
+        XCTAssertEqual(orderWaitSeconds(order: [:], sid: "50", config: cfg, now: now), 0)
+    }
+
+    func testNewConfigKeysRoundTripAndDefaults() throws {
+        let defaults = try DPGConfig.from(jsonData: Data("{}".utf8))
+        XCTAssertEqual(defaults.busyCooldownSec, 60)
+        XCTAssertEqual(defaults.autoWaitOffset, 0)
+        XCTAssertEqual(defaults.itemSwitchIds, [])
+        XCTAssertEqual(defaults.itemSwitchAccountKey, "")
+        XCTAssertEqual(defaults.itemSwitchShopId, "")
+        var cfg = DPGConfig()
+        cfg.busyCooldownSec = 125
+        cfg.autoWaitOffset = -0.125
+        cfg.itemSwitchIds = [465, 2666]
+        cfg.itemSwitchAccountKey = String(repeating: "a", count: 64)
+        cfg.itemSwitchShopId = "50"
+        let data = try cfg.jsonData()
+        let raw = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        for key in ["busy_cooldown_sec", "auto_wait_offset", "item_switch_ids", "item_switch_account_key", "item_switch_shop_id"] {
+            XCTAssertNotNil(raw[key])
+        }
+        XCTAssertEqual(try DPGConfig.from(jsonData: data), cfg)
+    }
+
+    func testNewConfigValidationRejectsInvalidValues() {
+        for offset in [-0.501, 0.501, 0.0001, Double.nan, Double.infinity] {
+            var cfg = DPGConfig(); cfg.autoWaitOffset = offset
+            XCTAssertThrowsError(try cfg.validated()) { XCTAssertTrue($0 is ConfigError) }
+        }
+        for offset in [-0.5, 0.5, 0.001, 0.145] {
+            var cfg = DPGConfig(); cfg.autoWaitOffset = offset
+            XCTAssertNoThrow(try cfg.validated())
+        }
+        for seconds in [0, 601] {
+            var cfg = DPGConfig(); cfg.busyCooldownSec = seconds
+            XCTAssertThrowsError(try cfg.validated())
+        }
+        for ids in [[0], [-1], [465, 0]] {
+            var cfg = DPGConfig(); cfg.itemSwitchIds = ids
+            XCTAssertThrowsError(try cfg.validated())
+        }
+        for key in ["account", String(repeating: "A", count: 64), String(repeating: "a", count: 32), String(repeating: "a", count: 63)] {
+            var cfg = DPGConfig(); cfg.itemSwitchAccountKey = key
+            XCTAssertThrowsError(try cfg.validated())
+        }
+        for sid in ["0", "-1", "92.5", " 92", "+92"] {
+            var cfg = DPGConfig(); cfg.itemSwitchShopId = sid
+            XCTAssertThrowsError(try cfg.validated())
+        }
+        let invalidInputs: [[String: Any]] = [["item_switch_ids": [465, true]], ["item_switch_ids": [465, 1.5]],
+                                              ["item_switch_ids": "465"], ["busy_cooldown_sec": true], ["busy_cooldown_sec": 60.5]]
+        for raw in invalidInputs {
+            XCTAssertThrowsError(try DPGConfig.validated(from: raw))
+        }
+    }
+
+    func testOrderItemIDsUseStrictNumbersBeforeNameFallback() {
+        for key in ["itemId", "itemSwitchId", "itemCategoryId", "typeId", "itemType", "serviceItemId", "categoryId"] {
+            XCTAssertEqual(orderItemIds([key: 465]), Set([465]))
+            XCTAssertEqual(orderItemIds([key: " 2666 "]), Set([2666]))
+        }
+        XCTAssertEqual(orderItemIds(["itemId": [465, "2666"], "itemName": "游戏"]), Set([465, 2666]))
+        let invalidIDs: [Any] = [true, NSNumber(value: true), Double(465), Float(465), 465.5, NSNumber(value: 465.5), "465.0", "-1", "0", "999999999999999999999999", UInt64.max]
+        for value in invalidIDs {
+            XCTAssertTrue(orderItemIds(["itemId": value]).isEmpty)
+        }
+        XCTAssertEqual(orderItemIds(["itemId": true, "typeId": 2667]), Set([2667]))
+        XCTAssertEqual(orderItemIds(["items": [["name": "语音通话"], ["itemName": "视频游戏"]]]), Set([465, 2666, 2667]))
+        for key in ["itemNames", "item_names", "itemName", "item_name", "serviceNames", "serviceName", "itemCategoryName"] {
+            XCTAssertEqual(orderItemIds([key: "连麦"]), Set([465]))
+        }
+        XCTAssertTrue(orderItemIds(["itemName": "未知类型"]).isEmpty)
+    }
+
+    func testEnabledItemFilterAndScope() {
+        let filter = OrderFilter(minAmount: 10, maxAmount: 0, memoMode: 0, memoKeywords: [], blacklist: [], enabledItems: [465])
+        XCTAssertTrue(filter.check(order: ["id": "1", "totalAmount": 2500, "itemId": 465]).passed)
+        let rejected = filter.check(order: ["id": "1", "totalAmount": 2500, "itemId": 2666])
+        XCTAssertFalse(rejected.passed)
+        XCTAssertEqual(rejected.reason, "订单类型未启用")
+        XCTAssertTrue(filter.check(order: ["id": "1", "totalAmount": 2500, "itemName": "未知"]).passed)
+        let unrestricted = OrderFilter(minAmount: 10, maxAmount: 0, memoMode: 0, memoKeywords: [], blacklist: [])
+        XCTAssertTrue(unrestricted.check(order: ["id": "1", "totalAmount": 2500, "itemId": 2666]).passed)
+        var cfg = DPGConfig()
+        cfg.itemSwitchIds = [465]
+        XCTAssertEqual(cfg.itemSwitchScope(accountKey: "", shopKey: ""), [])
+        cfg.itemSwitchAccountKey = String(repeating: "a", count: 64)
+        cfg.itemSwitchShopId = "92"
+        XCTAssertEqual(cfg.itemSwitchScope(accountKey: cfg.itemSwitchAccountKey, shopKey: "92"), [465])
+        XCTAssertEqual(cfg.itemSwitchScope(accountKey: "other", shopKey: "92"), [])
+        XCTAssertEqual(cfg.itemSwitchScope(accountKey: cfg.itemSwitchAccountKey, shopKey: "50"), [])
+    }
+
     func testMaskPhone() {
         XCTAssertEqual(maskPhone("13800000000"), "138****0000")
         XCTAssertEqual(maskPhone("123"), "***")
