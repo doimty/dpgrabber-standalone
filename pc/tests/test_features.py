@@ -1028,9 +1028,14 @@ class ItemTypeGateTests(unittest.TestCase):
 class MemoModeTests(unittest.TestCase):
     """备注检测四档：0 不检测 / 1 有备注不抢 / 2 排除关键词 / 3 只抢关键词。"""
 
-    def _check(self, mode, keywords, memo):
+    def _check(self, mode, keywords, memo, include=None):
         from engine import OrderFilter
-        return OrderFilter(10, 0, mode, keywords, []).check(
+        # 排除词与白名单是两份独立列表
+        # mode 0 里的关键词是"老配置兼容"路径（过滤时会提升成 mode 2）
+        exclude = keywords if mode in (0, 2) else []
+        include = (keywords if mode == 3 else []) if include is None else include
+        return OrderFilter(10, 0, mode, exclude, [],
+                           memo_include_keywords=include).check(
             {"id": "1", "totalAmount": 1000, "userMemo": memo})
 
     def test_mode0_ignores_memo_when_no_keywords(self):
@@ -1066,6 +1071,18 @@ class MemoModeTests(unittest.TestCase):
         for mode in (0, 1, 2, 3):
             cfg = cfgmod.validate(dict(cfgmod.DEFAULT_CONFIG, memo_mode=mode))
             self.assertEqual(cfg["memo_mode"], mode)
+
+    def test_lists_are_independent(self):
+        # 排除词里有"加急"，白名单里有"会讲故事"，互不串
+        self.assertFalse(self._check(2, ["加急"], "加急")[0])
+        self.assertTrue(self._check(2, ["加急"], "聊天")[0])
+        self.assertTrue(self._check(3, ["会讲故事"], "会讲故事")[0])
+        self.assertFalse(self._check(3, ["会讲故事"], "加急")[0])
+
+    def test_include_list_does_not_leak_into_exclude(self):
+        # 白名单里有"会讲故事"，排除模式不应因此拦截
+        ok, _ = self._check(2, ["加急"], "会讲故事", include=["会讲故事"])
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":
