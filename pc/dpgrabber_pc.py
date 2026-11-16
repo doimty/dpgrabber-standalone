@@ -28,6 +28,80 @@ import accounts as accounts_mod
 import config as cfgmod
 
 
+def _install_crash_logging():
+    """把崩溃现场写到 <配置目录>/dpgrabber_crash.log。
+
+    - faulthandler 抓 C 层崩溃（PySide 段错误）时的所有线程栈
+    - sys/threading.excepthook 抓 Python 未捕获异常（含子线程）
+    - Qt 消息处理器抓 QWidget/QPainter 之类的运行时警告
+    窗口版 exe 的 stderr 看不见，这些是唯一线索。
+    """
+    import time as _time
+    import traceback
+
+    try:
+        path = os.path.join(cfgmod.config_dir(), "dpgrabber_crash.log")
+        handle = open(path, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        return None
+
+    try:
+        import faulthandler
+        faulthandler.enable(file=handle, all_threads=True)
+    except Exception:
+        pass
+
+    def hook(exc_type, exc, tb):
+        try:
+            handle.write("\n===== %s 未捕获异常 =====\n"
+                         % _time.strftime("%Y-%m-%d %H:%M:%S"))
+            traceback.print_exception(exc_type, exc, tb, file=handle)
+            handle.flush()
+        except Exception:
+            pass
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = hook
+
+    try:
+        import threading
+
+        def thread_hook(args):
+            try:
+                handle.write("\n===== %s 线程异常 %s =====\n"
+                             % (_time.strftime("%Y-%m-%d %H:%M:%S"),
+                                getattr(getattr(args, "thread", None), "name", "?")))
+                traceback.print_exception(args.exc_type, args.exc_value,
+                                          args.exc_traceback, file=handle)
+                handle.flush()
+            except Exception:
+                pass
+
+        threading.excepthook = thread_hook
+    except Exception:
+        pass
+    return handle
+
+
+def _install_qt_message_log(handle):
+    if handle is None:
+        return
+    try:
+        import time as _time
+        from PySide6.QtCore import qInstallMessageHandler
+
+        def handler(mode, context, message):
+            try:
+                handle.write("[qt %s] %s\n" % (_time.strftime("%H:%M:%S"), message))
+                handle.flush()
+            except Exception:
+                pass
+
+        qInstallMessageHandler(handler)
+    except Exception:
+        pass
+
+
 def _resource(name: str) -> str:
     """随 exe 一起打包的资源路径（PyInstaller 解包到 _MEIPASS）。"""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -81,7 +155,9 @@ def main(argv=None) -> int:
     from themes import DEFAULT_THEME, THEMES
     from ui import App, apply_theme
 
+    crash_handle = _install_crash_logging()
     qapp = _ensure_qapp()
+    _install_qt_message_log(crash_handle)
     # 窗口/任务栏图标：只靠 exe 内嵌图标时，无边框窗口在 Win11 上会回退成
     # 通用文档图标，所以显式给应用设一个。
     try:
