@@ -481,17 +481,44 @@
 
                     <TextView
                         style="@style/FieldLabel"
-                        android:text="@string/label_push_webhook" />
+                        android:text="@string/label_push_provider" />
+
+                    <Spinner
+                        android:id="@+id/pushProviderSpinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:entries="@array/push_providers" />
+
+                    <TextView
+                        android:id="@+id/pushSecretLabel"
+                        style="@style/FieldLabel"
+                        android:text="@string/label_push_secret_bark" />
 
                     <EditText
-                        android:id="@+id/pushWebhookInput"
+                        android:id="@+id/pushSecretInput"
                         style="@style/FieldInput"
-                        android:inputType="textUri"
+                        android:inputType="textNoSuggestions"
+                        android:minHeight="48dp"
                         android:maxLines="1" />
 
                     <TextView
+                        android:id="@+id/barkServerLabel"
+                        style="@style/FieldLabel"
+                        android:text="@string/label_bark_server" />
+
+                    <EditText
+                        android:id="@+id/barkServerInput"
+                        style="@style/FieldInput"
+                        android:inputType="textUri"
+                        android:minHeight="48dp"
+                        android:maxLines="1"
+                        android:hint="@string/hint_bark_server" />
+
+                    <TextView
+                        android:id="@+id/pushKeyHint"
                         style="@style/CardBody"
-                        android:text="@string/hint_push_webhook" />
+                        android:text="@string/hint_push_key_bark" />
 
                     <androidx.appcompat.widget.SwitchCompat
                         android:id="@+id/pushOnSuccessSwitch"

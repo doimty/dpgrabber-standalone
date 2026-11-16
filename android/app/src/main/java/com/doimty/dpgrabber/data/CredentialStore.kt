@@ -85,27 +85,51 @@ class CredentialStore(context: Context) {
         else (target.getString("clerk_name", null) ?: "") to target.getInt("clerk_id", 0)
     } catch (_: Exception) { "" to 0 }
 
-    /**
-     * Webhook 地址含密钥，只写加密存储；空串表示清空。
-     * 加密不可用（prefs==null）时返回 false 且不做任何明文降级。
-     */
-    fun savePushWebhook(value: String): Boolean {
+    /** 通用加密单值写入：密钥/URL 只写加密 prefs；空串清空；不可用时不降级明文。 */
+    private fun saveEncrypted(key: String, value: String): Boolean {
         val target = prefs ?: return false
         val normalized = value.trim()
         return try {
             if (normalized.isEmpty()) {
-                target.edit().remove("push_webhook").commit()
+                target.edit().remove(key).commit()
             } else {
-                target.edit().putString("push_webhook", normalized).commit() &&
-                    target.getString("push_webhook", null) == normalized
+                target.edit().putString(key, normalized).commit() &&
+                    target.getString(key, null) == normalized
             }
         } catch (_: Exception) { false }
     }
 
     /** 无加密存储或读取失败一律返回空串；绝不使用明文偏好兜底。 */
-    fun loadPushWebhook(): String = try {
-        (prefs?.getString("push_webhook", null) ?: "").trim()
+    private fun loadEncrypted(key: String): String = try {
+        (prefs?.getString(key, null) ?: "").trim()
     } catch (_: Exception) { "" }
+
+    /**
+     * 推送密钥（Bark 设备 key / ServerChan key / PushPlus token / webhook URL）。
+     * 只写加密 prefs；首次读取时把旧 push_webhook 键迁移到新键一次。
+     */
+    fun savePushSecret(value: String): Boolean = saveEncrypted("push_secret", value)
+
+    fun loadPushSecret(): String {
+        if (!legacyPushWebhookMigrated) migrateLegacyPushWebhook()
+        return loadEncrypted("push_secret")
+    }
+
+    @Synchronized
+    private fun migrateLegacyPushWebhook() {
+        if (legacyPushWebhookMigrated) return
+        legacyPushWebhookMigrated = true
+        val legacy = loadEncrypted("push_webhook")
+        if (legacy.isNotEmpty()) saveEncrypted("push_secret", legacy)
+    }
+
+    /** 旧调用兼容：委托到通用密钥存储，保证已有设置页调用仍可编译运行。 */
+    fun savePushWebhook(value: String): Boolean = savePushSecret(value)
+    fun loadPushWebhook(): String = loadPushSecret()
+
+    /** Bark 服务器地址；空表示用官方默认 https://api.day.app。同样只写加密 prefs。 */
+    fun saveBarkServer(value: String): Boolean = saveEncrypted("bark_server", value)
+    fun loadBarkServer(): String = loadEncrypted("bark_server")
 
     fun clearAccount() {
         SessionRepository.invalidate()
@@ -140,6 +164,8 @@ class CredentialStore(context: Context) {
         @Volatile private var memoryPair: Pair<String, String>? = null
         /** 姓名与 ID 的内存回退；null 表示本进程尚未写入过。 */
         @Volatile private var memoryClerk: Pair<String, Int>? = null
+        /** 旧 push_webhook 键只迁移一次，避免每次读取都回查。 */
+        @Volatile private var legacyPushWebhookMigrated = false
         internal fun completePair(phone: String?, password: String?): Pair<String, String>? =
             if (!phone.isNullOrBlank() && !password.isNullOrBlank()) phone to password else null
     }

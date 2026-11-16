@@ -52,13 +52,26 @@ data class AppConfig(
     val requestTimeoutSec: Double = 15.0,
     val verifyTls: Boolean = true,
     val seenTtlSec: Double = 60.0,
-    /** Webhook 地址不写在这里（config_json 是明文），只存加密 prefs。 */
+    /** 密钥与 URL 不写在这里（config_json 是明文），只存加密 prefs。 */
     val pushEnabled: Boolean = false,
     val pushOnSuccess: Boolean = true,
     val pushOnFailure: Boolean = false,
-    val pushOnRisk: Boolean = false
+    val pushOnRisk: Boolean = false,
+    val pushProvider: String = "bark",
+    /** 接单类型名称映射：自定义类型 ID -> 关键词，优先于默认映射。 */
+    val itemNameMap: Map<Int, List<String>> = emptyMap(),
+    /** 命中即放行的基础类型（PC base_item_types）。 */
+    val itemAlwaysTypes: List<String> = listOf("文字语音条", "文语体验单"),
+    /** 开关列表是否可信已知；为 true 且启用列表为空时，全关类型词命中即拒绝。 */
+    val itemSwitchListKnown: Boolean = false
 ) {
     companion object {
+        /** 推送渠道白名单；非法值由 [validate] 回退为 bark，不抛错。 */
+        val PUSH_PROVIDERS = setOf("bark", "serverchan", "pushplus", "webhook")
+
+        fun normalizePushProvider(value: String): String =
+            value.trim().lowercase().takeIf { it in PUSH_PROVIDERS } ?: "bark"
+
         fun defaults(): AppConfig = AppConfig()
 
         fun fromJson(json: JSONObject): AppConfig {
@@ -109,7 +122,16 @@ data class AppConfig(
                 pushEnabled = json.optBoolean("push_enabled", base.pushEnabled),
                 pushOnSuccess = json.optBoolean("push_on_success", base.pushOnSuccess),
                 pushOnFailure = json.optBoolean("push_on_failure", base.pushOnFailure),
-                pushOnRisk = json.optBoolean("push_on_risk", base.pushOnRisk)
+                pushOnRisk = json.optBoolean("push_on_risk", base.pushOnRisk),
+                pushProvider = json.optString("push_provider", base.pushProvider),
+                itemNameMap = json.optJSONObject("item_name_map")?.let { obj ->
+                    obj.keys().asSequence().associate { key ->
+                        requireNotNull(positiveItemId(key)) { "接单类型名称映射的 key 必须为正整数" } to
+                            (obj.optJSONArray(key)?.toStringList() ?: emptyList())
+                    }
+                } ?: base.itemNameMap,
+                itemAlwaysTypes = json.optJSONArray("item_always_types")?.toStringList() ?: base.itemAlwaysTypes,
+                itemSwitchListKnown = json.optBoolean("item_switch_list_known", base.itemSwitchListKnown)
             )
         }
     }
@@ -150,6 +172,12 @@ data class AppConfig(
         json.put("push_on_success", pushOnSuccess)
         json.put("push_on_failure", pushOnFailure)
         json.put("push_on_risk", pushOnRisk)
+        json.put("push_provider", pushProvider)
+        val nameMapJson = JSONObject()
+        itemNameMap.forEach { (id, words) -> nameMapJson.put(id.toString(), JSONArray(words)) }
+        json.put("item_name_map", nameMapJson)
+        json.put("item_always_types", JSONArray(itemAlwaysTypes))
+        json.put("item_switch_list_known", itemSwitchListKnown)
         return json
     }
 
@@ -182,6 +210,17 @@ data class AppConfig(
         require(itemSwitchIds.all { it > 0 }) { "接单类型必须为正整数" }
         require(itemSwitchAccountKey.isEmpty() || itemSwitchAccountKey.matches(Regex("[0-9a-f]{64}"))) { "接单类型账号作用域必须为SHA256摘要" }
         require(itemSwitchShopId.isEmpty() || positiveItemId(itemSwitchShopId) != null) { "接单类型店铺作用域无效" }
+        require(itemNameMap.keys.all { it > 0 }) { "类型名称映射的 key 必须为正整数" }
+        // 与 PC pc/config.py 一致：先 trim 再丢空串。整项只有空白视为结构性非法；
+        // 原本就是空列表则整 key 丢弃，避免保留空列表导致 toJson/fromJson 往返不准。
+        val normalizedNameMap = linkedMapOf<Int, List<String>>()
+        for ((id, words) in itemNameMap) {
+            val cleaned = words.map { it.trim() }.filter { it.isNotEmpty() }
+            require(cleaned.isNotEmpty() || words.isEmpty()) { "类型名称映射的关键词不得为空" }
+            if (cleaned.isNotEmpty()) normalizedNameMap[id] = cleaned
+        }
+        val normalizedAlwaysTypes = itemAlwaysTypes.map { it.trim() }.filter { it.isNotEmpty() }
+        require(itemAlwaysTypes.isEmpty() || normalizedAlwaysTypes.isNotEmpty()) { "基础类型名不得为空" }
         require(globalWaitSec.isFinite() && globalWaitSec in 0.0..120.0) { "全局等待必须为0–120秒" }
         require(confirmWaitByShop.all { it.key.toIntOrNull()?.let { id -> id > 0 } == true && it.value.isFinite() && it.value in 0.0..120.0 }) { "店铺等待必须为0–120秒" }
         require(runDurationSec.isFinite() && runDurationSec >= 0 && restDurationSec.isFinite() && restDurationSec >= 0) { "运行/休息时长必须为非负数" }
@@ -194,7 +233,10 @@ data class AppConfig(
             memoKeywords = memoKeywords.map { it.trim() }.filter { it.isNotEmpty() },
             blacklist = blacklist.map { it.trim() }.filter { it.isNotEmpty() },
             phone = phone.trim(),
-            itemSwitchIds = itemSwitchIds.distinct()
+            itemSwitchIds = itemSwitchIds.distinct(),
+            pushProvider = normalizePushProvider(pushProvider),
+            itemNameMap = normalizedNameMap,
+            itemAlwaysTypes = normalizedAlwaysTypes
         )
     }
 }

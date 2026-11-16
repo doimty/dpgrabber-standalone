@@ -2,6 +2,7 @@ package com.doimty.dpgrabber.ui
 
 import android.os.Bundle
 import android.view.View
+import android.widget.AdapterView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -33,6 +34,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var loadedConfig: AppConfig
     private var rollingBack = false
     private val uiPrefs by lazy { getSharedPreferences("dpgrabber_settings", MODE_PRIVATE) }
+
+    companion object {
+        private val pushProviders = listOf("bark", "serverchan", "pushplus", "webhook")
+    }
 
     private fun settingsGroups() = listOf(
         SettingsGroup("connection", binding.contentConnection, binding.headerConnection,
@@ -93,7 +98,18 @@ class SettingsActivity : AppCompatActivity() {
         binding.pushOnSuccessSwitch.isChecked = config.pushOnSuccess
         binding.pushOnFailureSwitch.isChecked = config.pushOnFailure
         binding.pushOnRiskSwitch.isChecked = config.pushOnRisk
-        binding.pushWebhookInput.setText(store.loadPushWebhook())
+        val providerIndex = providerPosition(config.pushProvider)
+        binding.pushProviderSpinner.setSelection(providerIndex)
+        applyPushProviderUi(providerIndex)
+        binding.pushProviderSpinner.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                    applyPushProviderUi(position)
+                }
+                override fun onNothingSelected(parent: AdapterView<*>) = Unit
+            }
+        binding.pushSecretInput.setText(store.loadPushSecret())
+        binding.barkServerInput.setText(store.loadBarkServer())
         binding.autoStopSwitch.setOnCheckedChangeListener { _, checked ->
             if (!rollingBack) try { store.saveConfig(store.loadConfig().copy(autoStopAfterGrab = checked)) }
             catch (_: Exception) {
@@ -146,16 +162,20 @@ class SettingsActivity : AppCompatActivity() {
                 pushEnabled = binding.pushEnabledSwitch.isChecked,
                 pushOnSuccess = binding.pushOnSuccessSwitch.isChecked,
                 pushOnFailure = binding.pushOnFailureSwitch.isChecked,
-                pushOnRisk = binding.pushOnRiskSwitch.isChecked
+                pushOnRisk = binding.pushOnRiskSwitch.isChecked,
+                pushProvider = pushProviders.getOrElse(binding.pushProviderSpinner.selectedItemPosition) { "bark" }
             ).validate()
             if (updated.shopId != current.shopId || updated.aesKeyHex != current.aesKeyHex || updated.aesIvHex != current.aesIvHex || updated.aesKeyHexAlt != current.aesKeyHexAlt || updated.aesIvHexAlt != current.aesIvHexAlt) {
                 check(!com.doimty.dpgrabber.service.ListenService.isRunning) { "请先停止监听再修改连接设置" }
                 com.doimty.dpgrabber.data.SessionRepository.invalidate()
             }
             store.saveConfig(updated)
-            // webhook 单独加密保存；失败只提示，不影响已落盘的配置。
-            if (!store.savePushWebhook(binding.pushWebhookInput.text.toString().trim())) {
-                Toast.makeText(this, R.string.push_webhook_save_failed, Toast.LENGTH_LONG).show()
+            // 推送凭据与 Bark 服务器地址单独加密保存；失败只提示，不影响已落盘的配置。
+            if (!store.savePushSecret(binding.pushSecretInput.text.toString().trim())) {
+                Toast.makeText(this, R.string.push_secret_save_failed, Toast.LENGTH_LONG).show()
+            }
+            if (!store.saveBarkServer(binding.barkServerInput.text.toString().trim())) {
+                Toast.makeText(this, R.string.bark_server_save_failed, Toast.LENGTH_LONG).show()
             }
             Toast.makeText(this, R.string.advanced_saved, Toast.LENGTH_SHORT).show()
             finish()
@@ -247,6 +267,33 @@ class SettingsActivity : AppCompatActivity() {
     private fun applyGroupState(group: SettingsGroup, expanded: Boolean) {
         group.content.visibility = if (expanded) View.VISIBLE else View.GONE
         group.chevron.rotation = if (expanded) 0f else -90f
+    }
+
+    private fun providerPosition(provider: String): Int =
+        pushProviders.indexOf(provider).let { if (it >= 0) it else 0 }
+
+    private fun applyPushProviderUi(position: Int) {
+        when (position) {
+            0 -> {
+                binding.pushSecretLabel.setText(R.string.label_push_secret_bark)
+                binding.pushKeyHint.setText(R.string.hint_push_key_bark)
+            }
+            1 -> {
+                binding.pushSecretLabel.setText(R.string.label_push_secret_serverchan)
+                binding.pushKeyHint.setText(R.string.hint_push_key_serverchan)
+            }
+            2 -> {
+                binding.pushSecretLabel.setText(R.string.label_push_secret_pushplus)
+                binding.pushKeyHint.setText(R.string.hint_push_key_pushplus)
+            }
+            else -> {
+                binding.pushSecretLabel.setText(R.string.label_push_secret_webhook)
+                binding.pushKeyHint.setText(R.string.hint_push_key_webhook)
+            }
+        }
+        val barkVisibility = if (position == 0) View.VISIBLE else View.GONE
+        binding.barkServerLabel.visibility = barkVisibility
+        binding.barkServerInput.visibility = barkVisibility
     }
 
     private fun trimNumber(value: Double): String {

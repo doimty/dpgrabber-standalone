@@ -17,19 +17,22 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
- * 结果双保险：本机 Notification + 服务端 HTTPS webhook。
+ * 结果双保险：本机 Notification + 服务端 HTTPS 推送（Bark 优先，四渠道对齐 PC）。
  *
  * 开关语义（双保险：本机为默认兜底，远程为可选加项）：
- * - pushOnSuccess / pushOnFailure / pushOnRisk 决定哪类结果要本机通知；
+ * - pushOnSuccess / pushOnFailure / pushOnRisk 决定哪类结果要通知；
  *   UNKNOWN 与 SKIPPED 从不通知（避免中间态与没抢到的单刷屏）。默认仍保留成功通知，
  *   与改造前的 1002 通知行为一致。
- * - pushEnabled 只控制远程 webhook，且还要求 webhook 非空；不影响本机通知。
+ * - pushEnabled 只控制远程推送，且还要求密钥非空；不影响本机通知。
+ * - 远程渠道取 config.pushProvider，密钥含义随渠道而变：Bark 设备 key /
+ *   ServerChan key / PushPlus token / webhook URL。
  * 两条路径各自 try/catch 隔离：本机失败不影响远程，远程失败不影响监听/抢单。
  */
 class OrderNotifier(
     context: Context,
     private val configProvider: () -> AppConfig,
-    private val webhookProvider: () -> String,
+    private val secretProvider: () -> String,
+    private val barkServerProvider: () -> String,
     private val sender: PushNotifier = PushNotifier(OkHttpTransport())
 ) {
     private val appContext = context.applicationContext
@@ -52,10 +55,10 @@ class OrderNotifier(
         }
         if (!typeEnabled) return
 
-        // 本机通知是默认兜底，不受远程开关约束（否则关闭 webhook 会连原有成功通知一起丢失）。
+        // 本机通知是默认兜底，不受远程开关约束（否则关闭远程推送会连原有成功通知一起丢失）。
         notifyLocal(o)
-        // 远程推送需显式开启；pushRemote 内部再校验 webhook 非空。
-        if (config.pushEnabled) pushRemote(o)
+        // 远程推送需显式开启；pushRemote 内部再校验密钥非空。
+        if (config.pushEnabled) pushRemote(o, config.pushProvider)
     }
 
     private fun notifyLocal(o: OrderOutcome) {
@@ -83,16 +86,17 @@ class OrderNotifier(
         }
     }
 
-    private fun pushRemote(o: OrderOutcome) {
+    private fun pushRemote(o: OrderOutcome, provider: String) {
         try {
-            val webhook = webhookProvider()
-            if (webhook.isBlank()) return
+            val secret = secretProvider()
+            if (secret.isBlank()) return
+            val barkServer = barkServerProvider()
             val title = NotificationText.title(o)
             val body = NotificationText.body(o)
             try {
                 executor.execute {
                     try {
-                        if (!sender.send(title, body, webhook)) {
+                        if (!sender.send(title, body, provider, secret, barkServer)) {
                             LogBus.post(LogLevel.WARNING, "远程结果推送未成功，监听继续")
                         }
                     } catch (_: Throwable) {

@@ -15,6 +15,22 @@ class PushConfigTest {
         assertTrue(cfg.pushOnSuccess)
         assertFalse(cfg.pushOnFailure)
         assertFalse(cfg.pushOnRisk)
+        assertEquals("bark", cfg.pushProvider)
+    }
+
+    @Test
+    fun `four push providers round trip through json`() {
+        for (provider in AppConfig.PUSH_PROVIDERS) {
+            val cfg = AppConfig(pushProvider = provider)
+            assertEquals(provider, AppConfig.fromJson(cfg.toJson()).validate().pushProvider)
+        }
+    }
+
+    @Test
+    fun `illegal provider falls back to bark and old json keeps bark`() {
+        assertEquals("bark", AppConfig.fromJson(JSONObject().put("push_provider", "telegram")).validate().pushProvider)
+        assertEquals("bark", AppConfig(pushProvider = "  BARK  ").validate().pushProvider)
+        assertEquals("bark", AppConfig.fromJson(JSONObject()).validate().pushProvider)
     }
 
     @Test

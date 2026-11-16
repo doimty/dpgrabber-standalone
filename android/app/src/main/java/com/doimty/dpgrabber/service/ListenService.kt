@@ -160,9 +160,10 @@ class ListenService : Service() {
         val accountKey = java.security.MessageDigest.getInstance("SHA-256").digest(phone.toByteArray())
             .joinToString("") { "%02x".format(it.toInt() and 255) }
         currentShopId = client.session?.sid.orEmpty()
-        // 结果通知双保险：本机 Notification + 加密保存的 HTTPS webhook。
-        // 配置与 webhook 都热读，且任何异常都被 OrderNotifier 隔离。
-        val orderNotifier = OrderNotifier(this, { store.loadConfig() }, { store.loadPushWebhook() })
+        // 结果通知双保险：本机 Notification + 加密保存的 HTTPS 推送密钥。
+        // 配置、密钥与 Bark 服务器都热读，任何异常都被 OrderNotifier 隔离。
+        val orderNotifier = OrderNotifier(this, { store.loadConfig() },
+            { store.loadPushSecret() }, { store.loadBarkServer() })
         val task = ListenEngine(client, config,
             log = { level, text ->
                 // 通知改为按“计数变化 + 状态变化 + 30 秒时长”刷新，

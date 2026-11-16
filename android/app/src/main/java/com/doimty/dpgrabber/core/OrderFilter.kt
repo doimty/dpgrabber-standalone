@@ -3,6 +3,31 @@ package com.doimty.dpgrabber.core
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** 与 PC ITEM_NAME_FIELDS 对齐的名称候选字段（含嵌套 item / itemCategory）。 */
+private val ITEM_NAME_FIELDS = listOf(
+    "itemNames", "item_names", "itemName", "item_name", "items",
+    "serviceNames", "serviceName", "itemCategoryName", "item", "itemCategory"
+)
+
+/** 与 PC ITEM_ID_FIELDS 对齐的类型 ID 候选字段。 */
+private val ITEM_ID_FIELDS = listOf(
+    "itemId", "itemSwitchId", "itemCategoryId", "typeId", "itemType", "serviceItemId", "categoryId"
+)
+
+/**
+ * 默认名称映射，已按 PC 收紧：465 只认「连麦」。
+ * 去掉「语音通话」「语音」是为了避免「文字语音条」被误判为连麦；
+ * 这类基础类型交由 alwaysTypes 放行，不参与 ID 映射。
+ */
+val DEFAULT_ITEM_NAME_MAP: Map<Int, List<String>> = mapOf(
+    465 to listOf("连麦"),
+    2666 to listOf("视频"),
+    2667 to listOf("游戏")
+)
+
+/** PC base_item_types：命中即放行，不参与开关判定。 */
+val DEFAULT_ITEM_ALWAYS_TYPES: List<String> = listOf("文字语音条", "文语体验单")
+
 /**
  * The section 7.1 filter chain (PC tool `handle_order` + `match_keyword`).
  * `check(order)` returns (passed, reason).
@@ -13,7 +38,10 @@ class OrderFilter(
     val memoMode: Int,
     memoKeywords: List<String>,
     blacklist: List<String>,
-    val enabledItems: List<Int> = emptyList()
+    val enabledItems: List<Int> = emptyList(),
+    val nameMap: Map<Int, List<String>> = emptyMap(),
+    val alwaysTypes: List<String> = DEFAULT_ITEM_ALWAYS_TYPES,
+    val switchListKnown: Boolean = false
 ) {
     val memoKeywords: List<String> =
         memoKeywords.map { it.trim() }.filter { it.isNotEmpty() }
@@ -46,12 +74,25 @@ class OrderFilter(
                 }
             }
         }
-        val itemIds = orderItemIds(order)
-        if (enabledItems.isNotEmpty() && itemIds.isNotEmpty() && itemIds.none { it in enabledItems }) {
-            return false to "订单类型未启用（名称仅按已知语音/视频/游戏映射）"
+        val ids = orderTypeIds(order, nameMap)
+        val names = orderNames(order)
+        // 开关列表可信已知且全部关闭：命中任一已知类型词即拒绝，基础类型与认不出的仍放行。
+        if (switchListKnown && enabledItems.isEmpty() && names.isNotEmpty() &&
+            !matchAlwaysType(names, alwaysTypes) &&
+            names.any { name -> allKnownTypeWords().any { it in name } }
+        ) {
+            return false to "接单类型已全部关闭（${names.joinToString("、")}）"
+        }
+        if (orderMatchesItems(order, enabledItems, nameMap, alwaysTypes) == false) {
+            val detail = if (ids.isNotEmpty()) ids.joinToString("、") else names.joinToString("、")
+            return false to "该接单类型已关闭（$detail）"
         }
         return true to ""
     }
+
+    private fun allKnownTypeWords(): Set<String> =
+        (DEFAULT_ITEM_NAME_MAP.values.flatten() + nameMap.values.flatten())
+            .map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
 }
 
 /**
@@ -74,11 +115,16 @@ fun accountKeyForPhone(phone: String): String = java.security.MessageDigest.getI
 
 data class ItemSwitchScope(val accountKey: String, val shopId: String)
 
-/** 缺失或不匹配的缓存作用域视为未知，不把其他账号/店铺的类型用于过滤。 */
+/** 缺失或不匹配的缓存作用域视为未知：既不限制类型，也不启用“全关”判定。 */
 fun orderFilterFromConfig(cfg: AppConfig, scope: ItemSwitchScope? = null): OrderFilter {
-    val enabled = if (scope != null && scope.accountKey.isNotEmpty() && scope.shopId.isNotEmpty() &&
-        cfg.itemSwitchAccountKey == scope.accountKey && cfg.itemSwitchShopId == scope.shopId) cfg.itemSwitchIds else emptyList()
-    return OrderFilter(cfg.minAmount, cfg.maxAmount, cfg.memoMode, cfg.memoKeywords, cfg.blacklist, enabled)
+    val scoped = scope != null && scope.accountKey.isNotEmpty() && scope.shopId.isNotEmpty() &&
+        cfg.itemSwitchAccountKey == scope.accountKey && cfg.itemSwitchShopId == scope.shopId
+    return OrderFilter(
+        cfg.minAmount, cfg.maxAmount, cfg.memoMode, cfg.memoKeywords, cfg.blacklist,
+        if (scoped) cfg.itemSwitchIds else emptyList(),
+        cfg.itemNameMap, cfg.itemAlwaysTypes,
+        scoped && cfg.itemSwitchListKnown
+    )
 }
 
 /** 类型 ID 不接受布尔、浮点数、小数文本或溢出。无效候选不遮挡后续字段。 */
@@ -91,32 +137,81 @@ fun positiveItemId(value: Any?): Int? {
     return if (text.matches(Regex("[0-9]+"))) text.toIntOrNull()?.takeIf { it > 0 } else null
 }
 
-fun orderItemIds(order: JSONObject): Set<Int> {
+private fun addItemIds(value: Any?, ids: MutableSet<Int>) {
+    if (value is JSONArray) {
+        for (i in 0 until value.length()) addItemIds(value.opt(i), ids)
+    } else positiveItemId(value)?.let { ids.add(it) }
+}
+
+/** dict 读 names / name / itemName 子键，names 可为数组；数组递归展开。 */
+private fun collectNameStrings(value: Any?, out: MutableList<String>) {
+    when (value) {
+        is JSONArray -> for (i in 0 until value.length()) collectNameStrings(value.opt(i), out)
+        is JSONObject -> for (key in listOf("names", "name", "itemName")) {
+            if (value.has(key)) collectNameStrings(value.opt(key), out)
+        }
+        is String -> out.add(value)
+    }
+}
+
+/** 归一化后的名称候选（小写、去空）；认不出时为空列表。 */
+fun orderNames(order: JSONObject): List<String> {
+    val raw = mutableListOf<String>()
+    for (key in ITEM_NAME_FIELDS) collectNameStrings(order.opt(key), raw)
+    return raw.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+}
+
+/** nameMap 自定义词优先于同 ID 的默认词。 */
+private fun effectiveNameMap(nameMap: Map<Int, List<String>>): Map<Int, List<String>> =
+    DEFAULT_ITEM_NAME_MAP + nameMap
+
+private fun orderTypeIds(order: JSONObject, nameMap: Map<Int, List<String>>): Set<Int> {
     val ids = linkedSetOf<Int>()
-    fun addId(value: Any?) {
-        if (value is JSONArray) {
-            for (i in 0 until value.length()) addId(value.opt(i))
-        } else positiveItemId(value)?.let { ids.add(it) }
-    }
-    for (key in listOf("itemId", "itemSwitchId", "itemCategoryId", "typeId", "itemType", "serviceItemId", "categoryId")) {
-        addId(order.opt(key))
-    }
+    for (key in ITEM_ID_FIELDS) addItemIds(order.opt(key), ids)
     if (ids.isNotEmpty()) return ids
-    fun addName(value: Any?) {
-        when (value) {
-            is JSONArray -> for (i in 0 until value.length()) addName(value.opt(i))
-            is JSONObject -> { addName(value.opt("name")); addName(value.opt("itemName")) }
-            is String -> {
-                val name = value.trim().lowercase()
-                // 已知名称映射与 PC 对齐；“文字语音条”等包含语音词的店铺归属仍需独立核验。
-                if (listOf("连麦", "语音通话", "语音").any { it in name }) ids.add(465)
-                if ("视频" in name) ids.add(2666)
-                if ("游戏" in name) ids.add(2667)
-            }
+    val names = orderNames(order)
+    for (name in names) {
+        for ((id, words) in effectiveNameMap(nameMap)) {
+            if (words.any { it in name }) ids.add(id)
         }
     }
-    for (key in listOf("itemNames", "item_names", "itemName", "item_name", "items", "serviceNames", "serviceName", "itemCategoryName")) {
-        addName(order.opt(key))
-    }
     return ids
+}
+
+/** 向后兼容的纯函数：只用默认映射推断 ID。 */
+fun orderItemIds(order: JSONObject): Set<Int> = orderTypeIds(order, emptyMap())
+
+/** 基础类型命中即放行（与 PC base_item_types 一致）。 */
+fun matchAlwaysType(names: List<String>, alwaysTypes: List<String>): Boolean {
+    val words = alwaysTypes.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    return names.any { name -> words.any { it in name } }
+}
+
+/**
+ * 类型联动判定：true 放行 / false 拒绝 / null 认不出（fail open，不猜）。
+ * 语义严格对齐 PC：无 enabled 直接放行；ID 明确则只看 ID；无名称返回 null；
+ * 命中基础类型放行；候选词中启用词优先于禁用词。
+ */
+fun orderMatchesItems(
+    order: JSONObject,
+    enabled: List<Int>,
+    nameMap: Map<Int, List<String>>,
+    alwaysTypes: List<String>
+): Boolean? {
+    if (enabled.isEmpty()) return true
+    val ids = orderTypeIds(order, nameMap)
+    if (ids.isNotEmpty()) return ids.any { it in enabled }
+    val names = orderNames(order)
+    if (names.isEmpty()) return null
+    if (matchAlwaysType(names, alwaysTypes)) return true
+    val enabledSet = enabled.toSet()
+    val enabledWords = linkedSetOf<String>()
+    val disabledWords = linkedSetOf<String>()
+    for ((id, words) in effectiveNameMap(nameMap)) {
+        val normalized = words.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        if (id in enabledSet) enabledWords.addAll(normalized) else disabledWords.addAll(normalized)
+    }
+    if (names.any { name -> enabledWords.any { it in name } }) return true
+    if (names.any { name -> disabledWords.any { it in name } }) return false
+    return null
 }

@@ -369,7 +369,7 @@ class ListenEngine(
                 val latestFilter = orderFilterFromConfig(latest, itemScope(phone))
                 if (latestFilter.enabledItems.isNotEmpty() && orderItemIds(order).isEmpty() && !missingItemTypeWarned) {
                     missingItemTypeWarned = true
-                    log(LogLevel.WARNING, "订单缺少可识别的类型，类型联动暂不限制；名称仅映射已知语音/视频/游戏，特殊店铺归属待核验")
+                    log(LogLevel.WARNING, "订单缺少可识别的类型：订单类型无法识别，联动暂不限制；其他过滤正常")
                 }
                 if (!latestFilter.check(order).first) {
                     log(LogLevel.INFO, "订单不符合本地过滤条件")

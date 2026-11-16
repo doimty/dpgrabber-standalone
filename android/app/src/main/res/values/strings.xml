@@ -137,7 +137,7 @@
 
     <!-- 推送设置 -->
     <string name="label_push_enabled">启用远程推送</string>
-    <string name="hint_push_channel">接单结果默认通过本机通知提醒，不依赖网络；开启远程推送后，会额外向下方地址发送一份。</string>
+    <string name="hint_push_channel">本机通知默认开启且不依赖网络；开启远程推送后，会按所选渠道额外发送一份。</string>
     <string name="label_push_webhook">推送地址（Webhook）</string>
     <string name="hint_push_webhook">留空则仅使用本机通知；填写后同步推送到该地址，凭据加密保存在本机。</string>
     <string name="label_push_on_success">抢单成功推送</string>
@@ -147,6 +147,27 @@
     <string name="push_test_hint">将在下次抢单时验证推送</string>
     <string name="push_status_hint">推送测试不会立即发送消息，避免打扰业务接口。</string>
     <string name="push_webhook_save_failed">推送地址未能加密保存；请检查本机加密存储是否可用。</string>
+
+    <!-- 推送渠道（顺序对应 bark / serverchan / pushplus / webhook） -->
+    <string-array name="push_providers">
+        <item>Bark</item>
+        <item>Server酱</item>
+        <item>PushPlus</item>
+        <item>自定义 Webhook</item>
+    </string-array>
+    <string name="label_push_provider">推送渠道</string>
+    <string name="label_push_secret_bark">Bark 设备 Key</string>
+    <string name="label_push_secret_serverchan">Server酱 SendKey</string>
+    <string name="label_push_secret_pushplus">PushPlus Token</string>
+    <string name="label_push_secret_webhook">Webhook 地址</string>
+    <string name="label_bark_server">Bark 服务器（可选）</string>
+    <string name="hint_bark_server">留空使用 https://api.day.app</string>
+    <string name="hint_push_key_bark">在 iPhone 的 Bark App 复制设备 Key；密钥加密保存在本机，本机通知不依赖它。</string>
+    <string name="hint_push_key_serverchan">在 Server酱 控制台获取 SendKey；密钥加密保存在本机，本机通知不依赖它。</string>
+    <string name="hint_push_key_pushplus">在 PushPlus 官网获取 Token；密钥加密保存在本机，本机通知不依赖它。</string>
+    <string name="hint_push_key_webhook">填写完整的 HTTPS Webhook 地址；凭据加密保存在本机，本机通知不依赖它。</string>
+    <string name="push_secret_save_failed">推送凭据未能加密保存；请检查本机加密存储是否可用。</string>
+    <string name="bark_server_save_failed">Bark 服务器地址未能加密保存；请检查本机加密存储是否可用。</string>
 
     <!-- 杂项 -->
     <string name="credentials_unencrypted_warning">本机加密存储不可用：凭据仅保留当前进程，退出后需重新输入，不会自动明文保存。旧凭据须恢复加密存储后安全迁移。</string>

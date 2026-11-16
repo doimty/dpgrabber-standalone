@@ -221,10 +221,13 @@ class PcParityCoreTest {
         }
     }
 
-    @Test fun `语音同义词和游戏已知映射且文字语音条只体现映射边界`() {
-        for (name in listOf("连麦", "语音通话", "语音", "文字语音条")) assertEquals(setOf(465), orderItemIds(order().put("itemName", name)))
+    @Test fun `默认映射收紧为连麦且语音词不再误判为465`() {
+        assertEquals(setOf(465), orderItemIds(order().put("itemName", "连麦")))
+        for (name in listOf("语音通话", "语音", "文字语音条")) {
+            assertTrue(orderItemIds(order().put("itemName", name)).isEmpty())
+        }
+        assertEquals(setOf(2666), orderItemIds(order().put("itemName", "视频")))
         assertEquals(setOf(2667), orderItemIds(order().put("itemName", "游戏")))
-        assertTrue(filter(2666).check(order().put("itemName", "语音")).second.contains("已知"))
     }
 
     @Test fun `多项类型任一交集可抢无交集拒绝`() {
