@@ -902,7 +902,12 @@ class App(QMainWindow):
         # controls overlapped, because the column was narrower than its own
         # minimumSizeHint (342 after the label shortening)
         needed = wrap.minimumSizeHint().width()
-        form_width = max(form_width, needed)
+        # 中栏内容本身最宽 ~510（表单 500 + 卡片内边距），再宽只是空白，
+        # 所以给个上限，把省下来的宽度让给接单历史/日志那一栏。
+        # 内容偏好宽度：关键词框 500 + 卡片内边距，再窄就会溢出
+        content_cap = 486
+        form_width = min(form_width, content_cap)
+        form_width = max(form_width, needed, min(content_cap, 520))
         form_width = min(form_width, available - 260)
         if wrap.width() != form_width:
             wrap.setFixedWidth(form_width)
@@ -1729,7 +1734,9 @@ class App(QMainWindow):
     def _on_memo_mode_changed(self, index: int):
         """切模式：把当前框里的词存回原来的列表，再载入新列表。"""
         previous = getattr(self, "_keyword_mode_shown", None)
-        if previous is not None and previous != index:
+        # 只有从"关键词模式"离开时才回存；从"不检测/有备注不抢"过来时框里
+        # 没有意义，回存会把列表清空。
+        if previous is not None and previous != index and previous in (2, 3):
             old_key = self._keyword_key_for(previous)
             self.cfg[old_key] = _lines(self.keyword_text)
         self._sync_keyword_editor(index)
@@ -1966,10 +1973,11 @@ class App(QMainWindow):
         self.keyword_text.setObjectName("listEdit")
         self.keyword_text.setPlaceholderText("一行一个，例如：加急")
         self.keyword_text.setFixedHeight(52)
-        self.keyword_text.setFixedWidth(500)
+        self.keyword_text.setMinimumWidth(300)
+        self.keyword_text.setMaximumWidth(500)
         kw_layout.addWidget(self.keyword_text)
         self.keyword_box.setVisible(False)
-        card_layout.addWidget(self.keyword_box, 0, Qt.AlignLeft)
+        card_layout.addWidget(self.keyword_box)
 
         tip = self._hint("悬停任意输入框可查看该项说明")
         card_layout.addWidget(tip)
@@ -2294,9 +2302,12 @@ class App(QMainWindow):
             black_action = menu.addAction("拉黑微信号 %s" % wechat)
         else:
             menu.addAction("该订单没有微信号").setEnabled(False)
+        mode = (int(self.memo_mode_box.currentIndex())
+                if hasattr(self, "memo_mode_box") else 0)
         if memo:
             short = memo if len(memo) <= 18 else memo[:18] + "…"
-            keyword_action = menu.addAction("把备注加入关键词「%s」" % short)
+            where = "白名单" if mode == 3 else "排除词"
+            keyword_action = menu.addAction("把备注加入%s「%s」" % (where, short))
         else:
             menu.addAction("该订单没有备注").setEnabled(False)
         menu.addSeparator()
@@ -2338,6 +2349,11 @@ class App(QMainWindow):
                 return
         self.log("success", "%s：%s" % (message, value))
         if key in ("memo_keywords", "memo_exclude_keywords", "memo_include_keywords"):
+            # 当前是"不检测 / 有备注不抢"时关键词不参与过滤，加进去等于没用；
+            # 自动切到排除关键词并说明，别让用户以为按钮没反应。
+            if hasattr(self, "memo_mode_box") and self.memo_mode_box.currentIndex() < 2:
+                self.memo_mode_box.setCurrentIndex(2)
+                self.log("info", "备注检测已切换为「排除关键词」，新加的词才会生效")
             self._refresh_keyword_editor()
 
     def _on_clear_history(self):
