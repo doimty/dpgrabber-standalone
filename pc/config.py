@@ -19,6 +19,9 @@ Both pairs are editable in the config file / the Advanced settings dialog.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
+import time
 import os
 import stat
 import sys
@@ -361,11 +364,23 @@ def save(cfg: dict, path: str | None = None) -> str:
     """Write the config (validated first) and return the path used."""
     cfg = validate(cfg)
     path = path or config_path()
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+    # 唯一临时名：两个线程/进程同时存盘时不会互相覆盖同一个 .tmp
+    # （实测过：并发写让账号配置变成半截 JSON，程序直接起不来）
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".cfg-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     _restrict_permissions(path)
     return path
 
@@ -378,11 +393,23 @@ def load(path: str | None = None) -> dict:
         cfg = validate(dict(DEFAULT_CONFIG))
         save(cfg, path)
         return cfg
+    # 先读完再解析：Windows 下文件句柄还开着时没法替换同名文件，
+    # 而"损坏 -> 备份 + 重建"那一步就需要替换。
     with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        # 半截文件会让程序完全起不来；备份后按默认值继续，至少能进去改
+        broken = "%s.broken-%s" % (path, time.strftime("%Y%m%d%H%M%S"))
         try:
-            raw = json.load(fh)
-        except json.JSONDecodeError as exc:
-            raise ConfigError("config file is not valid JSON: %s" % exc)
+            shutil.copyfile(path, broken)
+        except OSError:
+            broken = "(备份失败)"
+        cfg = validate(dict(DEFAULT_CONFIG))
+        save(cfg, path)
+        cfg["_recovered_from"] = broken
+        return cfg
     if not isinstance(raw, dict):
         raise ConfigError("config file must contain a JSON object")
     cfg = validate(raw)
