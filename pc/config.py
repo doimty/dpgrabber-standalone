@@ -109,7 +109,9 @@ DEFAULT_CONFIG = {
         "notify_key": "",
         "notify_webhook": "",     # spoken announcements; silently off if pyttsx3 is missing
     "seen_ttl_sec": 60,        # de-dup window for already-seen order ids (seconds)
-    "theme": "day",            # UI theme id (see themes.py); unknown values fall back to "day"
+    "theme": "day",
+    # 界面缩放："auto" 按屏幕分辨率自动推算，或 0.8–1.6 的固定倍数（重启生效）
+    "ui_scale": "auto",            # UI theme id (see themes.py); unknown values fall back to "day"
 }
 
 
@@ -298,6 +300,17 @@ def validate(cfg: dict) -> dict:
     merged["blacklist"] = [str(x).strip() for x in merged["blacklist"] if str(x).strip()]
     merged["phone"] = str(merged.get("phone") or "").strip()
     merged["password"] = str(merged.get("password") or "")
+    scale = merged.get("ui_scale", "auto")
+    if isinstance(scale, str) and scale.strip().lower() == "auto":
+        merged["ui_scale"] = "auto"
+    else:
+        try:
+            value = float(scale)
+        except (TypeError, ValueError):
+            raise ConfigError("ui_scale must be 'auto' or a number")
+        if not (0.8 <= value <= 1.6):
+            raise ConfigError("ui_scale must be between 0.8 and 1.6")
+        merged["ui_scale"] = round(value, 2)
     theme = str(merged.get("theme") or "day").strip()
     merged["theme"] = theme if theme in THEMES else "day"
     return merged
@@ -344,6 +357,34 @@ def load(path: str | None = None) -> dict:
     if set(raw.keys()) != set(cfg.keys()):
         save(cfg, path)
     return cfg
+
+
+def resolve_ui_scale(cfg: dict) -> float:
+    """要传给 QT_SCALE_FACTOR 的倍数。
+
+    "auto" 时按主屏物理分辨率推算（1920x1080 = 1.0），夹在 0.85–1.35；
+    固定值直接用。返回值四舍五入到 0.05，避免奇怪的缩放比。
+    """
+    value = (cfg or {}).get("ui_scale", "auto")
+    if not (isinstance(value, str) and value.strip().lower() == "auto"):
+        try:
+            return max(0.8, min(1.6, round(float(value), 2)))
+        except (TypeError, ValueError):
+            pass
+    width = height = 0
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        width = int(user32.GetSystemMetrics(0))
+        height = int(user32.GetSystemMetrics(1))
+    except Exception:
+        width = height = 0
+    if width <= 0 or height <= 0:
+        return 1.0
+    ratio = (width * height / (1920.0 * 1080.0)) ** 0.5
+    ratio = max(0.85, min(1.35, ratio))
+    return round(ratio * 20) / 20.0
 
 
 def mask_phone(phone: str) -> str:
