@@ -364,7 +364,16 @@ def order_item_names(order) -> list[str]:
     return [n.strip() for n in names if n and n.strip()]
 
 
-def order_matches_items(order, enabled_items) -> bool | None:
+def item_keywords(item_id: int, name_map=None) -> tuple:
+    """某个接单类型对应的匹配词：优先用配置里的 item_name_map。"""
+    if name_map:
+        words = name_map.get(str(item_id))
+        if words:
+            return tuple(str(w) for w in words)
+    return tuple(ITEM_NAME_SYNONYMS.get(int(item_id), ()))
+
+
+def order_matches_items(order, enabled_items, name_map=None) -> bool | None:
     """True/False 明确判定；None 表示订单没有任何类型信息（无法判断）。"""
     enabled = set(int(i) for i in (enabled_items or []) if str(i).strip())
     if not enabled:
@@ -376,7 +385,7 @@ def order_matches_items(order, enabled_items) -> bool | None:
     if not names:
         return None
     for wanted in enabled:
-        for word in ITEM_NAME_SYNONYMS.get(wanted, ()):
+        for word in item_keywords(wanted, name_map):
             if word in names:
                 return True
     return False
@@ -402,7 +411,7 @@ class OrderFilter:
 
     def __init__(self, min_amount: float, max_amount: float, memo_mode: int,
                  memo_keywords, blacklist, enabled_items=None,
-                 memo_include_keywords=None):
+                 memo_include_keywords=None, item_name_map=None):
         self.min_amount = float(min_amount)
         self.max_amount = float(max_amount)
         self.memo_mode = int(memo_mode)
@@ -417,6 +426,7 @@ class OrderFilter:
             self.memo_mode = 2
         # 接单类型联动：空列表 = 不限制
         self.enabled_items = set(int(i) for i in (enabled_items or []) if str(i).strip())
+        self.item_name_map = dict(item_name_map or {})
 
     def check(self, order: dict):
         if not isinstance(order, dict):
@@ -434,7 +444,7 @@ class OrderFilter:
         if self.max_amount > 0 and amount > self.max_amount:
             return False, "金额 %.2f 元高于最高金额" % amount
         if self.enabled_items:
-            matched = order_matches_items(order, self.enabled_items)
+            matched = order_matches_items(order, self.enabled_items, self.item_name_map)
             if matched is False:
                 names = "、".join(order_item_names(order))
                 if not names:
@@ -689,6 +699,7 @@ class Engine:
                 self.cfg.get("blacklist", []),
                 self.cfg.get("item_switch_ids") or [],
                 self.cfg.get("memo_include_keywords") or [],
+                self.cfg.get("item_name_map") or {},
             )
         # Risk run/rest rhythm (autoduopei risk_run/rest): when enabled,
         # poll for one random run period, rest, then resume. The rest
