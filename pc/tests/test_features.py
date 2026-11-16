@@ -1113,5 +1113,37 @@ class RealOrderSchemaTests(unittest.TestCase):
         self.assertIn("文字语音条", why)
 
 
+class ObservedItemNameTests(unittest.TestCase):
+    """实测条目名（2026-11-16）：默认-语音连麦-60分钟 / 新客首单体验-30分钟文语体验单"""
+
+    ORDER = {"id": 1, "no": "X", "totalAmount": 1000, "type": "random",
+             "item": {"names": ["默认-语音连麦-60分钟", "新客首单体验-30分钟文语体验单"]},
+             "itemCategory": {"name": "糖恋", "id": 273}}
+
+    def _filter(self, enabled):
+        import config as cfgmod
+        from engine import OrderFilter
+        return OrderFilter(10, 0, 0, [], [], enabled_items=enabled,
+                           item_name_map=cfgmod.DEFAULT_CONFIG["item_name_map"])
+
+    def test_lianmai_matches_observed_names(self):
+        self.assertTrue(self._filter([465]).check(self.ORDER)[0])
+
+    def test_video_and_game_do_not_match_voice_order(self):
+        self.assertFalse(self._filter([2666]).check(self.ORDER)[0])
+        self.assertFalse(self._filter([2667]).check(self.ORDER)[0])
+
+    def test_video_order_is_not_let_through_by_voice_keywords(self):
+        order = dict(self.ORDER, item={"names": ["默认-视频-30分钟"]})
+        self.assertFalse(self._filter([465]).check(order)[0])
+        self.assertTrue(self._filter([2666]).check(order)[0])
+
+    def test_custom_map_overrides_defaults(self):
+        from engine import OrderFilter
+        filt = OrderFilter(10, 0, 0, [], [], enabled_items=[2666],
+                           item_name_map={"2666": ["文语"]})
+        self.assertTrue(filt.check(self.ORDER)[0])
+
+
 if __name__ == "__main__":
     unittest.main()
