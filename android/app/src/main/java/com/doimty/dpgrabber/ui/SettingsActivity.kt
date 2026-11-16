@@ -1,6 +1,7 @@
 package com.doimty.dpgrabber.ui
 
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -19,10 +20,28 @@ import com.doimty.dpgrabber.databinding.ActivitySettingsBinding
  */
 class SettingsActivity : AppCompatActivity() {
 
+    private data class SettingsGroup(
+        val key: String,
+        val content: View,
+        val header: View,
+        val chevron: View,
+        val defaultExpanded: Boolean
+    )
+
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var store: CredentialStore
     private lateinit var loadedConfig: AppConfig
     private var rollingBack = false
+    private val uiPrefs by lazy { getSharedPreferences("dpgrabber_settings", MODE_PRIVATE) }
+
+    private fun settingsGroups() = listOf(
+        SettingsGroup("connection", binding.contentConnection, binding.headerConnection,
+            binding.chevronConnection, true),
+        SettingsGroup("keys", binding.contentKeys, binding.headerKeys, binding.chevronKeys, false),
+        SettingsGroup("wait", binding.contentWait, binding.headerWait, binding.chevronWait, true),
+        SettingsGroup("run", binding.contentRun, binding.headerRun, binding.chevronRun, true),
+        SettingsGroup("push", binding.contentPush, binding.headerPush, binding.chevronPush, true)
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,8 +75,6 @@ class SettingsActivity : AppCompatActivity() {
         binding.aesIvInput.setText(config.aesIvHex)
         binding.aesKeyAltInput.setText(config.aesKeyHexAlt)
         binding.aesIvAltInput.setText(config.aesIvHexAlt)
-        binding.verifyTlsSwitch.isChecked = true
-        binding.verifyTlsSwitch.isEnabled = false
         binding.shopWaitInput.setText(config.confirmWaitByShop.entries.joinToString("\n") { "${it.key}=${it.value}" })
         binding.globalWaitInput.setText(trimNumber(config.globalWaitSec))
         binding.autoWaitOffsetInput.setText(trimNumber(config.autoWaitOffset))
@@ -67,10 +84,16 @@ class SettingsActivity : AppCompatActivity() {
             input.doAfterTextChanged { updateEffectiveWait() }
         }
         updateEffectiveWait()
+        bindGroups()
         binding.runDurationInput.setText(trimNumber(config.runDurationSec))
         binding.restDurationInput.setText(trimNumber(config.restDurationSec))
         binding.autoStopSwitch.isChecked = config.autoStopAfterGrab
         binding.onlineAfterLoginSwitch.isChecked = config.onlineAfterLogin
+        binding.pushEnabledSwitch.isChecked = config.pushEnabled
+        binding.pushOnSuccessSwitch.isChecked = config.pushOnSuccess
+        binding.pushOnFailureSwitch.isChecked = config.pushOnFailure
+        binding.pushOnRiskSwitch.isChecked = config.pushOnRisk
+        binding.pushWebhookInput.setText(store.loadPushWebhook())
         binding.autoStopSwitch.setOnCheckedChangeListener { _, checked ->
             if (!rollingBack) try { store.saveConfig(store.loadConfig().copy(autoStopAfterGrab = checked)) }
             catch (_: Exception) {
@@ -90,6 +113,9 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
+        binding.pushTestButton.setOnClickListener {
+            Toast.makeText(this, R.string.push_test_hint, Toast.LENGTH_SHORT).show()
+        }
         binding.saveAdvancedButton.setOnClickListener { save() }
     }
 
@@ -116,13 +142,21 @@ class SettingsActivity : AppCompatActivity() {
                 runDurationSec = binding.runDurationInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("运行秒数无效"),
                 restDurationSec = binding.restDurationInput.text.toString().toDoubleOrNull() ?: throw IllegalArgumentException("休息秒数无效"),
                 autoStopAfterGrab = binding.autoStopSwitch.isChecked,
-                onlineAfterLogin = binding.onlineAfterLoginSwitch.isChecked
+                onlineAfterLogin = binding.onlineAfterLoginSwitch.isChecked,
+                pushEnabled = binding.pushEnabledSwitch.isChecked,
+                pushOnSuccess = binding.pushOnSuccessSwitch.isChecked,
+                pushOnFailure = binding.pushOnFailureSwitch.isChecked,
+                pushOnRisk = binding.pushOnRiskSwitch.isChecked
             ).validate()
             if (updated.shopId != current.shopId || updated.aesKeyHex != current.aesKeyHex || updated.aesIvHex != current.aesIvHex || updated.aesKeyHexAlt != current.aesKeyHexAlt || updated.aesIvHexAlt != current.aesIvHexAlt) {
                 check(!com.doimty.dpgrabber.service.ListenService.isRunning) { "请先停止监听再修改连接设置" }
                 com.doimty.dpgrabber.data.SessionRepository.invalidate()
             }
             store.saveConfig(updated)
+            // webhook 单独加密保存；失败只提示，不影响已落盘的配置。
+            if (!store.savePushWebhook(binding.pushWebhookInput.text.toString().trim())) {
+                Toast.makeText(this, R.string.push_webhook_save_failed, Toast.LENGTH_LONG).show()
+            }
             Toast.makeText(this, R.string.advanced_saved, Toast.LENGTH_SHORT).show()
             finish()
         } catch (e: Exception) {
@@ -196,6 +230,23 @@ class SettingsActivity : AppCompatActivity() {
         } catch (_: IllegalArgumentException) {
             binding.waitEffectiveText.text = "请完成等待设置"
         }
+    }
+
+    private fun bindGroups() {
+        for (group in settingsGroups()) {
+            val expanded = uiPrefs.getBoolean("settings_group_expanded_${group.key}", group.defaultExpanded)
+            applyGroupState(group, expanded)
+            group.header.setOnClickListener {
+                val next = group.content.visibility != View.VISIBLE
+                uiPrefs.edit().putBoolean("settings_group_expanded_${group.key}", next).apply()
+                applyGroupState(group, next)
+            }
+        }
+    }
+
+    private fun applyGroupState(group: SettingsGroup, expanded: Boolean) {
+        group.content.visibility = if (expanded) View.VISIBLE else View.GONE
+        group.chevron.rotation = if (expanded) 0f else -90f
     }
 
     private fun trimNumber(value: Double): String {

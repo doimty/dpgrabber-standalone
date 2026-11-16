@@ -51,7 +51,12 @@ data class AppConfig(
     val aesIvHexAlt: String = ApiClient.ALT_AES_IV_HEX,
     val requestTimeoutSec: Double = 15.0,
     val verifyTls: Boolean = true,
-    val seenTtlSec: Double = 60.0
+    val seenTtlSec: Double = 60.0,
+    /** Webhook 地址不写在这里（config_json 是明文），只存加密 prefs。 */
+    val pushEnabled: Boolean = false,
+    val pushOnSuccess: Boolean = true,
+    val pushOnFailure: Boolean = false,
+    val pushOnRisk: Boolean = false
 ) {
     companion object {
         fun defaults(): AppConfig = AppConfig()
@@ -100,7 +105,11 @@ data class AppConfig(
                 aesIvHexAlt = json.optString("aes_iv_hex_alt", base.aesIvHexAlt),
                 requestTimeoutSec = json.optDouble("request_timeout_sec", base.requestTimeoutSec),
                 verifyTls = json.optBoolean("verify_tls", base.verifyTls),
-                seenTtlSec = json.optDouble("seen_ttl_sec", base.seenTtlSec)
+                seenTtlSec = json.optDouble("seen_ttl_sec", base.seenTtlSec),
+                pushEnabled = json.optBoolean("push_enabled", base.pushEnabled),
+                pushOnSuccess = json.optBoolean("push_on_success", base.pushOnSuccess),
+                pushOnFailure = json.optBoolean("push_on_failure", base.pushOnFailure),
+                pushOnRisk = json.optBoolean("push_on_risk", base.pushOnRisk)
             )
         }
     }
@@ -137,6 +146,10 @@ data class AppConfig(
         json.put("request_timeout_sec", requestTimeoutSec)
         json.put("verify_tls", verifyTls)
         json.put("seen_ttl_sec", seenTtlSec)
+        json.put("push_enabled", pushEnabled)
+        json.put("push_on_success", pushOnSuccess)
+        json.put("push_on_failure", pushOnFailure)
+        json.put("push_on_risk", pushOnRisk)
         return json
     }
 

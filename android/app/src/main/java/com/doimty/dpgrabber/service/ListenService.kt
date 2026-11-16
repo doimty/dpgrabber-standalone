@@ -21,6 +21,7 @@ import com.doimty.dpgrabber.data.SessionRepository
 import com.doimty.dpgrabber.engine.ListenEngine
 import com.doimty.dpgrabber.engine.LogLevel
 import com.doimty.dpgrabber.engine.OutcomeType
+import com.doimty.dpgrabber.notify.OrderNotifier
 import com.doimty.dpgrabber.ui.MainActivity
 
 /** dataSync 前台任务只在用户明确启动后运行，不承诺系统永不终止。 */
@@ -29,9 +30,7 @@ class ListenService : Service() {
         const val ACTION_START = "com.doimty.dpgrabber.action.START"
         const val ACTION_STOP = "com.doimty.dpgrabber.action.STOP"
         const val CHANNEL_ID = "dpgrabber_listen"
-        const val SUCCESS_CHANNEL_ID = "dpgrabber_success"
         const val NOTIFICATION_ID = 1001
-        const val SUCCESS_NOTIFICATION_ID = 1002
         /** 计数变化的刷新节流下限：连单时不刷屏。 */
         private const val COUNT_REFRESH_MIN_MS = 1_000L
         /** 运行时长在 subText 里只按分钟级变化，30 秒刷一次即可。 */
@@ -161,6 +160,9 @@ class ListenService : Service() {
         val accountKey = java.security.MessageDigest.getInstance("SHA-256").digest(phone.toByteArray())
             .joinToString("") { "%02x".format(it.toInt() and 255) }
         currentShopId = client.session?.sid.orEmpty()
+        // 结果通知双保险：本机 Notification + 加密保存的 HTTPS webhook。
+        // 配置与 webhook 都热读，且任何异常都被 OrderNotifier 隔离。
+        val orderNotifier = OrderNotifier(this, { store.loadConfig() }, { store.loadPushWebhook() })
         val task = ListenEngine(client, config,
             log = { level, text ->
                 // 通知改为按“计数变化 + 状态变化 + 30 秒时长”刷新，
@@ -185,18 +187,15 @@ class ListenService : Service() {
                 }
                 // 计数与通知只是展示，任何异常都不得反过来影响监听。
                 if (recorded) {
+                    // 历史落库后才通知；OrderNotifier 内部逐路径隔离。
+                    try { orderNotifier.notify(value) } catch (_: Throwable) { }
                     try {
-                        // 失败/跳过不进通知，展示值没变就不刷新，省电也避免无意义重建。
+                        // 失败/跳过不进计数通知，展示值没变就不刷新，省电也避免无意义重建。
                         if (bumpToday(value.type)) refreshCountsThrottled()
                     } catch (_: Throwable) { }
                 }
             },
             isPersistentlyBlocked = { sid, orderId -> orderId in history.blockedOrderIds(accountKey, sid) },
-            onSuccess = {
-                postGuarded("接单成功通知") {
-                    if (generation == currentGeneration) notifySuccess()
-                }
-            },
             onStateChange = { active -> postGuarded("监听状态收尾") {
                 if (generation == currentGeneration) {
                     isRunning = active
@@ -374,8 +373,6 @@ class ListenService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL_ID,
             getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW))
-        manager.createNotificationChannel(NotificationChannel(SUCCESS_CHANNEL_ID,
-            "接单结果", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
     /**
@@ -476,19 +473,6 @@ class ListenService : Service() {
         val minutes = (totalSec % 3600) / 60
         val seconds = totalSec % 60
         return if (hours > 0) "%d:%02d".format(hours, minutes) else "%02d:%02d".format(minutes, seconds)
-    }
-
-    /** 接单成功通知：channel、图标、权限任一环节失败都只降级为日志。 */
-    private fun notifySuccess() {
-        try {
-            createChannels()
-            getSystemService(NotificationManager::class.java).notify(SUCCESS_NOTIFICATION_ID,
-                NotificationCompat.Builder(this, SUCCESS_CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_notification).setContentTitle("接单成功")
-                    .setContentText("请打开应用核对订单").setAutoCancel(true).build())
-        } catch (error: Throwable) {
-            LogBus.post(LogLevel.WARNING, "接单成功通知发送失败，监听继续：" + failureText(error))
-        }
     }
 
     /**

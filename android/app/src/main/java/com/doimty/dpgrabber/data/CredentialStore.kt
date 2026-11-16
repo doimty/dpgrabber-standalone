@@ -85,6 +85,28 @@ class CredentialStore(context: Context) {
         else (target.getString("clerk_name", null) ?: "") to target.getInt("clerk_id", 0)
     } catch (_: Exception) { "" to 0 }
 
+    /**
+     * Webhook 地址含密钥，只写加密存储；空串表示清空。
+     * 加密不可用（prefs==null）时返回 false 且不做任何明文降级。
+     */
+    fun savePushWebhook(value: String): Boolean {
+        val target = prefs ?: return false
+        val normalized = value.trim()
+        return try {
+            if (normalized.isEmpty()) {
+                target.edit().remove("push_webhook").commit()
+            } else {
+                target.edit().putString("push_webhook", normalized).commit() &&
+                    target.getString("push_webhook", null) == normalized
+            }
+        } catch (_: Exception) { false }
+    }
+
+    /** 无加密存储或读取失败一律返回空串；绝不使用明文偏好兜底。 */
+    fun loadPushWebhook(): String = try {
+        (prefs?.getString("push_webhook", null) ?: "").trim()
+    } catch (_: Exception) { "" }
+
     fun clearAccount() {
         SessionRepository.invalidate()
         memoryPair = "" to ""
