@@ -728,6 +728,7 @@ class App(QMainWindow):
     login_state_signal = Signal(str)
     week_orders_signal = Signal(object)   # int, or None when unknown
     clerk_state_signal = Signal(object)    # {"status": int, "items": [...], "enabled": [...]}
+    item_switch_revert_signal = Signal(int, bool)   # switchId, 勾选失败要退回的状态
     avatar_signal = Signal(str)           # local path, or "" 
     listen_state_signal = Signal(str)
     history_entry_signal = Signal(dict)
@@ -784,6 +785,7 @@ class App(QMainWindow):
         self.login_state_signal.connect(self._on_login_state)
         self.week_orders_signal.connect(self._on_week_orders)
         self.clerk_state_signal.connect(self._on_clerk_state)
+        self.item_switch_revert_signal.connect(self._on_item_switch_revert)
         self.avatar_signal.connect(self._on_avatar)
         self.listen_state_signal.connect(self._on_listen_state)
         self.history_entry_signal.connect(self._on_history_entry)
@@ -1607,9 +1609,27 @@ class App(QMainWindow):
             self.log("success" if ok else "error",
                      "接单类型已更新" if ok else "接单类型更新失败：%s" % result.get("msg"))
             if not ok:
-                self.clerk_state_signal.emit({"status": 0, "items": [], "enabled": []})
+                # 以前这里发一个空 items，界面会把整块接单类型清成"登录后显示"，
+                # 看着像功能坏了。改成把这次勾选退回原状态。
+                self.item_switch_revert_signal.emit(int(item_id), not bool(enabled))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_item_switch_revert(self, item_id: int, checked: bool):
+        """更新失败：把勾选退回原状，别让界面停在骗人的状态。"""
+        box = (getattr(self, "item_checks", {}) or {}).get(int(item_id))
+        if box is None:
+            return
+        try:
+            box.blockSignals(True)
+            box.setChecked(bool(checked))
+        except RuntimeError:
+            pass          # 控件已被重建，忽略
+        finally:
+            try:
+                box.blockSignals(False)
+            except RuntimeError:
+                pass
 
     def _fetch_week_orders(self, session):
         """本周接单 + 续单率 from statisticsClerkOrder (Monday -> today)."""
