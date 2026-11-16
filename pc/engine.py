@@ -375,7 +375,23 @@ def item_keywords(item_id: int, name_map=None) -> tuple:
     return tuple(ITEM_NAME_SYNONYMS.get(int(item_id), ()))
 
 
-def order_matches_items(order, enabled_items, name_map=None) -> bool | None:
+def base_item_types() -> tuple:
+    """平台不允许关闭的基础类型条目名（文字语音条一类）。"""
+    return ("文字语音条", "文语体验单")
+
+
+def match_always_type(name_text: str, always_types=None) -> str:
+    """返回命中的基础类型关键词；没有命中返回空串。"""
+    words = always_types if always_types is not None else base_item_types()
+    for word in words or ():
+        word = str(word).strip()
+        if word and word in name_text:
+            return word
+    return ""
+
+
+def order_matches_items(order, enabled_items, name_map=None,
+                        always_types=None) -> bool | None:
     """True/False 明确判定；None 表示认不出类型（放行，别丢单）。
 
     平台数据（2026-11-16 实测）：订单 item.ids 是 SKU id（59245…），
@@ -391,6 +407,9 @@ def order_matches_items(order, enabled_items, name_map=None) -> bool | None:
     names = " ".join(order_item_names(order))
     if not names:
         return None
+    # 基础类型（文字语音条等）平台不允许关闭，出现即放行
+    if match_always_type(names, always_types):
+        return True
     candidates = set(enabled)
     try:
         candidates.update(int(k) for k in (name_map or {}))
@@ -432,7 +451,8 @@ class OrderFilter:
 
     def __init__(self, min_amount: float, max_amount: float, memo_mode: int,
                  memo_keywords, blacklist, enabled_items=None,
-                 memo_include_keywords=None, item_name_map=None):
+                 memo_include_keywords=None, item_name_map=None,
+                 item_always_types=None):
         self.min_amount = float(min_amount)
         self.max_amount = float(max_amount)
         self.memo_mode = int(memo_mode)
@@ -448,6 +468,9 @@ class OrderFilter:
         # 接单类型联动：空列表 = 不限制
         self.enabled_items = set(int(i) for i in (enabled_items or []) if str(i).strip())
         self.item_name_map = dict(item_name_map or {})
+        # 这里是参数，不是上面那个同名函数——名字被参数遮住了，所以用 base_item_types()
+        self.item_always_types = (list(item_always_types)
+                                  if item_always_types else list(base_item_types()))
 
     def check(self, order: dict):
         if not isinstance(order, dict):
@@ -465,7 +488,9 @@ class OrderFilter:
         if self.max_amount > 0 and amount > self.max_amount:
             return False, "金额 %.2f 元高于最高金额" % amount
         if self.enabled_items:
-            matched = order_matches_items(order, self.enabled_items, self.item_name_map)
+            matched = order_matches_items(order, self.enabled_items,
+                                          self.item_name_map,
+                                          self.item_always_types or None)
             if matched is False:
                 names = "、".join(order_item_names(order))
                 if not names:
@@ -721,6 +746,7 @@ class Engine:
                 self.cfg.get("item_switch_ids") or [],
                 self.cfg.get("memo_include_keywords") or [],
                 self.cfg.get("item_name_map") or {},
+                self.cfg.get("item_always_types") or [],
             )
         # Risk run/rest rhythm (autoduopei risk_run/rest): when enabled,
         # poll for one random run period, rest, then resume. The rest
