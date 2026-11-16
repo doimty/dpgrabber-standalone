@@ -3026,6 +3026,10 @@ class AccountSwitchDialog(QDialog):
         # 每个单选按钮自己连了 toggled，这里不需要 group 信号
         self._add_requested = False
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        _apply_windows_effects(self, dark=True)
+
     def _build_row(self, meta: dict, is_current: bool) -> QFrame:
         phone = str(meta.get("phone") or "")
         row = QFrame()
@@ -3381,7 +3385,7 @@ class AdvancedDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        _apply_windows_effects(self, dark=str(self.windowTitle()) is not None)
+        _apply_windows_effects(self, dark=True)
 
     def _notify_cfg_from_widgets(self) -> dict:
         cfg = dict(self.cfg)
