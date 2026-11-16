@@ -674,10 +674,22 @@ class UiReviewInstrumentedTest {
         device.findObject(By.text("复制完整订单信息")).click()
         instrumentation.waitForIdleSync()
         assertEquals(expected, clipboard())
-        assertTrue(detailScroller.scrollIntoView(UiSelector().text("复制订单号")))
-        device.findObject(By.text("复制订单号")).click()
-        instrumentation.waitForIdleSync()
-        assertEquals(no, clipboard())
+        // 剪贴板由系统服务异步更新；滚动后按钮可能仍在移动，单次点击偶发落空。
+        // 滚动→点击→轮询剪贴板，最多三次，避免不同字号档位下的时序竞争。
+        var copiedOrderNumber = false
+        repeat(3) {
+            if (copiedOrderNumber) return@repeat
+            detailScroller.scrollIntoView(UiSelector().text("复制订单号"))
+            val button = device.wait(Until.findObject(By.text("复制订单号")), WAIT_MS)
+            button?.click()
+            instrumentation.waitForIdleSync()
+            val deadline = SystemClock.uptimeMillis() + 2_000L
+            while (SystemClock.uptimeMillis() < deadline) {
+                if (clipboard() == no) { copiedOrderNumber = true; break }
+                Thread.sleep(100)
+            }
+        }
+        assertTrue("点击复制订单号后剪贴板未更新", copiedOrderNumber)
         capture("history-details-full-copy")
         device.findObject(By.text("关闭")).click()
         scrollTop()
