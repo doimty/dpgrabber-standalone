@@ -1156,5 +1156,38 @@ class ObservedItemNameTests(unittest.TestCase):
         self.assertTrue(self._filter([2666]).check(video)[0])
 
 
+class SwitchListStateTests(unittest.TestCase):
+    """空列表有两种含义：没拿到过（不限制）和用户全关（不抢类型单）。"""
+
+    def _f(self, enabled, known):
+        import config as cfgmod
+        from engine import OrderFilter
+        return OrderFilter(10, 0, 0, [], [],
+                           enabled_items=enabled,
+                           item_name_map=cfgmod.DEFAULT_CONFIG["item_name_map"],
+                           item_always_types=cfgmod.DEFAULT_CONFIG["item_always_types"],
+                           switch_list_known=known)
+
+    def _order(self, names):
+        return {"id": 1, "no": "X", "totalAmount": 1000, "item": {"names": names}}
+
+    def test_no_list_means_no_restriction(self):
+        self.assertTrue(self._f([], False).check(self._order(["默认-视频-30分钟"]))[0])
+
+    def test_all_off_blocks_switch_types(self):
+        for name in (["默认-语音连麦-60分钟"], ["默认-视频-30分钟"], ["默认-游戏-60分钟"]):
+            ok, why = self._f([], True).check(self._order(name))
+            self.assertFalse(ok, name)
+            self.assertIn("全部关闭", why)
+
+    def test_all_off_still_grabs_base_types(self):
+        for name in (["文字语音条", "60分钟"], ["新客首单体验-30分钟文语体验单"]):
+            self.assertTrue(self._f([], True).check(self._order(name))[0], name)
+
+    def test_partial_on_behaves_as_before(self):
+        self.assertTrue(self._f([465], True).check(self._order(["默认-语音连麦-60分钟"]))[0])
+        self.assertFalse(self._f([465], True).check(self._order(["默认-视频-30分钟"]))[0])
+
+
 if __name__ == "__main__":
     unittest.main()
