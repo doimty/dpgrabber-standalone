@@ -122,25 +122,116 @@ def _ensure_qapp():
     return app
 
 
+def _smoke_window(qapp, window, args) -> int:
+    """Bounded offline validation of the actual packaged Qt window."""
+    import json
+    from pathlib import Path
+    from PySide6.QtCore import QPoint, QRect, Qt, QTimer
+    try:
+        from build_stamp import SHA
+    except ImportError:
+        SHA = "dev"
+    requested = None
+    if args.smoke_size:
+        parts = args.smoke_size.lower().split("x")
+        if len(parts) != 2:
+            raise ValueError("smoke-size must be WIDTHxHEIGHT")
+        requested = tuple(int(part) for part in parts)
+        if min(requested) <= 0:
+            raise ValueError("smoke-size must be positive")
+    result = {"code": 1}
+    window.setAttribute(Qt.WA_ShowWithoutActivating, True)
+    window.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
+    window.setWindowFlag(Qt.WindowTransparentForInput, True)
+    window.show()
+    if requested is not None:
+        window.resize(*requested)
+
+    def collect():
+        errors = []
+        area = window.screen().availableGeometry()
+        if not area.contains(window.frameGeometry()):
+            errors.append("window outside available screen")
+        if requested is not None and (window.width(), window.height()) != requested:
+            errors.append("requested size was not respected")
+        actions = {}
+        for name in ("start_btn", "stop_btn", "save_button", "cancel_button"):
+            button = getattr(window, name, None)
+            if button is None:
+                continue
+            reachable = button.isVisibleTo(window)
+            parent = button.parentWidget()
+            while parent is not None and reachable:
+                reachable = parent.rect().contains(QRect(button.mapTo(parent, QPoint()), button.size()))
+                if parent is window:
+                    break
+                parent = parent.parentWidget()
+            actions[name] = reachable
+            if not reachable:
+                errors.append(name + " is not reachable")
+        report = {"build": SHA, "platform": qapp.platformName(),
+                  "dpr": window.devicePixelRatioF(),
+                  "window": [window.width(), window.height()],
+                  "screen": [area.width(), area.height()],
+                  "mode": getattr(window, "_layout_mode", "advanced"),
+                  "actions": actions, "errors": errors,
+                  "synthetic_data": True, "screenshot_kind": "qt-widget-grab"}
+        if args.smoke_output:
+            folder = Path(args.smoke_output).resolve()
+            folder.mkdir(parents=True, exist_ok=True)
+            window.grab().save(str(folder / "window.png"))
+            (folder / "geometry.json").write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                                                   encoding="utf-8")
+        print("UI SMOKE " + ("OK" if not errors else "FAILED") + ": " + json.dumps(report))
+        result["code"] = 0 if not errors else 1
+        window.close()
+        qapp.quit()
+
+    QTimer.singleShot(700, collect)
+    QTimer.singleShot(8000, qapp.quit)
+    qapp.exec()
+    return result["code"]
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="DPGrabber PC")
     parser.add_argument(
         "--smoke-test", action="store_true",
         help="Open the window, verify it builds, then exit (no network).",
     )
+    parser.add_argument(
+        "--smoke-advanced", action="store_true",
+        help="Open advanced settings with synthetic defaults, then exit (no account files or network).",
+    )
+    parser.add_argument("--smoke-size", metavar="WIDTHxHEIGHT",
+                        help="Logical window size for an offline UI smoke test.")
+    parser.add_argument("--smoke-output", metavar="DIRECTORY",
+                        help="Write synthetic UI screenshot and geometry JSON here.")
     args = parser.parse_args(argv)
 
-    try:
-        # one config file per account; the old single file is migrated once
-        accounts_mod.migrate_legacy()
-        known = accounts_mod.list_accounts()
-    except Exception:
-        known = []
-    try:
-        cfg = accounts_mod.load_account(known[0]["phone"]) if known else cfgmod.load()
-    except cfgmod.ConfigError as exc:
-        print("config error: %s" % exc, file=sys.stderr)
-        return 2
+    if args.smoke_advanced or args.smoke_test:
+        import copy
+        import tempfile
+        # Test-only storage beside the working directory, never real account
+        # files. The caller can remove it after the process and log handles close.
+        smoke_dir = tempfile.mkdtemp(prefix="dppp-ui-smoke-", dir=os.getcwd())
+        cfgmod.config_dir = lambda: smoke_dir
+        cfgmod.config_path = lambda: os.path.join(smoke_dir, "config.json")
+        cfg = cfgmod.validate(copy.deepcopy(cfgmod.DEFAULT_CONFIG))
+        cfg["theme"] = "blue"
+        cfg["voice_enabled"] = False
+    else:
+        try:
+            # one config file per account; the old single file is migrated once
+            accounts_mod.migrate_legacy()
+            known = accounts_mod.list_accounts()
+        except Exception:
+            known = []
+        try:
+            cfg = accounts_mod.load_account(known[0]["phone"]) if known else cfgmod.load()
+        except cfgmod.ConfigError as exc:
+            print("config error: %s" % exc, file=sys.stderr)
+            return 2
 
     # 界面缩放必须在 QApplication 创建之前设好：Qt 只在这个时刻读它，
     # QSS 里的 px、控件尺寸、字体都会一起等比变化。
@@ -173,17 +264,20 @@ def main(argv=None) -> int:
         theme_id = DEFAULT_THEME
     apply_theme(qapp, THEMES[theme_id]["palette"], theme_id)
 
+    if args.smoke_advanced:
+        from ui import AdvancedDialog
+        return _smoke_window(qapp, AdvancedDialog(None, cfg, lambda _: None), args)
+
     if args.smoke_test:
+        # Preview never initializes speech or starts a login/listening worker.
+        from types import SimpleNamespace
+        import ui as ui_module
+        ui_module.Voice = lambda **_: SimpleNamespace(enabled=False, stop=lambda: None)
         app = App(cfg)
-        app.show()
-        title = app.windowTitle()  # read before close; widgets die with it
-        assert title == "DPGrabber PC", "unexpected window title: %r" % title
+        assert app.windowTitle() == "DPPP"
         assert app.phone_edit is not None and app.log_text is not None
         assert app.history_list is not None
-        QTimer.singleShot(1500, app.close)
-        qapp.exec()
-        print("SMOKE OK: window opened, title=%r, config=%s" % (title, cfgmod.config_path()))
-        return 0
+        return _smoke_window(qapp, app, args)
 
     app = App(cfg)
     app.show()

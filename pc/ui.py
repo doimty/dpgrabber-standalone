@@ -66,10 +66,10 @@ import urllib.request
 from pathlib import Path
 import time
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtWidgets import QSizeGrip
 from PySide6.QtGui import (QColor, QImage, QPainter, QPainterPath, QPalette,
-                           QPixmap, QRegion, QTextCharFormat, QTextCursor)
+                           QPixmap, QRegion, QTextCharFormat, QTextCursor, QWheelEvent)
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -86,7 +86,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QLayout,
     QMainWindow,
+    QSizePolicy,
     QMessageBox,
     QMenu,
     QPlainTextEdit,
@@ -95,6 +97,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -251,6 +254,36 @@ _CHEVRON_CACHE: dict = {}
 
 _STYLESHEET_TEMPLATE = """
 QMainWindow, QWidget#central { background: %(WINDOW_BG)s; }
+QMainWindow#mainWindow QLineEdit,
+QMainWindow#mainWindow QComboBox,
+QMainWindow#mainWindow QSpinBox,
+QMainWindow#mainWindow QDoubleSpinBox { min-height: 22px; }
+QMainWindow#mainWindow QPushButton#primary,
+QMainWindow#mainWindow QPushButton#secondary { min-height: 24px; }
+QScrollArea#mainFormScroll { background: transparent; border: none; }
+QScrollBar#mainContentScrollBar:vertical {
+    background: transparent; width: 8px; margin: 0px; border: none;
+}
+QScrollBar#mainContentScrollBar::handle:vertical {
+    background: %(CARD_BORDER)s; min-height: 28px; border-radius: 4px;
+}
+QScrollBar#mainContentScrollBar::handle:vertical:hover { background: %(BLUE)s; }
+QScrollBar#mainContentScrollBar::add-line:vertical,
+QScrollBar#mainContentScrollBar::sub-line:vertical { height: 0px; border: none; }
+QScrollBar#mainContentScrollBar::add-page:vertical,
+QScrollBar#mainContentScrollBar::sub-page:vertical { background: transparent; }
+QScrollArea#mainFormScroll > QWidget > QWidget { background: transparent; }
+QFrame#listenerFooter { background: %(WINDOW_BG)s; border: none; }
+QLabel#listenerState { color: %(TEXT_DARK)s; font-size: 13px; }
+QTabWidget#compactTabs::pane { background: transparent; border: none; }
+QTabWidget#compactTabs QTabBar::tab {
+    background: transparent; color: %(HINT)s; border: none;
+    padding: 7px 12px; margin-right: 4px; font-size: 13px;
+}
+QTabWidget#compactTabs QTabBar::tab:selected {
+    color: %(BLUE)s; font-weight: bold; border-bottom: 2px solid %(BLUE)s;
+}
+QTabWidget#compactTabs QTabBar::tab:hover { color: %(TEXT_DARK)s; }
 /* The body sits in a scroll area since 24ca8cde; without these rules the
    viewport keeps the system's light background and the dark themes get a
    white band behind the section titles. */
@@ -264,6 +297,25 @@ QDialog { background: %(WINDOW_BG)s; }
 /* The dialogs scroll since 43762ee5; the viewport otherwise keeps the
    system palette, which paints label text white on a light dialog. */
 QDialog QScrollArea > QWidget > QWidget { background: %(WINDOW_BG)s; }
+QScrollArea#advancedScroll { background: transparent; border: none; }
+/* Use full styled row heights here, also after a theme re-polish. */
+QDialog#advancedDialog QLineEdit,
+QDialog#advancedDialog QComboBox,
+QDialog#advancedDialog QSpinBox,
+QDialog#advancedDialog QDoubleSpinBox { min-height: 22px; }
+QDialog#advancedDialog QPushButton#primary,
+QDialog#advancedDialog QPushButton#secondary { min-height: 24px; }
+QScrollBar#advancedScrollBar:vertical {
+    background: transparent; width: 8px; margin: 0px; border: none;
+}
+QScrollBar#advancedScrollBar::handle:vertical {
+    background: %(CARD_BORDER)s; min-height: 28px; border-radius: 4px;
+}
+QScrollBar#advancedScrollBar::handle:vertical:hover { background: %(BLUE)s; }
+QScrollBar#advancedScrollBar::add-line:vertical,
+QScrollBar#advancedScrollBar::sub-line:vertical { height: 0px; border: none; }
+QScrollBar#advancedScrollBar::add-page:vertical,
+QScrollBar#advancedScrollBar::sub-page:vertical { background: transparent; }
 QDialog QLabel { color: %(TEXT_DARK)s; background: transparent; }
 QDialog QCheckBox { color: %(TEXT_DARK)s; }
 QDialog QGroupBox { color: %(TEXT_DARK)s; }
@@ -751,19 +803,10 @@ class App(QMainWindow):
             self.setAttribute(Qt.WA_TranslucentBackground, True)
         self._drag_offset = None
         self.setWindowTitle(APP_TITLE)
-        # WINDOW_SIZE is taller than a 1080p screen, so the bottom of the
-        # sidebar (高级设置) opened off-screen. Fit the available desktop and
-        # centre, keeping the declared size as an upper bound.
-        screen = QApplication.primaryScreen()
-        width, height = WINDOW_SIZE
-        if screen is not None:
-            area = screen.availableGeometry()
-            width = min(width, max(1024, area.width() - 80))
-            height = min(height, max(700, area.height() - 80))
-        self.resize(width, height)
-        if screen is not None:
-            area = screen.availableGeometry()
-            self.move(area.center().x() - width // 2, area.center().y() - height // 2)
+        self.setObjectName("mainWindow")
+        # Geometry is in Qt logical pixels; never impose a size larger than
+        # the available screen after Windows DPI and the user's UI scale.
+        self._fit_window_to_screen(QApplication.primaryScreen(), initial=True)
         self.cfg = cfg
         # Active theme: palette + id, kept in sync by _on_theme_changed.
         self._theme_id = str(cfg.get("theme") or DEFAULT_THEME)
@@ -798,7 +841,11 @@ class App(QMainWindow):
             accounts_mod.migrate_legacy()
         except Exception:
             pass
+        self._responsive_timer = QTimer(self)
+        self._responsive_timer.setSingleShot(True)
+        self._responsive_timer.timeout.connect(self._apply_responsive)
         self._build_widgets()
+        self._prepare_main_controls()
         self._refresh_pending_account()
         self._apply_responsive()
         self._load_settings_into_widgets()
@@ -826,29 +873,24 @@ class App(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if getattr(self, "_mica_restyled", False):
-            return
-        self._mica_restyled = True
-        app = QApplication.instance()
-        if app is not None and getattr(self, "_mica", False):
-            apply_theme(app, self._palette, self._theme_id, mica=True)
-
-
-        super().showEvent(event)
         if not self._mica_applied:
             self._mica_applied = True
             self._mica = _apply_windows_effects(
-            self, dark=(self._theme_id or "").lower() in ("night", "violet", "blue")
-        )
-        if not self._mica:
-            _apply_mica(self)
+                self, dark=(self._theme_id or "").lower() in ("night", "violet", "blue"))
+            if not self._mica:
+                _apply_mica(self)
+            handle = self.windowHandle()
+            if handle is not None:
+                handle.screenChanged.connect(self._screen_changed)
+        self._schedule_responsive()
 
     def _primary_button(self, text, slot):
         btn = QPushButton(text)
         btn.setObjectName("primary")
         # 34 = 21 + 13: pinning the height makes every button land on the
         # golden row measure instead of drifting with padding + border.
-        btn.setFixedHeight(34)
+        btn.setMinimumHeight(max(40, btn.sizeHint().height()))
+        btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         btn.clicked.connect(slot)
         return btn
 
@@ -864,7 +906,8 @@ class App(QMainWindow):
         btn.setObjectName("secondary")
         # 34 = 21 + 13: pinning the height makes every button land on the
         # golden row measure instead of drifting with padding + border.
-        btn.setFixedHeight(34)
+        btn.setMinimumHeight(max(40, btn.sizeHint().height()))
+        btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         btn.clicked.connect(slot)
         return btn
 
@@ -889,78 +932,279 @@ class App(QMainWindow):
 
     GOLDEN = 1.6180339887
 
+    def _fit_window_to_screen(self, screen=None, initial=False):
+        """Fit in logical screen coordinates, including fractional DPI."""
+        screen = screen or self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            if initial:
+                self.resize(*WINDOW_SIZE)
+            return
+        area = screen.availableGeometry()
+        if area.width() <= 0 or area.height() <= 0:
+            return
+        if initial:
+            width = min(WINDOW_SIZE[0], max(1, area.width() - 48))
+            height = min(WINDOW_SIZE[1], max(1, area.height() - 48))
+        else:
+            width = min(self.width(), area.width())
+            height = min(self.height(), area.height())
+        self.setMinimumSize(min(480, width), min(320, height))
+        self.setMaximumSize(area.width(), area.height())
+        if getattr(self, '_maximized_state', False):
+            self.setGeometry(area)
+            return
+        if initial:
+            x, y = area.center().x() - width // 2, area.center().y() - height // 2
+        else:
+            x, y = self.x(), self.y()
+        x = max(area.left(), min(x, area.right() - width + 1))
+        y = max(area.top(), min(y, area.bottom() - height + 1))
+        self.setGeometry(x, y, width, height)
+
+    def _screen_changed(self, screen):
+        self._fit_window_to_screen(screen)
+        self._schedule_responsive()
+
+    def _schedule_responsive(self):
+        timer = getattr(self, '_responsive_timer', None)
+        if timer is not None and not getattr(self, '_responsive_busy', False):
+            timer.start(0)
+
     def _sidebar_needed_width(self) -> int:
-        """三栏都放得下所需的最小窗口宽度（由控件自身最小宽度推出来）。"""
-        host = getattr(self, "_sidebar_host", None)
-        wrap = getattr(self, "_form_wrap", None)
-        if host is None or wrap is None:
+        """Minimum three-column width, independent of the current tab layout."""
+        sidebar = getattr(self, '_sidebar', None)
+        card = getattr(self, '_conditions_card', None)
+        if sidebar is None or card is None:
             return 0
-        sidebar_min = max(212, host.minimumSizeHint().width())
-        form_min = max(332, wrap.minimumSizeHint().width())
-        right_min = 260
-        return sidebar_min + form_min + right_min + 24 + 28   # 间隙 + 左右边距
+        sidebar_min = max(212, sidebar.minimumSizeHint().width())
+        form_min = max(340, card.minimumSizeHint().width() + 8)
+        return sidebar_min + form_min + getattr(self, '_records_min_width', 280) + 52
+
+    def _prepare_main_controls(self):
+        controls = [self.phone_edit, self.password_edit, self.min_amount_edit,
+                    self.max_amount_edit, self.poll_interval_edit, self.memo_mode_box,
+                    self.confirm_wait_min_spin, self.confirm_wait_max_spin,
+                    self.risk_run_min_spin, self.risk_run_max_spin,
+                    self.risk_rest_min_spin, self.risk_rest_max_spin,
+                    self.start_btn, self.stop_btn, self.login_btn, self.logout_btn]
+        for control in controls:
+            control.ensurePolished()
+            height = max(40, control.sizeHint().height())
+            if control.minimumHeight() != height:
+                control.setMinimumHeight(height)
+        for control in (self.risk_run_min_spin, self.risk_run_max_spin,
+                        self.risk_rest_min_spin, self.risk_rest_max_spin):
+            width = max(88, control.minimumSizeHint().width())
+            if control.minimumWidth() != width:
+                control.setMinimumWidth(width)
+        for label in (self.account_name_label, self.account_phone_label,
+                      self.pending_account_label, self.keyword_hint):
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        bar = self._form_scroll.verticalScrollBar()
+        if not bar.property('layoutStyled'):
+            bar.style().unpolish(bar)
+            bar.style().polish(bar)
+            bar.setProperty('layoutStyled', True)
+        self._main_wheel_controls = (self.memo_mode_box, self.confirm_wait_min_spin,
+            self.confirm_wait_max_spin, self.risk_run_min_spin, self.risk_run_max_spin,
+            self.risk_rest_min_spin, self.risk_rest_max_spin)
+        for control in self._main_wheel_controls:
+            control.setFocusPolicy(Qt.StrongFocus)
+            control.installEventFilter(self)
+
+    def _switch_main_layout(self, mode):
+        if mode == getattr(self, '_layout_mode', None):
+            return
+        if mode == 'compact':
+            current_record = self.bottom_tabs.currentIndex()
+            self._record_tab_index = max(0, current_record)
+            focus = QApplication.focusWidget()
+            selected = getattr(self, '_compact_index', None)
+            if focus is not None:
+                if self._form_wrap.isAncestorOf(focus):
+                    selected = 1
+                elif self._sidebar_host.isAncestorOf(focus):
+                    selected = 0
+                elif self.bottom_tabs.isAncestorOf(focus):
+                    selected = 2 + max(0, current_record)
+            if selected is None:
+                selected = 0 if getattr(self.client, 'session', None) is None else 1
+            for panel in (self._sidebar_host, self._form_wrap, self.bottom_tabs):
+                self._wide_grid.removeWidget(panel)
+            self._sidebar_host.setMinimumWidth(0)
+            self._sidebar_host.setMaximumWidth(16777215)
+            self._sidebar.setMinimumWidth(0)
+            self._sidebar.setMaximumWidth(480)
+            self._form_wrap.setMinimumWidth(0)
+            self._form_wrap.setMaximumWidth(16777215)
+            self._compact_page_layouts[0].addWidget(self._sidebar_host)
+            self._compact_page_layouts[1].addWidget(self._form_wrap)
+            for index, page in enumerate((self._log_page, self._history_page)):
+                tab = self.bottom_tabs.indexOf(page)
+                if tab >= 0:
+                    self.bottom_tabs.removeTab(tab)
+                self._compact_page_layouts[index + 2].addWidget(page)
+                page.show()
+            self._body_stack.setCurrentIndex(1)
+            self._compact_tabs.setCurrentIndex(max(0, min(3, selected)))
+        else:
+            if getattr(self, '_layout_mode', None) == 'compact':
+                self._compact_index = self._compact_tabs.currentIndex()
+                if self._compact_index >= 2:
+                    self._record_tab_index = self._compact_index - 2
+            self._compact_page_layouts[0].removeWidget(self._sidebar_host)
+            self._compact_page_layouts[1].removeWidget(self._form_wrap)
+            for index, page in enumerate((self._log_page, self._history_page)):
+                self._compact_page_layouts[index + 2].removeWidget(page)
+                if self.bottom_tabs.indexOf(page) < 0:
+                    self.bottom_tabs.addTab(page, ('运行日志', '接单历史')[index])
+            self.bottom_tabs.setCurrentIndex(getattr(self, '_record_tab_index', 0))
+            self._wide_grid.addWidget(self._sidebar_host, 0, 0)
+            self._wide_grid.addWidget(self._form_wrap, 0, 1)
+            self._wide_grid.addWidget(self.bottom_tabs, 0, 2)
+            self._body_stack.setCurrentIndex(0)
+        self._sidebar_host.show()
+        self._form_wrap.show()
+        self.bottom_tabs.show()
+        self._layout_mode = mode
+        self._schedule_history_resize()
+
+    def _apply_hero_layout(self, compact):
+        labels = (self.grab_count_label, self.listen_state_label,
+                  self.status_label, self.renewal_chip)
+        stats_width = sum(label.sizeHint().width() for label in labels if not label.isHidden()) + 30
+        required = (self._hero_title.sizeHint().width() + stats_width +
+                    self.theme_box.width() + self._advanced_btn.sizeHint().width() +
+                    sum(button.width() for button in self._window_buttons) + 100)
+        stacked = compact or self.width() < required
+        for label in labels:
+            label.setSizePolicy(QSizePolicy.Ignored if stacked else QSizePolicy.Preferred,
+                                QSizePolicy.Preferred)
+        if stacked != getattr(self, '_hero_stacked', False):
+            if stacked:
+                self._hero_toolbar_layout.removeWidget(self._hero_stats)
+                self._hero_toolbar_layout.removeWidget(self.theme_box)
+                self._hero_second_layout.addWidget(self._hero_stats, 1)
+                self._hero_second_layout.addWidget(self.theme_box)
+                self._hero_second.show()
+            else:
+                self._hero_second_layout.removeWidget(self._hero_stats)
+                self._hero_second_layout.removeWidget(self.theme_box)
+                self._hero_toolbar_layout.insertWidget(2, self._hero_stats)
+                self._hero_toolbar_layout.insertWidget(3, self.theme_box)
+                self._hero_second.hide()
+            self._hero_stacked = stacked
+        height = max(55, self._hero.layout().sizeHint().height())
+        if self._hero.height() != height:
+            self._hero.setFixedHeight(height)
+
+    def _apply_rest_flow(self, width):
+        pairs = self._rest_fields
+        widest_label = max(label.sizeHint().width() for label, _ in pairs)
+        widest_spin = max(spin.minimumWidth() for _, spin in pairs)
+        two_pair_width = 2 * (widest_label + widest_spin) + 36 + 26
+        single = width < two_pair_width
+        if single == getattr(self, '_rest_single', None):
+            return
+        for label, spin in pairs:
+            self._rest_grid.removeWidget(label)
+            self._rest_grid.removeWidget(spin)
+        for index, (label, spin) in enumerate(pairs):
+            row = 2 + index if single else 2 + index // 2
+            col = 0 if single else (index % 2) * 2
+            self._rest_grid.addWidget(label, row, col)
+            self._rest_grid.addWidget(spin, row, col + 1)
+        self._rest_single = single
+        self._form_content.layout().activate()
+
+    def eventFilter(self, watched, event):
+        if watched is getattr(self, '_hero', None) and event.type() == QEvent.LayoutRequest:
+            self._schedule_responsive()
+        if watched is getattr(self, '_history_viewport', None) and event.type() == QEvent.Resize:
+            self._schedule_history_resize()
+        if (event.type() == QEvent.Wheel and watched in getattr(self, '_main_wheel_controls', ())
+                and not watched.hasFocus()):
+            viewport = self._form_scroll.viewport()
+            point = viewport.mapFromGlobal(event.globalPosition().toPoint())
+            forwarded = QWheelEvent(QPointF(point), event.globalPosition(), event.pixelDelta(),
+                event.angleDelta(), event.buttons(), event.modifiers(), event.phase(), event.inverted())
+            QApplication.sendEvent(viewport, forwarded)
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _schedule_history_resize(self):
+        timer = getattr(self, '_history_resize_timer', None)
+        if timer is not None:
+            timer.start(0)
+
+    def _resize_history_rows(self):
+        listing = getattr(self, 'history_list', None)
+        if listing is None:
+            return
+        width = max(40, listing.viewport().width() - 4)
+        for index in range(listing.count()):
+            item = listing.item(index)
+            widget = listing.itemWidget(item)
+            if widget is None:
+                continue
+            widget.resize(width, widget.height())
+            layout = widget.layout()
+            height = max(44, layout.totalHeightForWidth(width))
+            size = item.sizeHint()
+            if size.height() != height or size.width() != width:
+                size.setWidth(width)
+                size.setHeight(height)
+                item.setSizeHint(size)
 
     def _apply_responsive(self):
-        """侧栏宽度按窗口比例走；装不下三栏时收起侧栏，并保证有 ☰ 能叫回来。"""
-        host = getattr(self, "_sidebar_host", None)
-        sidebar = getattr(self, "_sidebar", None)
-        if host is None or sidebar is None:
+        if not hasattr(self, '_compact_tabs') or getattr(self, '_responsive_busy', False):
             return
-        width = self.width()
-        needed = self._sidebar_needed_width()
-        narrow = bool(needed) and width < needed
-        # 跨越断点时清掉手动选择，让宽屏回到默认显示
-        if getattr(self, "_last_narrow", None) != narrow:
-            self._sidebar_forced = None
-            self._last_narrow = narrow
-        forced = getattr(self, "_sidebar_forced", None)
-        visible = (not narrow) if forced is None else bool(forced)
-        host.setVisible(visible)
-        toggle = getattr(self, "_sidebar_toggle", None)
-        if toggle is not None:
-            # 只要侧栏被藏起来就必须留入口，否则账号登录/监听控制都点不到
-            toggle.setVisible(not visible)
-        target = int(round(width * 0.235))
-        target = max(210, min(300, target))
-        if host.width() != target:
-            host.setFixedWidth(target)
-            sidebar.setFixedWidth(target)
-        return visible
+        self._responsive_busy = True
+        try:
+            self._prepare_main_controls()
+            compact = self.width() < self._sidebar_needed_width()
+            self._switch_main_layout('compact' if compact else 'columns')
+            self._apply_golden_split()
+            self._apply_hero_layout(compact)
+            if compact:
+                form_width = max(160, self._body_stack.width() - 8)
+            else:
+                form_width = max(160, self._form_wrap.width() - 8)
+            self._apply_rest_flow(form_width)
+        finally:
+            self._responsive_busy = False
+        return not compact
 
     def _toggle_sidebar(self):
-        """临时显示/隐藏侧栏（跨断点后自动恢复默认）。"""
-        host = getattr(self, "_sidebar_host", None)
-        if host is None:
-            return
-        self._sidebar_forced = not host.isVisible()
-        self._apply_responsive()
-        self._apply_golden_split()
+        # Compact mode has an explicit account page, not a hidden/dismissed panel.
+        if getattr(self, '_layout_mode', None) == 'compact':
+            self._compact_tabs.setCurrentIndex(0)
+        else:
+            self._sidebar_host.ensureWidgetVisible(self.phone_edit)
 
     def _apply_golden_split(self):
-        """form : right = 1 : phi, recomputed whenever the window resizes.
-
-        Available = window - body margins (14+14) - sidebar gap (12)
-                            - sidebar - column gap (12)
-        The form takes available/(1+phi); the tabs column takes the rest.
-        """
-        wrap = getattr(self, "_form_wrap", None)
-        sidebar = getattr(self, "_sidebar", None)
-        if wrap is None or sidebar is None:
+        if not hasattr(self, '_form_wrap') or getattr(self, '_layout_mode', None) != 'columns':
             return
-        # 侧栏被隐藏时不再占宽度
-        sidebar_width = sidebar.width() if sidebar.isVisible() else 0
-        available = self.width() - 28 - 12 - sidebar_width - 12
-        if available <= 0:
-            return
-        needed = wrap.minimumSizeHint().width()
-        golden = available / (1.0 + self.GOLDEN)
-        # 目标宽度：黄金比例，夹在 440（表单可读下限）与 486（内容上限）之间
-        target = min(486, max(golden, 440.0))
-        target = max(target, needed)                       # 不低于自身最小需求
-        target = min(target, max(needed, available - 260))  # 右边至少留 260 给日志/历史
-        form_width = int(round(max(0.0, target)))
-        if wrap.width() != form_width:
-            wrap.setFixedWidth(form_width)
+        sidebar_min = max(212, self._sidebar.minimumSizeHint().width())
+        form_min = max(340, self._conditions_card.minimumSizeHint().width() + 8)
+        right_min = self._records_min_width
+        available = max(1, self.width() - 52)
+        sidebar_width = max(sidebar_min, min(300, int(round(self.width() * 0.235))))
+        sidebar_width = min(sidebar_width, max(sidebar_min, available - form_min - right_min))
+        self._sidebar_host.setFixedWidth(sidebar_width)
+        self._sidebar.setMinimumWidth(0)
+        self._sidebar.setMaximumWidth(16777215)
+        center_available = available - sidebar_width
+        preferred = max(form_min, min(486, max(400, center_available / (1 + self.GOLDEN))))
+        form_width = min(preferred, max(form_min, center_available - right_min))
+        self._form_wrap.setFixedWidth(int(round(form_width)))
+        # Ignored size policies are useful in compact pages, but a grid must
+        # reserve the actual widths of both fixed columns in wide mode.
+        self._wide_grid.setColumnMinimumWidth(0, sidebar_width)
+        self._wide_grid.setColumnMinimumWidth(1, int(round(form_width)))
+        self._wide_grid.invalidate()
 
     WINDOW_RADIUS = 13
 
@@ -990,168 +1234,222 @@ class App(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_window_mask()
-        self._apply_responsive()
-        self._apply_golden_split()
-        self._apply_window_mask()
-        grip = getattr(self, "size_grip", None)
+        self._schedule_responsive()
+        grip = getattr(self, 'size_grip', None)
         if grip is not None:
             grip.move(self.width() - 18, self.height() - 18)
             grip.raise_()
 
     def _build_widgets(self):
         central = QWidget()
-        central.setObjectName("central")
+        central.setObjectName('central')
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
+        root.setSizeConstraint(QLayout.SetNoConstraint)
         self._build_hero(root)
-        # frameless windows have no frame to grab: a grip in the corner restores
-        # resize, and resizeEvent keeps it pinned there
         self.size_grip = QSizeGrip(central)
-        self.size_grip.setStyleSheet("background: transparent;")
+        self.size_grip.setStyleSheet('background: transparent;')
 
         body = QWidget()
-        body_layout = QHBoxLayout(body)
+        body.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(14, 10, 14, 10)
-        body_layout.setSpacing(12)
-        # The body's minimum size is larger than the desktop at 125% scaling,
-        # so the window could not shrink and its bottom fell off-screen.
-        # A scroll area lets the window stay at WINDOW_SIZE and scroll instead.
-        scroll = QScrollArea()
-        scroll.setObjectName("bodyScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
+        body_layout.setSpacing(0)
+        body_layout.setSizeConstraint(QLayout.SetNoConstraint)
+        self._body_stack = QStackedWidget()
+        self._body_stack.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        body_layout.addWidget(self._body_stack, 1)
+        root.addWidget(body, 1)
+
+        self._wide_page = QWidget()
+        self._wide_grid = QGridLayout(self._wide_page)
+        self._wide_grid.setContentsMargins(0, 0, 0, 0)
+        self._wide_grid.setHorizontalSpacing(12)
+        self._wide_grid.setColumnStretch(2, 1)
+        self._wide_grid.setSizeConstraint(QLayout.SetNoConstraint)
+        self._body_stack.addWidget(self._wide_page)
 
         sidebar_host = QScrollArea()
-        sidebar_host.setObjectName("sidebarScroll")
+        sidebar_host.setObjectName('sidebarScroll')
         sidebar_host.setWidgetResizable(True)
         sidebar_host.setFrameShape(QFrame.NoFrame)
         sidebar_host.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        sidebar_host.setFixedWidth(279)
+        sidebar_host.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        sidebar_host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         sidebar = QFrame()
         self._sidebar = sidebar
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(279)  # 1180 / 279 = 4.229 = phi^3 within 0.17%
+        sidebar.setObjectName('sidebar')
+        sidebar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
+        sidebar_layout.setSizeConstraint(QLayout.SetMinimumSize)
         self._build_login_section(sidebar_layout)
         self._build_control_section(sidebar_layout)
         self._build_item_switch_section(sidebar_layout)
         self._build_stats_section(sidebar_layout)
         sidebar_layout.addStretch(1)
-        sidebar_layout.addStretch(1)
         sidebar_host.setWidget(sidebar)
-        body_layout.addWidget(sidebar_host)
         self._sidebar_host = sidebar_host
 
-        main_area = QWidget()
-        main_layout = QHBoxLayout(main_area)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(12)
-        form_column = QVBoxLayout()
+        self._form_wrap = QWidget()
+        self._form_wrap.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        panel_layout = QVBoxLayout(self._form_wrap)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(8)
+        panel_layout.setSizeConstraint(QLayout.SetNoConstraint)
+        header = QHBoxLayout()
+        header.addWidget(self._section_title('接单条件'))
+        header.addStretch(1)
+        header.addWidget(self._ghost_button('保存设置', self._on_save_settings))
+        panel_layout.addLayout(header)
+        self._form_content = QWidget()
+        self._form_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        form_column = QVBoxLayout(self._form_content)
+        form_column.setContentsMargins(0, 0, 0, 0)
         form_column.setSpacing(0)
+        form_column.setSizeConstraint(QLayout.SetMinimumSize)
         self._build_conditions_section(form_column)
-        right_column = QVBoxLayout()
-        right_column.setSpacing(0)
+        form_column.addStretch(1)
+        self._form_scroll = QScrollArea()
+        self._form_scroll.setObjectName('mainFormScroll')
+        self._form_scroll.setWidgetResizable(True)
+        self._form_scroll.setFrameShape(QFrame.NoFrame)
+        self._form_scroll.verticalScrollBar().setObjectName('mainContentScrollBar')
+        self._form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._form_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self._form_scroll.setWidget(self._form_content)
+        panel_layout.addWidget(self._form_scroll, 1)
+
         self.bottom_tabs = QTabWidget()
-        self.bottom_tabs.setObjectName("bottomTabs")
-        log_page = QWidget()
-        log_layout = QVBoxLayout(log_page)
+        self.bottom_tabs.setObjectName('bottomTabs')
+        self.bottom_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self._log_page = QWidget()
+        log_layout = QVBoxLayout(self._log_page)
         log_layout.setContentsMargins(0, 0, 0, 0)
         self._build_log_section(log_layout, tabbed=True)
-        history_page = QWidget()
-        history_layout = QVBoxLayout(history_page)
+        self._history_page = QWidget()
+        history_layout = QVBoxLayout(self._history_page)
         history_layout.setContentsMargins(0, 0, 0, 0)
         self._build_history_section(history_layout, tabbed=True)
-        self.bottom_tabs.addTab(log_page, "运行日志")
-        self.bottom_tabs.addTab(history_page, "接单历史")
-        right_column.addWidget(self.bottom_tabs, 1)
-        # form : right = 1 : 1.618 once the form is capped; without the cap the
-        # form's own minimum width (label + field + hint) won the extra space
-        # and the split drifted to 2.08 : 1.
-        form_wrap = QWidget()
-        self._form_wrap = form_wrap
-        form_column.setContentsMargins(0, 0, 0, 0)
-        form_wrap.setLayout(form_column)
-        main_layout.addWidget(form_wrap)
-        main_layout.addLayout(right_column, 1)
+        self.bottom_tabs.addTab(self._log_page, '运行日志')
+        self.bottom_tabs.addTab(self._history_page, '接单历史')
+        self.bottom_tabs.ensurePolished()
+        self._records_min_width = max(260, self.bottom_tabs.tabBar().sizeHint().width())
+        self._wide_grid.addWidget(sidebar_host, 0, 0)
+        self._wide_grid.addWidget(self._form_wrap, 0, 1)
+        self._wide_grid.addWidget(self.bottom_tabs, 0, 2)
 
+        self._compact_tabs = QTabWidget()
+        self._compact_tabs.setObjectName('compactTabs')
+        self._compact_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self._compact_page_layouts = []
+        for title in ('账号', '接单条件', '运行日志', '接单历史'):
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            layout.setSizeConstraint(QLayout.SetNoConstraint)
+            self._compact_page_layouts.append(layout)
+            self._compact_tabs.addTab(page, title)
+        self._body_stack.addWidget(self._compact_tabs)
+        self._layout_mode = 'columns'
 
-        body_layout.addWidget(main_area, 1)
+        self._footer = QFrame()
+        self._footer.setObjectName('listenerFooter')
+        self._footer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        footer = QHBoxLayout(self._footer)
+        footer.setContentsMargins(14, 8, 24, 8)
+        footer.setSpacing(10)
+        self.start_btn = self._primary_button('开始监听', self._on_start_listen)
+        self.stop_btn = self._secondary_button('停止监听', self._on_stop_listen)
+        self.stop_btn.setEnabled(False)
+        footer.addWidget(self.start_btn)
+        footer.addWidget(self.stop_btn)
+        self.listen_state_sidebar_label.setObjectName('listenerState')
+        self.listen_state_sidebar_label.setWordWrap(False)
+        self.listen_state_sidebar_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        footer.addWidget(self.listen_state_sidebar_label, 1)
+        root.addWidget(self._footer)
 
     def _build_hero(self, root):
-        hero = QFrame()
-        hero.setObjectName("hero")
-        hero.setFixedHeight(55)  # 34 * phi
-        layout = QHBoxLayout(hero)
-        layout.setContentsMargins(20, 0, 20, 0)
-        title = QLabel(APP_TITLE)
-        title.setObjectName("heroTitle")
+        self._hero = QFrame()
+        self._hero.setObjectName('hero')
+        self._hero.installEventFilter(self)
+        hero_layout = QVBoxLayout(self._hero)
+        hero_layout.setContentsMargins(20, 8, 20, 8)
+        hero_layout.setSpacing(6)
+        self._hero_toolbar = QWidget()
+        self._hero_toolbar_layout = layout = QHBoxLayout(self._hero_toolbar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._hero_title = title = QLabel(APP_TITLE)
+        title.setObjectName('heroTitle')
         layout.addWidget(title)
         layout.addStretch(1)
-        self.grab_count_label = QLabel("今日抢单 0")
-        self.grab_count_label.setObjectName("heroStat")
-        layout.addWidget(self.grab_count_label)
-        self.listen_state_label = QLabel("未开始监听")
-        self.listen_state_label.setObjectName("heroStatDim")
-        layout.addWidget(self.listen_state_label)
-        self.status_label = QLabel("未登录")
-        self.status_label.setObjectName("heroStatDim")
-        layout.addWidget(self.status_label)
-        self.renewal_chip = QLabel("")
-        self.renewal_chip.setObjectName("heroStatDim")
-        self.renewal_chip.setVisible(False)
-        layout.addWidget(self.renewal_chip)
-
-        # Toolbar controls live in the hero: the sidebar is for the account and
-        # the run switch, not for periodic settings.
-        layout.addSpacing(18)
+        self._hero_stats = QWidget()
+        stats = QHBoxLayout(self._hero_stats)
+        stats.setContentsMargins(0, 0, 0, 0)
+        stats.setSpacing(10)
+        self.grab_count_label = QLabel('今日抢单 0')
+        self.grab_count_label.setObjectName('heroStat')
+        self.listen_state_label = QLabel('未开始监听')
+        self.listen_state_label.setObjectName('heroStatDim')
+        self.status_label = QLabel('未登录')
+        self.status_label.setObjectName('heroStatDim')
+        self.renewal_chip = QLabel('')
+        self.renewal_chip.setObjectName('heroStatDim')
+        self.renewal_chip.hide()
+        for label in (self.grab_count_label, self.listen_state_label, self.status_label, self.renewal_chip):
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            stats.addWidget(label, 1)
+        layout.addWidget(self._hero_stats)
         self.theme_box = QComboBox()
-        self.theme_box.setObjectName("heroCombo")
-        self.theme_box.setFixedWidth(132)
-        self.theme_box.setFixedHeight(34)
+        self.theme_box.setObjectName('heroCombo')
+        self.theme_box.setFixedSize(132, 34)
         for theme_id, theme in THEMES.items():
-            self.theme_box.addItem(theme["name"], theme_id)
+            self.theme_box.addItem(theme['name'], theme_id)
         self.theme_box.setCurrentIndex(list(THEMES.keys()).index(self._theme_id))
         self.theme_box.currentIndexChanged.connect(self._on_theme_changed)
         layout.addWidget(self.theme_box)
-        layout.addSpacing(8)
-        self._sidebar_toggle = QPushButton("☰")
-        self._sidebar_toggle.setObjectName("heroButton")
-        self._sidebar_toggle.setFixedSize(34, 34)
-        self._sidebar_toggle.setToolTip("显示/隐藏侧栏")
+        # The account is a visible compact tab, so no hidden-sidebar affordance is needed.
+        self._sidebar_toggle = QPushButton('账号', self._hero)
+        self._sidebar_toggle.setObjectName('heroButton')
         self._sidebar_toggle.clicked.connect(self._toggle_sidebar)
-        self._sidebar_toggle.setVisible(False)
-        layout.addWidget(self._sidebar_toggle)
-        advanced = QPushButton("高级设置")
-        advanced.setObjectName("heroButton")
+        self._sidebar_toggle.hide()
+        self._advanced_btn = advanced = QPushButton('高级设置')
+        advanced.setObjectName('heroButton')
         advanced.setFixedHeight(34)
         advanced.clicked.connect(self._open_advanced)
         layout.addWidget(advanced)
-
-        layout.addSpacing(13)
-        for text, slot, name in (
-            ("–", self.showMinimized, "winMin"),
-            ("□", self._toggle_maximize, "winMax"),
-            ("✕", self.close, "winClose"),
-        ):
+        self._window_buttons = []
+        for text, slot, name in (('–', self.showMinimized, 'winMin'),
+                                ('□', self._toggle_maximize, 'winMax'),
+                                ('✕', self.close, 'winClose')):
             button = QPushButton(text)
             button.setObjectName(name)
             button.setFixedSize(34, 34)
             button.clicked.connect(slot)
             layout.addWidget(button)
-        root.addWidget(hero)
+            self._window_buttons.append(button)
+        hero_layout.addWidget(self._hero_toolbar)
+        self._hero_second = QWidget()
+        self._hero_second_layout = QHBoxLayout(self._hero_second)
+        self._hero_second_layout.setContentsMargins(0, 0, 0, 0)
+        self._hero_second_layout.setSpacing(14)
+        self._hero_second.hide()
+        hero_layout.addWidget(self._hero_second)
+        self._hero_stacked = False
+        root.addWidget(self._hero)
 
     def _toggle_maximize(self):
         """Manual maximise: a frameless showMaximized() can cover the taskbar."""
         if getattr(self, "_maximized_state", False):
             self.setGeometry(self._normal_geometry)
             self._maximized_state = False
+            self._fit_window_to_screen()
             return
         screen = self.screen() or QApplication.primaryScreen()
         if screen is None:
@@ -1162,9 +1460,11 @@ class App(QMainWindow):
 
     def mousePressEvent(self, event):
         # Drag anywhere the hero is not covered by a control.
-        if event.button() == Qt.LeftButton and event.position().y() <= 55:
-            child = self.childAt(event.position().toPoint())
-            if child is None or not isinstance(child, QPushButton):
+        point = event.position().toPoint()
+        hero = getattr(self, '_hero', None)
+        if event.button() == Qt.LeftButton and hero is not None and hero.geometry().contains(point):
+            child = self.childAt(point)
+            if child is None or not isinstance(child, (QPushButton, QComboBox)):
                 self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 event.accept()
                 return
@@ -1182,7 +1482,11 @@ class App(QMainWindow):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        if event.position().y() <= 55:
+        point = event.position().toPoint()
+        hero = getattr(self, '_hero', None)
+        child = self.childAt(point)
+        if (hero is not None and hero.geometry().contains(point)
+                and not isinstance(child, (QPushButton, QComboBox))):
             self._toggle_maximize()
             event.accept()
             return
@@ -1236,7 +1540,8 @@ class App(QMainWindow):
         phone_label.setObjectName("sidebarLabel")
         form.addWidget(phone_label)
         self.phone_edit = QLineEdit()
-        self.phone_edit.setFixedHeight(34)
+        self.phone_edit.setMinimumHeight(40)
+        self.phone_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.phone_edit.setPlaceholderText("11 位手机号")
         form.addWidget(self.phone_edit)
         self.pending_account_label = QLabel("")
@@ -1247,7 +1552,8 @@ class App(QMainWindow):
         pw_label.setObjectName("sidebarLabel")
         form.addWidget(pw_label)
         self.password_edit = QLineEdit()
-        self.password_edit.setFixedHeight(34)
+        self.password_edit.setMinimumHeight(40)
+        self.password_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.password_edit.setEchoMode(QLineEdit.Password)
         form.addWidget(self.password_edit)
         self.show_pw_check = QCheckBox("显示密码")
@@ -1993,21 +2299,17 @@ class App(QMainWindow):
             count_label.setText("今日抢单 %d" % self.grab_count)
 
     def _build_conditions_section(self, main_layout):
-        header = QHBoxLayout()
-        header.addWidget(self._section_title("接单条件"))
-        header.addStretch(1)
-        header.addWidget(self._ghost_button("保存设置", self._on_save_settings))
-        main_layout.addLayout(header)
-        main_layout.addSpacing(8)
+        # The section title and Save action live above the scrolling content.
         card = self._card()
+        self._conditions_card = card
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(13, 13, 13, 13)
         inner = QWidget()
         grid = QGridLayout(inner)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setVerticalSpacing(4)
-        grid.setHorizontalSpacing(10)
-        grid.setColumnStretch(2, 1)
+        grid.setVerticalSpacing(10)
+        grid.setHorizontalSpacing(12)
+        grid.setColumnStretch(1, 1)
         self.min_amount_edit = QLineEdit()
         self._form_row(grid, 0, "最小金额（元）", self.min_amount_edit,
                        "不低于此价")
@@ -2019,7 +2321,9 @@ class App(QMainWindow):
                        "列表刷新节奏")
         for widget in (self.min_amount_edit, self.max_amount_edit,
                        self.poll_interval_edit):
-            widget.setFixedWidth(150)
+            widget.setMinimumWidth(150)
+            widget.setMaximumWidth(240)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.memo_mode_box = QComboBox()
         self.memo_mode_box.addItems(["不检测备注", "有备注不抢",
                                      "排除关键词", "只抢关键词"])
@@ -2044,8 +2348,10 @@ class App(QMainWindow):
         inner.setMaximumWidth(500)
         for widget in (self.memo_mode_box, self.confirm_wait_min_spin,
                        self.confirm_wait_max_spin):
-            widget.setFixedWidth(150)
-        card_layout.addWidget(inner, 0, Qt.AlignLeft)
+            widget.setMinimumWidth(150)
+            widget.setMaximumWidth(240)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        card_layout.addWidget(inner)
 
         # 备注关键词：只在"排除关键词 / 只抢关键词"时出现，和下拉放在一起
         self.keyword_box = QWidget()
@@ -2058,8 +2364,8 @@ class App(QMainWindow):
         self.keyword_text = QPlainTextEdit()
         self.keyword_text.setObjectName("listEdit")
         self.keyword_text.setPlaceholderText("一行一个，例如：加急")
-        self.keyword_text.setFixedHeight(52)
-        self.keyword_text.setMinimumWidth(300)
+        self.keyword_text.setFixedHeight(80)
+        self.keyword_text.setMinimumWidth(160)
         self.keyword_text.setMaximumWidth(500)
         kw_layout.addWidget(self.keyword_text)
         self.keyword_box.setVisible(False)
@@ -2071,6 +2377,10 @@ class App(QMainWindow):
         # 刷新与休息 (run/rest): visible toggle + four minute fields.
         rest_group = QWidget()
         rest_grid = QGridLayout(rest_group)
+        rest_grid.setContentsMargins(0, 0, 0, 0)
+        self._rest_grid = rest_grid
+        self._rest_fields = []
+        self._rest_single = None
         rest_title = QLabel("刷新与休息")
         rest_title.setObjectName("subTitle")
         rest_grid.addWidget(rest_title, 0, 0, 1, 4)
@@ -2091,7 +2401,7 @@ class App(QMainWindow):
         self.risk_rest_max_spin.setSuffix(" 分钟")
         for spin in (self.risk_run_min_spin, self.risk_run_max_spin,
                      self.risk_rest_min_spin, self.risk_rest_max_spin):
-            spin.setFixedWidth(80)
+            spin.setMinimumWidth(max(88, spin.minimumSizeHint().width()))
         for index, (lab_text, spin) in enumerate([
             ("刷新最短", self.risk_run_min_spin),
             ("刷新最长", self.risk_run_max_spin),
@@ -2100,12 +2410,13 @@ class App(QMainWindow):
         ]):
             lab = QLabel(lab_text)
             lab.setObjectName("fieldLabel")
+            self._rest_fields.append((lab, spin))
             # two pairs per row with 88px spins: 2x2 keeps this card hugging
             # its content instead of stretching to fill the column
             rest_grid.addWidget(lab, 2 + index // 2, (index % 2) * 2)
             rest_grid.addWidget(spin, 2 + index // 2, (index % 2) * 2 + 1)
-        rest_grid.setVerticalSpacing(6)
-        rest_grid.setHorizontalSpacing(8)
+        rest_grid.setVerticalSpacing(10)
+        rest_grid.setHorizontalSpacing(12)
         # 刷新与休息 gets its own card at the bottom of the column: inside the
         # conditions card it left ~200px of bare background under the form.
         # One row measure for every control in the form: QSS min-height cannot
@@ -2115,41 +2426,31 @@ class App(QMainWindow):
                        self.confirm_wait_min_spin, self.confirm_wait_max_spin,
                        self.risk_run_min_spin, self.risk_run_max_spin,
                        self.risk_rest_min_spin, self.risk_rest_max_spin):
-            widget.setFixedHeight(34)
+            widget.setMinimumHeight(max(40, widget.sizeHint().height()))
 
         rest_card = self._card()
         rest_layout = QVBoxLayout(rest_card)
         rest_layout.setContentsMargins(13, 13, 13, 13)
         rest_layout.addWidget(rest_group)
-        rest_layout.addStretch(1)
         main_layout.addWidget(card)
-        main_layout.addSpacing(21)
-        main_layout.addWidget(rest_card, 1)
+        main_layout.addSpacing(16)
+        main_layout.addWidget(rest_card)
 
     def _build_control_section(self, sidebar_layout):
-        card, layout = self._sidebar_card(sidebar_layout, "监听控制")
-        btn_row = QHBoxLayout()
-        self.start_btn = self._primary_button("开始监听", self._on_start_listen)
-        self.stop_btn = self._secondary_button("停止监听", self._on_stop_listen)
-        self.stop_btn.setEnabled(False)
-        btn_row.addWidget(self.start_btn)
-        btn_row.addWidget(self.stop_btn)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
-        self.listen_state_sidebar_label = QLabel("未开始监听")
-        self.listen_state_sidebar_label.setObjectName("sidebarState")
-        self.listen_state_sidebar_label.setWordWrap(True)
-        layout.addWidget(self.listen_state_sidebar_label)
-        self.auto_stop_check = QCheckBox("接到单后自动停止监听")
-        self.auto_stop_check.setObjectName("sidebarCheck")
-        self.auto_stop_check.setChecked(bool(self.cfg.get("auto_stop_after_grab", True)))
-        self.auto_stop_check.setToolTip("关闭后抢到一单会继续轮询，适合连续接单")
-        # 勾选状态立即落盘：以前只有点「保存设置」才写，导致每次打开都回到默认
+        card, layout = self._sidebar_card(sidebar_layout, '监听设置')
+        # These state/control objects keep their existing signal bindings. The
+        # actual start/stop pair and status label are placed in the fixed footer.
+        self.listen_state_sidebar_label = QLabel('未开始监听')
+        self.listen_state_sidebar_label.setObjectName('sidebarState')
+        self.auto_stop_check = QCheckBox('接到单后自动停止监听')
+        self.auto_stop_check.setObjectName('sidebarCheck')
+        self.auto_stop_check.setChecked(bool(self.cfg.get('auto_stop_after_grab', True)))
+        self.auto_stop_check.setToolTip('关闭后抢到一单会继续轮询，适合连续接单')
         self.auto_stop_check.toggled.connect(self._on_auto_stop_toggled)
         layout.addWidget(self.auto_stop_check)
-        self.online_check = QCheckBox("在线接单（离线中）")
-        self.online_check.setObjectName("sidebarCheck")
-        self.online_check.setToolTip("对应平台的 status：1 上线 / 2 下线")
+        self.online_check = QCheckBox('在线接单（离线中）')
+        self.online_check.setObjectName('sidebarCheck')
+        self.online_check.setToolTip('对应平台的 status：1 上线 / 2 下线')
         self.online_check.toggled.connect(self._toggle_online)
         layout.addWidget(self.online_check)
 
@@ -2207,6 +2508,8 @@ class App(QMainWindow):
         self.log_text = QPlainTextEdit()
         self.log_text.setObjectName("logView")
         self.log_text.setReadOnly(True)
+        self.log_text.setMinimumSize(0, 0)
+        self.log_text.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.log_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         # Cap retained lines: a 0.5 s poll loop otherwise grows the log
         # without bound and every repaint gets slower.
@@ -2236,6 +2539,14 @@ class App(QMainWindow):
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 10, 12, 10)
         self.history_list = QListWidget()
+        self.history_list.setMinimumSize(0, 0)
+        self.history_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.history_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._history_viewport = self.history_list.viewport()
+        self._history_viewport.installEventFilter(self)
+        self._history_resize_timer = QTimer(self)
+        self._history_resize_timer.setSingleShot(True)
+        self._history_resize_timer.timeout.connect(self._resize_history_rows)
         self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.history_list.customContextMenuRequested.connect(self._on_history_context_menu)
         if tabbed:
@@ -2356,11 +2667,16 @@ class App(QMainWindow):
             + "<span style='color:%s'>[%s]</span>" % (color, label)
         )
         line1.setTextFormat(Qt.RichText)
+        for line in widget.findChildren(QLabel):
+            line.setWordWrap(True)
+            line.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         item = QListWidgetItem()
         item.setData(Qt.UserRole, dict(entry))
         item.setSizeHint(widget.sizeHint())
         self.history_list.addItem(item)
         self.history_list.setItemWidget(item, widget)
+        self._schedule_history_resize()
         # 行是 setItemWidget 塞进去的子控件，右键事件不会冒泡到列表，
         # 所以行本身和它的标签都要自己接 customContextMenuRequested
         for target in [widget] + widget.findChildren(QLabel):
@@ -3284,19 +3600,27 @@ class AdvancedDialog(QDialog):
 
     def __init__(self, parent: App, cfg: dict, on_saved):
         super().__init__(parent)
+        self.setObjectName("advancedDialog")
         self.setWindowTitle("高级设置")
         # the stock title bar looked out of place next to the frameless main
         # window, so the dialog draws its own header and drags by it
         self.setWindowFlag(Qt.FramelessWindowHint, True)
         self._drag_offset = None
-        self.setFixedSize(880, 700)
+        self.resize(880, 760)
+        self.setSizeGripEnabled(True)
         self.cfg = dict(cfg)
         self._on_saved = on_saved
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 10, 16, 14)
+        outer.setContentsMargins(20, 16, 20, 16)
+        outer.setSpacing(12)
 
-        header = QHBoxLayout()
+        # Header and actions stay outside the scroll area. Adding settings must
+        # grow the content, never squeeze the controls into a fixed window.
+        self._header = QWidget(self)
+        self._header.setObjectName("advancedHeader")
+        self._header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        header = QHBoxLayout(self._header)
         header.setContentsMargins(0, 0, 0, 0)
         header_title = QLabel("高级设置")
         header_title.setObjectName("dialogTitle")
@@ -3307,33 +3631,55 @@ class AdvancedDialog(QDialog):
         close_button.setFixedSize(28, 28)
         close_button.clicked.connect(self.reject)
         header.addWidget(close_button)
-        outer.addLayout(header)
-
+        outer.addWidget(self._header)
 
         content = QWidget()
+        content.setObjectName("advancedContent")
+        content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         root = QVBoxLayout(content)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(0, 2, 8, 2)
+        root.setSpacing(14)
+        root.setSizeConstraint(QLayout.SetMinimumSize)
         self._content = content
-        outer.addWidget(content)
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("advancedScroll")
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.verticalScrollBar().setObjectName("advancedScrollBar")
+        self._scroll.setWidget(content)
+        outer.addWidget(self._scroll, 1)
 
-        btns = QHBoxLayout()
+        self._footer = QWidget(self)
+        self._footer.setObjectName("advancedFooter")
+        self._footer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btns = QHBoxLayout(self._footer)
+        btns.setContentsMargins(0, 0, 0, 0)
+        btns.setSpacing(10)
         btns.addStretch(1)
         cancel_btn = QPushButton("取消")
         cancel_btn.setObjectName("secondary")
         cancel_btn.clicked.connect(self.reject)
+        self.cancel_button = cancel_btn
         save_btn = QPushButton("保存")
         save_btn.setObjectName("primary")
+        save_btn.setDefault(True)
         save_btn.clicked.connect(self._save)
+        self.save_button = save_btn
         btns.addWidget(cancel_btn)
         btns.addWidget(save_btn)
-        outer.addLayout(btns)
+        outer.addWidget(self._footer)
 
 
 
         form = QWidget()
         grid = QGridLayout(form)
-        grid.setContentsMargins(0, 4, 0, 0)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(12)
         grid.setColumnStretch(2, 1)
+        self._form = form
         self.entries: dict[str, QLineEdit] = {}
         rows = [
             ("shop_id", "优先店铺（0=自动）",
@@ -3411,12 +3757,16 @@ class AdvancedDialog(QDialog):
         for key in current_scale_map:
             names.setdefault(str(key), "类型 %s" % key)
         grid_map = QGridLayout()
-        grid_map.setHorizontalSpacing(10)
-        grid_map.setVerticalSpacing(6)
+        grid_map.setHorizontalSpacing(14)
+        grid_map.setVerticalSpacing(10)
+        grid_map.setColumnStretch(1, 1)
         for row, key in enumerate(sorted(names, key=lambda k: int(k) if k.isdigit() else 0)):
             label = QLabel("%s（%s）" % (names[key] or key, key))
             label.setObjectName("fieldLabel")
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            label.setWordWrap(True)
+            label.setMinimumWidth(120)
+            label.setMaximumWidth(160)
             grid_map.addWidget(label, row, 0)
             edit = QLineEdit(",".join(current_scale_map.get(str(key)) or []))
             edit.setPlaceholderText("匹配词，逗号分隔（可留空）")
@@ -3471,6 +3821,7 @@ class AdvancedDialog(QDialog):
         self.notify_provider_box.setCurrentIndex(index)
         self.test_button = QPushButton("发送测试")
         self.test_button.setObjectName("secondary")
+        self.test_button.setAutoDefault(False)
         self.test_button.clicked.connect(self._send_test_push)
         self.notify_row.addWidget(self.notify_check)
         self.notify_row.addWidget(self.notify_provider_box)
@@ -3487,35 +3838,87 @@ class AdvancedDialog(QDialog):
         root.addWidget(self.test_label)
         self.test_result.connect(self._show_test_result)
         root.addStretch(1)
+        self._prepare_layout()
         self.setToolTip("配置文件：%s" % cfgmod.config_path())
 
+    def _prepare_layout(self):
+        """Keep controls at their styled height; let long hints wrap instead."""
+        for label in self._content.findChildren(QLabel):
+            if label.objectName() == "hint":
+                label.setWordWrap(True)
+                label.setMinimumWidth(0)
+                label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        controls = list(self.entries.values()) + list(self.item_map_edits.values())
+        controls.extend((self.auto_wait_offset_spin, self.ui_scale_box,
+                         self.rotate_minutes_spin, self.notify_provider_box,
+                         self.test_button, self.cancel_button, self.save_button))
+        for control in controls:
+            control.ensurePolished()
+            control.setMinimumHeight(max(40, control.sizeHint().height()))
+        self.blacklist_text.setFixedHeight(80)
+        self._wheel_controls = (self.auto_wait_offset_spin, self.ui_scale_box,
+                                self.rotate_minutes_spin, self.notify_provider_box)
+        for control in self._wheel_controls:
+            control.setFocusPolicy(Qt.StrongFocus)
+            control.installEventFilter(self)
+        scrollbar = self._scroll.verticalScrollBar()
+        scrollbar.style().unpolish(scrollbar)
+        scrollbar.style().polish(scrollbar)
+        self._content.layout().activate()
+
+    def eventFilter(self, watched, event):
+        # A wheel over an unfocused field should scroll the settings, not alter
+        # the scale, wait offset, rotation interval or notification provider.
+        if (event.type() == QEvent.Wheel
+                and watched in getattr(self, "_wheel_controls", ())
+                and not watched.hasFocus()):
+            viewport = self._scroll.viewport()
+            point = viewport.mapFromGlobal(event.globalPosition().toPoint())
+            forwarded = QWheelEvent(QPointF(point), event.globalPosition(),
+                                    event.pixelDelta(), event.angleDelta(),
+                                    event.buttons(), event.modifiers(),
+                                    event.phase(), event.inverted())
+            QApplication.sendEvent(viewport, forwarded)
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _screen_size(available):
+        """Qt screen geometry is already in logical pixels (no DPR division)."""
+        return (min(880, max(1, available.width() - 48)),
+                min(760, max(1, available.height() - 48)))
 
     def _fit_to_content(self):
-        """按内容自适应：adjustSize 之后锁尺寸，避免每次布局都跳一下。"""
-        self.adjustSize()
-        width = max(880, self.width())
-        height = self.height()
-        screen = self.screen()
-        if screen is not None:
-            limit = screen.availableGeometry().height() - 60
-            if height > limit:
-                # 只有超出屏幕才压文本框，仍然不放滚动条
-                for editor in (getattr(self, "keyword_text", None),
-                               getattr(self, "blacklist_text", None)):
-                    if editor is not None:
-                        editor.setFixedHeight(40)
-                self.adjustSize()
-                height = min(self.height(), limit)
-        self.setFixedSize(width, height)
+        """Fit the window to the current monitor, not the content to the window."""
+        parent = self.parentWidget()
+        screen = parent.screen() if parent is not None else self.screen()
+        if screen is None:
+            self.resize(880, 760)
+            return
+        available = screen.availableGeometry()
+        width, height = self._screen_size(available)
+        self.setMinimumSize(min(560, width), min(320, height))
+        self.setMaximumSize(max(1, available.width() - 48),
+                            max(1, available.height() - 48))
+        self.resize(width, height)
+        center = parent.frameGeometry().center() if parent is not None else available.center()
+        x = max(available.left() + 24,
+                min(center.x() - width // 2, available.right() - width - 23))
+        y = max(available.top() + 24,
+                min(center.y() - height // 2, available.bottom() - height - 23))
+        self.move(x, y)
 
     def showEvent(self, event):
         super().showEvent(event)
         self._fit_to_content()
+        _apply_windows_effects(self, dark=True)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and event.position().y() <= 44:
-            child = self.childAt(event.position().toPoint())
-            if child is None or not isinstance(child, QPushButton):
+        point = event.position().toPoint()
+        if event.button() == Qt.LeftButton and self._header.geometry().contains(point):
+            child = self.childAt(point)
+            if not isinstance(child, QPushButton):
                 self._drag_offset = (event.globalPosition().toPoint()
                                      - self.frameGeometry().topLeft())
                 event.accept()
@@ -3532,10 +3935,6 @@ class AdvancedDialog(QDialog):
     def mouseReleaseEvent(self, event):
         self._drag_offset = None
         super().mouseReleaseEvent(event)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        _apply_windows_effects(self, dark=True)
 
     def _notify_cfg_from_widgets(self) -> dict:
         cfg = dict(self.cfg)

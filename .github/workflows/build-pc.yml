@@ -28,14 +28,48 @@ jobs:
           sha=$(git rev-parse --short HEAD)
           printf 'SHA = "%s"\n' "$sha" > pc/build_stamp.py
           cat pc/build_stamp.py
-
       - name: Install PyInstaller
         run: pip install pyinstaller
       - name: Build exe
-        run: pyinstaller --noconfirm --clean --onefile --windowed --icon pc/app.ico --add-data "pc/app.png;." --name DPPP pc/dpgrabber_pc.py
+        run: pyinstaller --noconfirm --clean --onefile --windowed --runtime-tmpdir .DPPP-runtime --icon pc/app.ico --add-data "pc/app.png;." --name DPPP pc/dpgrabber_pc.py
+      - name: Validate frozen UI with synthetic data
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'dist/DPPP.exe').Path
+          $expected = (git rev-parse --short HEAD).Trim()
+          $cases = @(
+            @{Name='main'; Flag='--smoke-test'; Size=''},
+            @{Name='compact'; Flag='--smoke-test'; Size='640x480'},
+            @{Name='advanced'; Flag='--smoke-advanced'; Size=''}
+          )
+          foreach ($case in $cases) {
+            $folder = Join-Path $PWD.Path "artifacts/ui/$($case.Name)"
+            $arguments = @($case.Flag, '--smoke-output', $folder)
+            if ($case.Size) { $arguments += @('--smoke-size', $case.Size) }
+            $p = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $PWD.Path -PassThru
+            if (-not $p.WaitForExit(30000)) {
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              throw "Frozen UI validation timed out: $($case.Name)"
+            }
+            if ($p.ExitCode -ne 0) { throw "Frozen UI validation failed: $($case.Name), exit $($p.ExitCode)" }
+            $report = Get-Content (Join-Path $folder 'geometry.json') -Raw | ConvertFrom-Json
+            if ($report.build -ne $expected) { throw 'UI build stamp does not match this commit' }
+            if (-not $report.synthetic_data -or $report.errors.Count -gt 0) { throw 'UI geometry validation failed' }
+            if ($report.platform -ne 'windows') { throw 'Expected the native Windows Qt platform' }
+            Write-Output "UI validated: $($case.Name), build=$($report.build), size=$($report.window -join 'x')"
+          }
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
           name: DPPP-exe
           path: dist/DPPP.exe
           if-no-files-found: error
+      - name: Upload UI validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DPPP-UI-review
+          path: artifacts/ui/**
+          if-no-files-found: warn
