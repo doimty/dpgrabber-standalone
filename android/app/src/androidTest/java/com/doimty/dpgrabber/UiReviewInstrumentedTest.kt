@@ -668,6 +668,7 @@ class UiReviewInstrumentedTest {
         assertNotNull("真实详情应可见", full)
         val expected = com.doimty.dpgrabber.engine.HistoryFormatter.details(payload, id, "92", stamp, OutcomeType.UNKNOWN, "合成待核验原因")
         assertEquals("详情必须包含完整长备注和独立订单ID", expected, full!!.text)
+        capture("history-details-full-top")
         val detailScroller = UiScrollable(UiSelector().description("订单详情滚动区域"))
         assertTrue(detailScroller.scrollIntoView(UiSelector().text("复制完整订单信息")))
         device.findObject(By.text("复制完整订单信息")).click()

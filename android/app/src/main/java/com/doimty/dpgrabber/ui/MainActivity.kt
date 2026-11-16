@@ -159,6 +159,8 @@ class MainActivity : AppCompatActivity() {
      */
     private fun configureWindowInsets() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, binding.root).isAppearanceLightStatusBars =
+            resources.getBoolean(R.bool.light_system_bars)
         if (Build.VERSION.SDK_INT >= 27) {
             window.navigationBarColor = ContextCompat.getColor(this, R.color.surface)
             WindowCompat.getInsetsController(window, binding.root).isAppearanceLightNavigationBars =
@@ -1048,25 +1050,34 @@ class MainActivity : AppCompatActivity() {
         }
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val heading = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(-1, -2)
         }
         val title = TextView(this).apply {
-            setTextAppearance(this@MainActivity, R.style.CardTitle)
+            setTextAppearance(R.style.CardTitle)
             text = HistoryFormatter.outcomeLabel(entry.outcome)
-            layoutParams = LinearLayout.LayoutParams(-1, -2)
-            setOnLongClickListener {
-                showHistoryLongPressMenu(entry, HistoryFormatter.orderNumber(entry.order, entry.orderId))
-                true
-            }
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            setTextColor(com.google.android.material.color.MaterialColors.getColor(this,
+                if (entry.outcome == OutcomeType.FAILED || entry.outcome == OutcomeType.RISK)
+                    com.google.android.material.R.attr.colorError else com.google.android.material.R.attr.colorPrimary))
         }
         val amount = TextView(this).apply {
-            setTextAppearance(this@MainActivity, R.style.CardTitle)
+            setTextAppearance(R.style.CardTitle)
             text = HistoryFormatter.amount(entry.order)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8.dp() }
+            textSize = 20f
+            gravity = android.view.Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, -2, 2f)
         }
         heading.addView(title)
         heading.addView(amount)
+        heading.addView(historyButton("⋮", outlined = false) {
+            showHistoryLongPressMenu(entry, HistoryFormatter.orderNumber(entry.order, entry.orderId))
+        }.apply {
+            contentDescription = "更多操作"
+            textSize = 22f
+            layoutParams = LinearLayout.LayoutParams(48.dp(), 48.dp()).apply { marginStart = 4.dp() }
+        })
         content.addView(heading)
         val metadata = TextView(this).apply {
             setTextAppearance(this@MainActivity, R.style.CardBody)
@@ -1085,26 +1096,23 @@ class MainActivity : AppCompatActivity() {
             ellipsize = android.text.TextUtils.TruncateAt.END
             contentDescription = "备注摘要，完整内容请查看详情"
         })
-        val copyWechat = historyButton("复制微信号") {
-            if (isCurrentHistoryAccount(entry)) copyToClipboard("微信号", HistoryFormatter.wechatValue(entry.order))
-        }.apply { isEnabled = HistoryFormatter.wechatValue(entry.order).isNotBlank() }
-        content.addView(copyWechat)
-        val details = historyButton("查看详情") { showHistoryDetails(entry) }
-        details.setOnLongClickListener {
-            showHistoryLongPressMenu(entry, orderNumber)
-            true
-        }
-        content.addView(details)
-        content.addView(MaterialButton(androidx.appcompat.view.ContextThemeWrapper(this, R.style.BtnText)).apply {
-            text = "更多操作"
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8.dp() }
-            minHeight = 48.dp()
-            minimumHeight = 48.dp()
-            setOnClickListener { showHistoryLongPressMenu(entry, orderNumber) }
-        })
         if (entry.outcome != OutcomeType.SUCCESS) {
             content.addView(historyField("原因", HistoryFormatter.text(entry.reason).ifBlank { "原因未提供" }))
         }
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 12.dp() }
+        }
+        actions.addView(historyButton("复制微信号") {
+            if (isCurrentHistoryAccount(entry)) copyToClipboard("微信号", HistoryFormatter.wechatValue(entry.order))
+        }.apply {
+            isEnabled = HistoryFormatter.wechatValue(entry.order).isNotBlank()
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = 8.dp() }
+        })
+        actions.addView(historyButton("查看详情", outlined = false) { showHistoryDetails(entry) }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        })
+        content.addView(actions)
         card.addView(content)
         val longPress = View.OnLongClickListener {
             if (isCurrentHistoryAccount(entry)) showHistoryLongPressMenu(entry, orderNumber)
@@ -1129,12 +1137,31 @@ class MainActivity : AppCompatActivity() {
     private fun isCurrentHistoryAccount(entry: HistoryStore.Entry): Boolean =
         !isDestroyed && entry.account == HistoryStore.accountKey(store.loadPhone())
 
-    private fun historyButton(label: String, action: () -> Unit): MaterialButton =
-        MaterialButton(androidx.appcompat.view.ContextThemeWrapper(this, R.style.BtnOutlined)).apply {
+    private fun historyButton(label: String, outlined: Boolean = true, action: () -> Unit): MaterialButton =
+        MaterialButton(this).apply {
             text = label
+            isAllCaps = false
+            textSize = 14f
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8.dp() }
             minHeight = 48.dp()
             minimumHeight = 48.dp()
+            minWidth = 0
+            minimumWidth = 0
+            insetTop = 0
+            insetBottom = 0
+            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
+            cornerRadius = 12.dp()
+            val primary = com.google.android.material.color.MaterialColors.getColor(this, com.google.android.material.R.attr.colorPrimary)
+            val secondary = com.google.android.material.color.MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant)
+            setTextColor(android.content.res.ColorStateList(
+                arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+                intArrayOf(secondary, primary)))
+            backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.TRANSPARENT)
+            strokeWidth = if (outlined) 1.dp() else 0
+            strokeColor = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutlineVariant))
+            rippleColor = android.content.res.ColorStateList.valueOf(
+                androidx.core.graphics.ColorUtils.setAlphaComponent(primary, 28))
             setOnClickListener { action() }
         }
 

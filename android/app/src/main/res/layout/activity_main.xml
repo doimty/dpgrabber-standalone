@@ -615,10 +615,6 @@
                     android:paddingBottom="24dp">
 
                     <TextView
-                        style="@style/CardTitle"
-                        android:text="@string/section_history" />
-
-                    <TextView
                         android:id="@+id/historySummary"
                         style="@style/CardBody"
                         android:layout_marginTop="6dp"
