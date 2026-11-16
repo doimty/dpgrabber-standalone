@@ -1657,7 +1657,7 @@ class App(QMainWindow):
         """success / failed / skipped / unknown counts for today."""
         counts = {"success": 0, "failed": 0, "skipped": 0, "unknown": 0}
         try:
-            entries = history_mod.load_history()
+            entries = self._history_entries()
         except Exception:
             entries = []
         today = time.strftime("%Y-%m-%d")
@@ -1975,6 +1975,11 @@ class App(QMainWindow):
             header = QHBoxLayout()
             header.addWidget(self._section_title("接单历史"))
             header.addStretch(1)
+            self.all_accounts_check = QCheckBox("全部账号")
+            self.all_accounts_check.setObjectName("sidebarCheck")
+            self.all_accounts_check.setChecked(bool(getattr(self, "_history_show_all", False)))
+            self.all_accounts_check.toggled.connect(self._on_history_scope_toggled)
+            header.addWidget(self.all_accounts_check)
             header.addWidget(self._secondary_button("清空历史", self._on_clear_history))
             main_layout.addLayout(header)
         card = self._card()
@@ -1986,6 +1991,11 @@ class App(QMainWindow):
         if tabbed:
             card_layout.addWidget(self.history_list, 1)
             clear_row = QHBoxLayout()
+            self.all_accounts_check = QCheckBox("全部账号")
+            self.all_accounts_check.setObjectName("sidebarCheck")
+            self.all_accounts_check.setChecked(bool(getattr(self, "_history_show_all", False)))
+            self.all_accounts_check.toggled.connect(self._on_history_scope_toggled)
+            clear_row.addWidget(self.all_accounts_check)
             clear_row.addWidget(self._secondary_button("清空历史", self._on_clear_history))
             clear_row.addStretch(1)
             card_layout.addLayout(clear_row)
@@ -2009,7 +2019,14 @@ class App(QMainWindow):
             "createTime": str(order.get("createTime") or ""),
             "outcome": outcome,
             "reason": reason or "",
+            # 历史按账号区分：老条目没有这个字段，只在"全部账号"里出现
+            "account": str(self.cfg.get("phone") or ""),
+            "clerk": str(getattr(self, "_clerk_name", "") or ""),
         }
+
+    def _on_history_scope_toggled(self, checked: bool):
+        self._history_show_all = bool(checked)
+        self._refresh_history()
 
     def _on_history_entry(self, entry: dict):
         """UI-thread slot: persist one history entry and refresh the list."""
@@ -2019,12 +2036,26 @@ class App(QMainWindow):
             pass
         self._refresh_history()
 
+    def _history_entries(self, all_accounts: bool | None = None):
+        """按当前账号过滤历史；all_accounts=True 时返回全部。"""
+        entries = history_mod.load_history()
+        if all_accounts is None:
+            all_accounts = bool(getattr(self, "_history_show_all", False))
+        if all_accounts:
+            return entries
+        phone = str(self.cfg.get("phone") or "")
+        if not phone:
+            return entries
+        # 老条目（加账号字段之前写的）account 为空，归到当前视图，避免突然消失
+        return [e for e in entries
+                if str(e.get("account") or "") in ("", phone)]
+
     def _refresh_history(self):
         self._refresh_stats()
         self._refresh_last_order()
         """Rebuild the history rows from the stored file, newest first."""
         self.history_list.clear()
-        entries = history_mod.load_history()
+        entries = self._history_entries()
         if not entries:
             item = QListWidgetItem("暂无接单记录，抢到单后会自动出现在这里")
             item.setTextAlignment(Qt.AlignCenter)
@@ -2047,6 +2078,9 @@ class App(QMainWindow):
         outcome = str(entry.get("outcome") or "success")
         reason = str(entry.get("reason") or "")
         label, color = _outcome_label(outcome, self._palette)
+        if getattr(self, "_history_show_all", False):
+            who = str(entry.get("clerk") or entry.get("account") or "未标记")
+            label = "%s · %s" % (who, label)
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(2, 4, 2, 4)
