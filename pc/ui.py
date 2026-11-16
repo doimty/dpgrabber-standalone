@@ -884,24 +884,37 @@ class App(QMainWindow):
 
     GOLDEN = 1.6180339887
 
-    #: 窄于这个宽度就把侧栏收起来（表单和日志优先）
-    NARROW_WIDTH = 980
+    def _sidebar_needed_width(self) -> int:
+        """三栏都放得下所需的最小窗口宽度（由控件自身最小宽度推出来）。"""
+        host = getattr(self, "_sidebar_host", None)
+        wrap = getattr(self, "_form_wrap", None)
+        if host is None or wrap is None:
+            return 0
+        sidebar_min = max(212, host.minimumSizeHint().width())
+        form_min = max(332, wrap.minimumSizeHint().width())
+        right_min = 260
+        return sidebar_min + form_min + right_min + 24 + 28   # 间隙 + 左右边距
 
     def _apply_responsive(self):
-        """侧栏宽度按窗口比例走，窄屏自动收起。"""
+        """侧栏宽度按窗口比例走；装不下三栏时收起侧栏，并保证有 ☰ 能叫回来。"""
         host = getattr(self, "_sidebar_host", None)
         sidebar = getattr(self, "_sidebar", None)
         if host is None or sidebar is None:
             return
         width = self.width()
-        narrow = width < self.NARROW_WIDTH
+        needed = self._sidebar_needed_width()
+        narrow = bool(needed) and width < needed
+        # 跨越断点时清掉手动选择，让宽屏回到默认显示
+        if getattr(self, "_last_narrow", None) != narrow:
+            self._sidebar_forced = None
+            self._last_narrow = narrow
         forced = getattr(self, "_sidebar_forced", None)
         visible = (not narrow) if forced is None else bool(forced)
         host.setVisible(visible)
         toggle = getattr(self, "_sidebar_toggle", None)
         if toggle is not None:
-            toggle.setVisible(narrow and forced is None)
-        # 侧栏按窗口宽度的 23.5% 取，夹在 210–300（原固定 279）
+            # 只要侧栏被藏起来就必须留入口，否则账号登录/监听控制都点不到
+            toggle.setVisible(not visible)
         target = int(round(width * 0.235))
         target = max(210, min(300, target))
         if host.width() != target:
@@ -910,7 +923,7 @@ class App(QMainWindow):
         return visible
 
     def _toggle_sidebar(self):
-        """窄屏下临时显示/隐藏侧栏。"""
+        """临时显示/隐藏侧栏（跨断点后自动恢复默认）。"""
         host = getattr(self, "_sidebar_host", None)
         if host is None:
             return
