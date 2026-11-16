@@ -5,6 +5,7 @@
 // so appending hops to the main actor.
 
 import Foundation
+import Combine
 
 // NOTE: no `import DPGrabberCore` here. The Xcode project compiles the
 // core sources and the app sources into one app target, so the core

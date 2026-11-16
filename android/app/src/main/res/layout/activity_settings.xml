@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/settingsScroll"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:clipToPadding="false"
+    android:fillViewport="true"
+    android:scrollbars="vertical">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -10,104 +14,548 @@
         android:orientation="vertical"
         android:padding="16dp">
 
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_shop_id" />
-
-        <EditText
-            android:id="@+id/shopIdInput"
-            style="@style/FieldInput"
-            android:inputType="number"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_request_timeout" />
-
-        <EditText
-            android:id="@+id/requestTimeoutInput"
-            style="@style/FieldInput"
-            android:inputType="numberDecimal"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_seen_ttl" />
-
-        <EditText
-            android:id="@+id/seenTtlInput"
-            style="@style/FieldInput"
-            android:inputType="numberDecimal"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/SectionTitle"
-            android:text="加解密密钥" />
-
-        <TextView
+        <!-- A 连接与请求 -->
+        <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/advanced_hint_keys"
-            android:textSize="13sp" />
+            style="@style/CardSurface">
 
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_aes_key" />
-
-        <EditText
-            android:id="@+id/aesKeyInput"
-            style="@style/FieldInput"
-            android:inputType="textNoSuggestions"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_aes_iv" />
-
-        <EditText
-            android:id="@+id/aesIvInput"
-            style="@style/FieldInput"
-            android:inputType="textNoSuggestions"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_aes_key_alt" />
-
-        <EditText
-            android:id="@+id/aesKeyAltInput"
-            style="@style/FieldInput"
-            android:inputType="textNoSuggestions"
-            android:maxLines="1" />
-
-        <TextView
-            style="@style/FieldLabel"
-            android:text="@string/label_aes_iv_alt" />
-
-        <EditText
-            android:id="@+id/aesIvAltInput"
-            style="@style/FieldInput"
-            android:inputType="textNoSuggestions"
-            android:maxLines="1" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingTop="16dp">
-
-            <TextView
-                android:layout_width="0dp"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/label_verify_tls"
-                android:textSize="14sp" />
+                android:orientation="vertical">
 
-            <Switch
-                android:id="@+id/verifyTlsSwitch"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-        </LinearLayout>
+                <LinearLayout
+                    android:id="@+id/headerConnection"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/group_expanded_hint">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/title_group_connection"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <ImageView
+                        android:id="@+id/chevronConnection"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_chevron_down"
+                        android:contentDescription="@string/group_expanded_hint"
+                        app:tint="?attr/colorOnSurfaceVariant" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/contentConnection"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="12dp">
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_shop_id" />
+
+                    <EditText
+                        android:id="@+id/shopIdInput"
+                        style="@style/FieldInput"
+                        android:inputType="number"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_request_timeout" />
+
+                    <EditText
+                        android:id="@+id/requestTimeoutInput"
+                        style="@style/FieldInput"
+                        android:inputType="numberDecimal"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_seen_ttl" />
+
+                    <EditText
+                        android:id="@+id/seenTtlInput"
+                        style="@style/FieldInput"
+                        android:inputType="numberDecimal"
+                        android:maxLines="1" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- B 加解密密钥（默认折叠） -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/CardSurface">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/headerKeys"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/group_collapsed_hint">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/title_group_keys"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <ImageView
+                        android:id="@+id/chevronKeys"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_chevron_down"
+                        android:contentDescription="@string/group_collapsed_hint"
+                        app:tint="?attr/colorOnSurfaceVariant" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/contentKeys"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="12dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/advanced_hint_keys"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_aes_key" />
+
+                    <EditText
+                        android:id="@+id/aesKeyInput"
+                        style="@style/FieldInput"
+                        android:inputType="textNoSuggestions"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_aes_iv" />
+
+                    <EditText
+                        android:id="@+id/aesIvInput"
+                        style="@style/FieldInput"
+                        android:inputType="textNoSuggestions"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_aes_key_alt" />
+
+                    <EditText
+                        android:id="@+id/aesKeyAltInput"
+                        style="@style/FieldInput"
+                        android:inputType="textNoSuggestions"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_aes_iv_alt" />
+
+                    <EditText
+                        android:id="@+id/aesIvAltInput"
+                        style="@style/FieldInput"
+                        android:inputType="textNoSuggestions"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/CardBody"
+                        android:paddingTop="8dp"
+                        android:text="@string/verify_tls_readonly" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- C 等待与节奏 -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/CardSurface">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/headerWait"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/group_expanded_hint">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/title_group_wait"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <ImageView
+                        android:id="@+id/chevronWait"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_chevron_down"
+                        android:contentDescription="@string/group_expanded_hint"
+                        app:tint="?attr/colorOnSurfaceVariant" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/contentWait"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="12dp">
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_shop_wait" />
+
+                    <EditText
+                        android:id="@+id/shopWaitInput"
+                        style="@style/FieldInput"
+                        android:inputType="textMultiLine"
+                        android:minLines="4" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_global_wait" />
+
+                    <EditText
+                        android:id="@+id/globalWaitInput"
+                        style="@style/FieldInput"
+                        android:inputType="numberDecimal"
+                        android:minHeight="48dp" />
+
+                    <TextView
+                        android:id="@+id/globalWaitHintText"
+                        style="@style/CardBody"
+                        android:text="@string/hint_global_wait" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_auto_wait_offset" />
+
+                    <EditText
+                        android:id="@+id/autoWaitOffsetInput"
+                        style="@style/FieldInput"
+                        android:inputType="numberDecimal|numberSigned"
+                        android:minHeight="48dp"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/CardBody"
+                        android:text="@string/hint_auto_wait_offset" />
+
+                    <TextView
+                        android:id="@+id/waitEffectiveText"
+                        style="@style/CardBody"
+                        android:paddingTop="8dp"
+                        android:paddingBottom="8dp"
+                        android:accessibilityLiveRegion="polite"
+                        android:text="@string/wait_effective_placeholder" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_busy_cooldown" />
+
+                    <EditText
+                        android:id="@+id/busyCooldownInput"
+                        style="@style/FieldInput"
+                        android:inputType="number"
+                        android:minHeight="48dp"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/CardBody"
+                        android:text="@string/hint_busy_cooldown" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- D 运行与自动化 -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/CardSurface">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/headerRun"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/group_expanded_hint">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/title_group_run"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <ImageView
+                        android:id="@+id/chevronRun"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_chevron_down"
+                        android:contentDescription="@string/group_expanded_hint"
+                        app:tint="?attr/colorOnSurfaceVariant" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/contentRun"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="12dp">
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_run_duration" />
+
+                    <EditText
+                        android:id="@+id/runDurationInput"
+                        style="@style/FieldInput"
+                        android:inputType="numberDecimal" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_rest_duration" />
+
+                    <EditText
+                        android:id="@+id/restDurationInput"
+                        style="@style/FieldInput"
+                        android:inputType="numberDecimal" />
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/autoStopSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="@string/label_auto_stop" />
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/onlineAfterLoginSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="@string/label_online_after_login" />
+
+                    <TextView
+                        style="@style/CardBody"
+                        android:paddingTop="8dp"
+                        android:text="@string/hint_single_account" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- E 推送与通知 -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/CardSurface">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/headerPush"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/group_expanded_hint">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/title_group_push"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <ImageView
+                        android:id="@+id/chevronPush"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_chevron_down"
+                        android:contentDescription="@string/group_expanded_hint"
+                        app:tint="?attr/colorOnSurfaceVariant" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/contentPush"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="12dp">
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/pushEnabledSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="@string/label_push_enabled" />
+
+                    <TextView
+                        style="@style/CardBody"
+                        android:text="@string/hint_push_channel" />
+
+                    <TextView
+                        style="@style/FieldLabel"
+                        android:text="@string/label_push_provider" />
+
+                    <Spinner
+                        android:id="@+id/pushProviderSpinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:entries="@array/push_providers" />
+
+                    <TextView
+                        android:id="@+id/pushSecretLabel"
+                        style="@style/FieldLabel"
+                        android:text="@string/label_push_secret_bark" />
+
+                    <EditText
+                        android:id="@+id/pushSecretInput"
+                        style="@style/FieldInput"
+                        android:inputType="textNoSuggestions"
+                        android:minHeight="48dp"
+                        android:maxLines="1" />
+
+                    <TextView
+                        android:id="@+id/barkServerLabel"
+                        style="@style/FieldLabel"
+                        android:text="@string/label_bark_server" />
+
+                    <EditText
+                        android:id="@+id/barkServerInput"
+                        style="@style/FieldInput"
+                        android:inputType="textUri"
+                        android:minHeight="48dp"
+                        android:maxLines="1"
+                        android:hint="@string/hint_bark_server" />
+
+                    <TextView
+                        android:id="@+id/pushKeyHint"
+                        style="@style/CardBody"
+                        android:text="@string/hint_push_key_bark" />
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/pushOnSuccessSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:checked="true"
+                        android:text="@string/label_push_on_success" />
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/pushOnFailureSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="@string/label_push_on_failure" />
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/pushOnRiskSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="@string/label_push_on_risk" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/pushTestButton"
+                        style="@style/BtnOutlined"
+                        android:layout_width="wrap_content"
+                        android:text="@string/btn_push_test" />
+
+                    <TextView
+                        android:id="@+id/pushStatusText"
+                        style="@style/CardBody"
+                        android:paddingTop="8dp"
+                        android:text="@string/push_status_hint" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
 
         <Button
             android:id="@+id/saveAdvancedButton"

@@ -1,205 +1,525 @@
-// DPGrabber iOS app - View model bridging the UI and DPGrabberCore.
-//
-// Responsibilities:
-// - Load/save DPGConfig (Application Support/DPGrabber/config.json).
-//   The password is NEVER written to the config file: it lives in the
-//   Keychain only, and config.password is cleared before every save.
-// - Build the ApiClient / ListenEngine from the current config.
-// - Start/stop listening, drive the silent-audio keep-alive, speak
-//   announcements, and post a local notification on a successful grab.
-// - Publish running state and a short status line for the UI.
-
 import Foundation
+import Combine
 import UserNotifications
+import UIKit
 
 @MainActor
 final class AppViewModel: ObservableObject {
-    // MARK: - Published UI state
-
-    @Published var config: DPGConfig
-    @Published var phone: String = ""
-    @Published var password: String = ""
-    @Published var isRunning: Bool = false
-    @Published var statusText: String = "未开始"
-    @Published var keepAliveText: String = "保活：未启动"
-    @Published var foundCount: Int = 0
-    @Published var grabbedCount: Int = 0
+    @Published var config: DPGConfig {
+        didSet { configurationChanged(from: oldValue) }
+    }
+    @Published var phone = "" { didSet { credentialsChanged() } }
+    @Published var password = "" { didSet { credentialsChanged() } }
+    @Published private(set) var isRunning = false
+    @Published private(set) var isStopping = false
+    @Published private(set) var isLoggingIn = false
+    @Published private(set) var isActing = false
+    @Published private(set) var isLoggedIn = false
+    @Published private(set) var isOnline = false
+    @Published private(set) var randomOrderEnabled = false
+    @Published private(set) var accountSummary = "尚未登录"
+    @Published private(set) var weeklyStats = WeeklyStatistics(raw: [:])
+    @Published private(set) var itemOptions: [ItemSwitchOption] = []
+    @Published private(set) var selectedItemIDs: Set<Int> = []
+    @Published private(set) var todayCounts: [OrderOutcome: Int] = [:]
+    @Published private(set) var statusText = "未开始"
+    @Published private(set) var listenIssue: String?
+    @Published private(set) var listenRetryAt: Date?
+    @Published private(set) var lastPollAt: Date?
+    @Published var keepAliveText = "仅限前台运行；进入后台停止新增请求，未决订单保存为未知"
+    @Published private(set) var foundCount = 0
+    @Published private(set) var grabbedCount = 0
+    @Published private(set) var historyRows: [OrderHistoryRecord] = []
+    @Published private(set) var storageReady = true
     @Published var lastError: String?
-
-    // MARK: - Services
-
     let logStore = LogStore()
     private let voice = VoiceAnnouncer()
-    private let keepAlive = AudioKeepAlive()
     private var engine: ListenEngine?
+    private var client: ApiClient?
+    private var history: OrderHistoryStore?
     private var pollTimer: Timer?
+    private var generation = UUID()
+    private var loginTask: Task<Void, Never>?
+    private var actionTask: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
+    private var clientIdentity: [String]?
+    private var persistedConfig = DPGConfig()
+    private var restoringConfig = false
+    private var configurationReady = true
+    private var foregroundActive = true
+    private var cleanupTaskID: UIBackgroundTaskIdentifier = .invalid
+
+    var isBusy: Bool { isStopping || isLoggingIn || isActing }
+    var accountEditingDisabled: Bool { isRunning || isBusy }
+    var connectionEditingDisabled: Bool { isRunning || isBusy }
+    var serverControlsDisabled: Bool { !isLoggedIn || isRunning || isBusy || !storageReady }
+    private var currentAccountID: String { loginPasswordDigest(phone.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    private var currentItemAccountKey: String { accountKeyForItemSwitch(phone) }
+    private var displayedItemScope: (account: String, shop: String)?
 
     init() {
-        var loaded: DPGConfig
+        var initial = DPGConfig()
+        var problem: String?
+        do { initial = try loadConfig() }
+        catch { problem = "配置读取失败；请保留原文件并检查，当前禁止业务操作" }
+        config = initial
+        persistedConfig = initial
+        configurationReady = problem == nil
+        if let saved = try? CredentialStore.load() { phone = saved.phone; password = saved.password }
+        voice.enabled = initial.voiceEnabled
         do {
-            loaded = try loadConfig()
-        } catch {
-            loaded = DPGConfig()
-        }
-        // The password is never persisted in the config file.
-        loaded.password = ""
-        self.config = loaded
-        if let saved = try? CredentialStore.load() {
-            phone = saved.phone
-            password = saved.password
-            if config.phone.isEmpty { config.phone = saved.phone }
-        } else if !config.phone.isEmpty {
-            phone = config.phone
-        }
-        voice.enabled = config.voiceEnabled
-        keepAlive.onStateChange = { [weak self] state in
-            Task { @MainActor in
-                self?.keepAliveText = "保活：\(state.rawValue)"
+            guard let url = defaultConfigURL()?.deletingLastPathComponent().appendingPathComponent("order-history.json") else {
+                throw ConfigError("无法定位历史存储")
             }
-        }
+            history = try OrderHistoryStore(url: url)
+            refreshHistory()
+        } catch { storageReady = false; problem = "历史文件读取失败；为保护未决订单，当前禁止业务操作" }
+        lastError = problem
     }
 
-    // MARK: - Credentials
+    private func connectionValues(_ cfg: DPGConfig) -> [String] {
+        [String(cfg.shopID), cfg.aesKeyHex, cfg.aesIVHex, cfg.aesKeyHexAlt, cfg.aesIVHexAlt]
+    }
+
+    private func identity() -> [String] {
+        [phone.trimmingCharacters(in: .whitespacesAndNewlines), loginPasswordDigest(password.trimmingCharacters(in: .whitespacesAndNewlines))] + connectionValues(config)
+    }
+
+    private func invalidateSession() {
+        client?.session = nil
+        client = nil
+        clientIdentity = nil
+        isLoggedIn = false
+        isOnline = false
+        randomOrderEnabled = false
+        accountSummary = "尚未登录"
+        weeklyStats = WeeklyStatistics(raw: [:])
+        itemOptions = []
+        selectedItemIDs = []
+        displayedItemScope = nil
+        listenIssue = nil
+        listenRetryAt = nil
+        lastPollAt = nil
+    }
+
+    private func credentialsChanged() {
+        // Views disable editing while a task is active. The identity check also protects programmatic changes.
+        if clientIdentity != nil, clientIdentity != identity() {
+            if isRunning || isLoggingIn || isActing { stopListening() }
+            invalidateSession()
+        }
+        refreshHistory()
+    }
+
+    private func configurationChanged(from previous: DPGConfig) {
+        guard !restoringConfig else { return }
+        if connectionValues(config) != connectionValues(previous) {
+            if connectionEditingDisabled {
+                restoreConfiguration(previous)
+                lastError = "请先停止任务，再修改店铺或协议参数"
+                return
+            }
+            invalidateSession()
+        }
+        _ = saveSettings()
+    }
+
+    private func restoreConfiguration(_ value: DPGConfig) {
+        restoringConfig = true
+        config = value
+        restoringConfig = false
+    }
+
+    @discardableResult
+    func saveSettings() -> Bool {
+        guard configurationReady else { lastError = "原配置未成功读取，暂不覆盖文件"; return false }
+        do {
+            let validated = try config.validated()
+            try saveConfig(validated)
+            persistedConfig = validated
+            restoreConfiguration(validated)
+            engine?.updateConfig(validated)
+            voice.enabled = validated.voiceEnabled
+            return true
+        } catch {
+            restoreConfiguration(persistedConfig)
+            lastError = "设置未保存，已恢复上次有效值"
+            return false
+        }
+    }
 
     func saveCredentials() {
+        guard !accountEditingDisabled else { lastError = "请先停止正在执行的任务"; return }
         do {
-            try CredentialStore.save(phone: phone, password: password)
-            config.phone = phone
-            log(.success, "账号已保存到钥匙串")
-        } catch {
-            lastError = error.localizedDescription
-            log(.error, "保存账号失败：\(error.localizedDescription)")
-        }
+            try CredentialStore.save(phone: phone.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+            logStore.append(.success, "账号已保存到本机钥匙串")
+        } catch { lastError = "账号保存失败，未确认持久化" }
     }
 
-    func clearCredentials() {
-        do {
-            try CredentialStore.delete()
-            phone = ""
-            password = ""
-            config.phone = ""
-            log(.info, "已清除保存的账号")
-        } catch {
-            lastError = error.localizedDescription
-            log(.error, "清除账号失败：\(error.localizedDescription)")
-        }
-    }
+    func clearCredentials() { stopWork(clearCredentials: true, background: false) }
 
-    // MARK: - Settings
-
-    /// Validate and persist the current config (password excluded).
-    func saveSettings() {
-        do {
-            var toSave = config
-            toSave.phone = phone
-            toSave.password = ""
-            toSave = try toSave.validated()
-            config = toSave
-            try saveConfig(toSave)
-            voice.enabled = toSave.voiceEnabled
-            log(.success, "设置已保存")
-        } catch {
-            lastError = error.localizedDescription
-            log(.error, "保存设置失败：\(error.localizedDescription)")
-        }
-    }
-
-    /// Restore the built-in AES key/IV pairs (primary + alternate).
     func resetAESKeys() {
-        config.aesKeyHex = defaultAESKeyHex
-        config.aesIVHex = defaultAESIVHex
-        config.aesKeyHexAlt = altAESKeyHex
-        config.aesIVHexAlt = altAESIVHex
-        log(.info, "AES 密钥已恢复为默认值")
+        guard !connectionEditingDisabled else { return }
+        var updated = config
+        updated.aesKeyHex = defaultAESKeyHex
+        updated.aesIVHex = defaultAESIVHex
+        updated.aesKeyHexAlt = altAESKeyHex
+        updated.aesIVHexAlt = altAESIVHex
+        config = updated
     }
 
-    // MARK: - Listening
+    func setShopWait(_ sid: String, seconds: Double) {
+        var updated = config
+        updated.confirmWaitByShop[sid] = seconds
+        config = updated
+    }
+
+    private func makeClient() -> ApiClient {
+        ApiClient(aesKeyHex: config.aesKeyHex, aesIVHex: config.aesIVHex,
+            aesKeyHexAlt: config.aesKeyHexAlt, aesIVHexAlt: config.aesIVHexAlt)
+    }
+
+    func login() {
+        guard foregroundActive, !isRunning, !isBusy, configurationReady, storageReady, history != nil, saveSettings() else {
+            if history == nil { lastError = "历史存储不可用，平台操作已禁用；请先恢复历史文件" }
+            return
+        }
+        let cleanPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = password
+        guard !cleanPhone.isEmpty, !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            lastError = "请填写手机号和密码"; return
+        }
+        invalidateSession()
+        let id = UUID()
+        generation = id
+        let fingerprint = identity()
+        let cfg = config
+        let api = makeClient()
+        isLoggingIn = true
+        statusText = "正在校验登录与店铺权限"
+        loginTask = Task { @MainActor in
+            defer { loginTask = nil; isLoggingIn = false }
+            do {
+                _ = try await api.sessionForAccount(phone: cleanPhone, password: secret, preferredShopID: cfg.shopID)
+                guard generation == id, !Task.isCancelled, foregroundActive, identity() == fingerprint else { api.session = nil; return }
+                client = api
+                clientIdentity = fingerprint
+                isLoggedIn = true
+                statusText = "已登录，店铺 \(api.session?.sid ?? "")"
+                if cfg.onlineAfterLogin { try await api.updateStatus(online: true, updateAutoOnline: false) }
+                guard generation == id, !Task.isCancelled else { return }
+                await refreshAccountData(api, id: id)
+            } catch {
+                guard generation == id, !Task.isCancelled else { return }
+                invalidateSession()
+                statusText = "登录未完成"
+                let reason = (error as? ApiError)?.safeDiagnostic ?? "登录或权限校验未完成"
+                lastError = reason
+                logStore.append(.error, "登录失败：\(reason)")
+            }
+        }
+    }
+
+    private func serverAction(_ operation: @escaping @MainActor (ApiClient) async throws -> Void) {
+        guard foregroundActive, configurationReady, storageReady, history != nil, !serverControlsDisabled, clientIdentity == identity(), let api = client, api.session != nil else {
+            lastError = "请先登录并停止监听，再进行平台操作"; return
+        }
+        let id = generation
+        isActing = true
+        actionTask = Task { @MainActor in
+            defer { actionTask = nil; isActing = false }
+            do {
+                try await operation(api)
+                guard generation == id, !Task.isCancelled, foregroundActive else { return }
+                await refreshAccountData(api, id: id)
+            } catch {
+                guard generation == id, !Task.isCancelled else { return }
+                if (error as? ApiError)?.kind == .auth { invalidateSession() }
+                let reason = (error as? ApiError)?.safeDiagnostic ?? "平台操作未完成"
+                lastError = reason + "。界面未应用本次更改，请刷新核验"
+                logStore.append(.warning, reason)
+            }
+        }
+    }
+
+    func setOnline(_ value: Bool) {
+        serverAction { api in try await api.updateStatus(online: value, updateAutoOnline: false) }
+    }
+
+    func setRandomOrder(_ value: Bool) {
+        serverAction { api in try await api.updateRandomOrderSwitch(enabled: value) }
+    }
+
+    func setItem(_ itemID: Int, enabled: Bool) {
+        guard let session = client?.session, itemOptions.contains(where: { $0.id == itemID }),
+              displayedItemScope?.account == currentItemAccountKey, displayedItemScope?.shop == session.sid else {
+            lastError = "请先刷新当前账号和店铺的接单类型"; return
+        }
+        var ids = selectedItemIDs
+        if enabled { ids.insert(itemID) } else { ids.remove(itemID) }
+        let chosen = ids.sorted()
+        let id = generation
+        let account = currentItemAccountKey
+        let fingerprint = identity()
+        serverAction { [weak self] api in
+            guard api.session == session else { return }
+            try await api.updateItemSwitch(switchID: itemID, enabledIDs: chosen)
+            guard let self, self.generation == id, !Task.isCancelled, self.foregroundActive,
+                  self.currentItemAccountKey == account, self.identity() == fingerprint,
+                  self.client === api, api.session == session else { return }
+            // 成功响应先落盘，即使随后资料刷新失败也保留本次有效选择。
+            try self.persistItemSelection(chosen, account: account, shop: session.sid)
+            self.selectedItemIDs = Set(chosen)
+        }
+    }
+
+    private func persistItemSelection(_ ids: [Int], account: String, shop: String) throws {
+        guard configurationReady, !account.isEmpty else { throw ConfigError("类型设置暂不可保存") }
+        var updated = config
+        updated.itemSwitchIds = Array(Set(ids)).sorted()
+        updated.itemSwitchAccountKey = account
+        updated.itemSwitchShopId = shop
+        updated = try updated.validated()
+        try saveConfig(updated)
+        persistedConfig = updated
+        restoreConfiguration(updated)
+        engine?.updateConfig(updated)
+    }
+
+    func refreshAccount() { serverAction { _ in } }
+
+    private func refreshAccountData(_ api: ApiClient, id: UUID) async {
+        guard let session = api.session else { return }
+        let itemAccount = currentItemAccountKey
+        let fingerprint = identity()
+        if displayedItemScope?.account != itemAccount || displayedItemScope?.shop != session.sid {
+            itemOptions = []
+            selectedItemIDs = []
+            displayedItemScope = nil
+        }
+        do {
+            let decoded = try await api.clerkGet(session: session)
+            guard generation == id, !Task.isCancelled, api.session == session else { return }
+            guard let clerk = extractClerk(decoded) else { throw ApiError(.api, "无有效店员身份") }
+            let raw = decoded["clerk"] as? [String: Any] ?? decoded["data"] as? [String: Any] ?? decoded
+            isOnline = parseCode(["code": raw["status"] ?? NSNull()]) == 1
+            if let value = raw["randomOrderSwitch"] as? Bool { randomOrderEnabled = value }
+            else if let value = raw["randomOrderSwitch"] as? String { randomOrderEnabled = value == "true" || value == "1" }
+            accountSummary = "\(clerk.name ?? "店员") · ID \(clerk.id) · 店铺 \(session.sid)"
+        } catch {
+            guard generation == id, !Task.isCancelled else { return }
+            if (error as? ApiError)?.kind == .auth { invalidateSession(); return }
+            accountSummary = "店员状态暂不可用；请重新刷新"
+        }
+        let week = PlatformWeek()
+        var rawStats: [String: Any] = [:]
+        var fallback: Int?
+        do {
+            let response = try await api.statisticsClerkOrder(startTime: week.startDate, endTime: week.endDate)
+            rawStats = response["list"] as? [String: Any] ?? [:]
+        } catch {
+            if Task.isCancelled { return }
+            if (error as? ApiError)?.kind == .auth {
+                guard generation == id else { return }; invalidateSession(); return
+            }
+        }
+        if rawStats.isEmpty {
+            do {
+                let response = try await api.orderList(startTime: week.startDateTime, endTime: week.endDateTime)
+                fallback = parseCode(["code": response["total"] ?? NSNull()]).flatMap { $0 >= 0 ? $0 : nil }
+            } catch { if Task.isCancelled { return } }
+        }
+        guard generation == id, !Task.isCancelled, api.session == session else { return }
+        weeklyStats = WeeklyStatistics(raw: rawStats, fallbackCount: fallback)
+        do {
+            let response = try await api.getItemSwitchList()
+            guard generation == id, !Task.isCancelled, foregroundActive, client === api,
+                  api.session == session, currentItemAccountKey == itemAccount, identity() == fingerprint else { return }
+            let selection = try parseItemSwitchSelection(response)
+            // 每次完整读取都更新，避免其他已授权客户端修改后本地筛选长期过期。
+            try persistItemSelection(selection.enabledIDs, account: itemAccount, shop: session.sid)
+            itemOptions = selection.options
+            selectedItemIDs = Set(selection.enabledIDs)
+            displayedItemScope = (itemAccount, session.sid)
+        } catch {
+            guard generation == id, !Task.isCancelled, client === api, api.session == session,
+                  currentItemAccountKey == itemAccount, identity() == fingerprint else { return }
+            if (error as? ApiError)?.kind == .auth { invalidateSession(); return }
+            // 同作用域的旧有效值保留；换号/换店已在入口清空，不能借刷新失败串用旧界面。
+            logStore.append(.warning, "接单类型读取或保存未完成，保留当前账号店铺的上次有效值")
+        }
+        refreshHistory()
+    }
 
     func startListening() {
-        let phone = phone.trimmingCharacters(in: .whitespaces)
-        let password = password.trimmingCharacters(in: .whitespaces)
-        guard !phone.isEmpty, !password.isEmpty else {
-            lastError = "请先填写手机号和密码"
-            log(.error, "请先填写手机号和密码")
-            return
+        guard foregroundActive, storageReady, !isRunning, !isBusy, engine == nil, saveSettings() else { return }
+        guard let history, let api = client, api.session != nil, isLoggedIn, clientIdentity == identity() else {
+            lastError = "请先登录并确认店铺权限及历史存储"; return
         }
-        do {
-            var cfg = config
-            cfg.phone = phone
-            cfg = try cfg.validated()
-            config = cfg
-        } catch {
-            lastError = error.localizedDescription
-            log(.error, "设置无效：\(error.localizedDescription)")
-            return
-        }
-        requestNotificationPermission()
-        let client = ApiClient(
-            aesKeyHex: config.aesKeyHex, aesIVHex: config.aesIVHex,
-            aesKeyHexAlt: config.aesKeyHexAlt, aesIVHexAlt: config.aesIVHexAlt,
-            verifyTLS: config.verifyTLS
-        )
-        let engine = ListenEngine(
-            client: client,
-            config: config,
-            log: { [weak self] level, message in
-                Task { @MainActor in self?.handleEngineLog(level, message) }
-            },
-            speak: { [weak self] text in
-                Task { @MainActor in self?.voice.speak(text) }
+        let id = UUID()
+        generation = id
+        let worker = ListenEngine(client: api, config: config, log: { [weak self] level, message in
+            Task { @MainActor in
+                guard let self, self.generation == id else { return }
+                if message.hasPrefix("检测到新订单") { self.foundCount += 1 }
+                self.logStore.append(level, message)
+                self.isLoggedIn = api.session != nil
             }
-        )
-        engine.onGrabSuccess = { [weak self] order in
-            Task { @MainActor in self?.handleGrabSuccess(order) }
+        }, speak: { [weak self] text in
+            Task { @MainActor in
+                guard let self, self.generation == id else { return }
+                self.voice.speak(text)
+            }
+        }, history: history)
+        worker.onPollStatus = { [weak self] status in
+            Task { @MainActor in
+                guard let self, self.generation == id else { return }
+                self.listenIssue = status.issue
+                self.listenRetryAt = status.retryAt
+                if let time = status.lastSuccessAt { self.lastPollAt = time }
+                if status.issue != nil {
+                    self.statusText = status.retryAt == nil ? "监听已暂停" : "连接待恢复"
+                } else { self.statusText = "正在监听" }
+            }
         }
-        self.engine = engine
-        foundCount = 0
-        if engine.start(phone: phone, password: password) {
+        worker.onHistoryChange = { [weak self] in Task { @MainActor in self?.refreshHistory() } }
+        worker.onPersistenceFailure = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.generation == id || self.isStopping else { return }
+                self.storageReady = false
+                self.lastError = "历史写入失败，平台操作已锁定；请保留文件并恢复存储后重启核验"
+            }
+        }
+        worker.onGrabSuccess = { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.generation == id, self.foregroundActive else { return }
+                self.statusText = "接单成功，已保存历史"
+                self.refreshHistory()
+                self.postGrabNotification()
+            }
+        }
+        engine = worker
+        if worker.start(phone: phone, password: password) {
+            listenIssue = nil
+            listenRetryAt = nil
+            lastPollAt = nil
             isRunning = true
-            statusText = "监听中"
-            keepAlive.start()
+            foundCount = 0
+            statusText = "正在检查订单连接，请保持前台"
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
             startPollTimer()
-            log(.info, "开始监听（店铺 \(config.shopID)）")
-        } else {
-            lastError = "监听已在运行"
+        } else { engine = nil; lastError = "监听无法启动，请检查设置" }
+    }
+
+    func stopListening() { stopWork(clearCredentials: false, background: false) }
+
+    private func stopWork(clearCredentials: Bool, background: Bool) {
+        // Entering the background while an earlier stop is awaiting cleanup still needs a bounded cleanup budget.
+        if background, cleanupTaskID == .invalid,
+           isStopping || engine != nil || loginTask != nil || actionTask != nil {
+            cleanupTaskID = UIApplication.shared.beginBackgroundTask(withName: "Finish stopping order task") { [weak self] in
+                Task { @MainActor in self?.endBackgroundCleanup() }
+            }
+        }
+        guard !isStopping else { return }
+        let stopID = UUID()
+        generation = stopID
+        let previous = engine
+        let pendingLogin = loginTask
+        let pendingAction = actionTask
+        pendingLogin?.cancel()
+        pendingAction?.cancel()
+        previous?.stop()
+        isStopping = true
+        isRunning = false
+        stopPollTimer()
+        voice.stop()
+        shutdownTask = Task { @MainActor in
+            await pendingLogin?.value
+            await pendingAction?.value
+            await previous?.stopAndWait()
+            guard generation == stopID else { endBackgroundCleanup(); return }
+            engine = nil
+            listenRetryAt = nil
+            if clearCredentials {
+                invalidateSession()
+                phone = ""
+                password = ""
+                do {
+                    try CredentialStore.delete()
+                    // Settings never encode credentials. Do not overwrite a damaged settings file while clearing Keychain.
+                    statusText = configurationReady ? "账号已清除" : "钥匙串账号已清除；原配置仍保留待修复"
+                } catch { lastError = "凭据清理未完成，请重试"; statusText = "清理未完成" }
+            } else {
+                isLoggedIn = client?.session != nil && clientIdentity == identity()
+                statusText = background ? "后台已停止，返回后请手动启动" : "已停止，未知结果请核验历史"
+            }
+            isStopping = false
+            shutdownTask = nil
+            refreshHistory()
+            endBackgroundCleanup()
         }
     }
 
-    func stopListening() {
-        engine?.stop()
-        engine = nil
-        voice.stop()
-        keepAlive.stop()
-        stopPollTimer()
-        isRunning = false
-        statusText = "已停止"
-        log(.info, "已停止监听")
+    func enteredBackground() { foregroundActive = false; stopWork(clearCredentials: false, background: true) }
+    func enteredForeground() { foregroundActive = true; refreshHistory() }
+    private func endBackgroundCleanup() {
+        guard cleanupTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(cleanupTaskID)
+        cleanupTaskID = .invalid
     }
 
-    // MARK: - Private
+    func blacklist(_ row: OrderHistoryRecord) {
+        guard row.accountID == currentAccountID, !row.wechatID.isEmpty else { return }
+        var updated = config
+        updated.blacklist = Array(Set(updated.blacklist + [row.wechatID])).sorted()
+        config = updated
+    }
 
-    private func handleEngineLog(_ level: LogLevel, _ message: String) {
-        if message.hasPrefix("检测到新订单") { foundCount += 1 }
-        logStore.append(level, message)
-        if level == .error || level == .warning {
-            statusText = message
+    func blockMemo(_ row: OrderHistoryRecord) {
+        guard row.accountID == currentAccountID, !row.memo.isEmpty else { return }
+        var updated = config
+        updated.memoKeywords = Array(Set(updated.memoKeywords + [row.memo])).sorted()
+        config = updated
+    }
+
+    func verifyUnknown(_ row: OrderHistoryRecord) {
+        guard row.outcome == .unknown, row.accountID == currentAccountID, let api = client, api.session?.sid == row.shopID else {
+            lastError = "请登录此历史记录对应的账号和店铺后，只读核验"; return
+        }
+        serverAction { [weak self] api in
+            let clerkData = try await api.clerkGet()
+            guard let clerk = extractClerk(clerkData) else { throw ApiError(.api, "无法核验店员身份") }
+            let response = try await api.orderGet(orderID: row.orderID)
+            try Task.checkCancellation()
+            let verdict = reconcileOrder(response, ownClerkID: clerk.id)
+            guard let self else { return }
+            var updated = row
+            switch verdict.verdict {
+            case .ok: updated.outcome = .success; updated.reason = "手动只读核验为本人订单"
+            case .fail:
+                updated.outcome = verdict.reason.contains("他人") || verdict.reason.contains("其他人") ? .skipped : .failed
+                updated.reason = verdict.reason
+            case .pending, .unknown: updated.reason = "仍未确认归属；未再次提交"
+            }
+            guard let history = self.history else { throw ConfigError("历史存储不可用") }
+            do { try history.put(updated) }
+            catch {
+                self.storageReady = false
+                self.lastError = "核验结果保存失败，平台操作已锁定"
+                throw error
+            }
+            self.refreshHistory()
         }
     }
 
-    private func handleGrabSuccess(_ order: [String: Any]) {
-        grabbedCount += 1
-        statusText = "抢单成功"
-        postGrabNotification(order: order)
-        // The engine auto-stops on success; mirror that in the UI.
-        engine = nil
-        voice.stop()
-        keepAlive.stop()
-        stopPollTimer()
-        isRunning = false
-    }
-
-    private func log(_ level: LogLevel, _ message: String) {
-        logStore.append(level, message)
+    private func refreshHistory() {
+        guard !phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            historyRows = []; todayCounts = [:]; grabbedCount = 0; return
+        }
+        historyRows = history?.entries(accountID: currentAccountID) ?? []
+        todayCounts = history?.todayCounts(accountID: currentAccountID) ?? [:]
+        grabbedCount = todayCounts[.success] ?? 0
     }
 
     private func startPollTimer() {
@@ -207,35 +527,28 @@ final class AppViewModel: ObservableObject {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                let running = self.engine?.isRunning ?? false
-                if self.isRunning && !running {
-                    // Engine stopped on its own (grabbed, or a fatal error).
+                if self.isRunning, self.engine?.isRunning == false {
+                    let previous = self.engine
+                    await previous?.stopAndWait()
+                    guard self.engine === previous else { return }
                     self.isRunning = false
-                    self.keepAlive.stop()
+                    self.engine = nil
                     self.stopPollTimer()
-                    if self.statusText == "监听中" { self.statusText = "已停止" }
+                    self.refreshHistory()
+                    self.isLoggedIn = self.client?.session != nil && self.clientIdentity == self.identity()
+                    self.listenRetryAt = nil
+                    if self.listenIssue != nil { self.statusText = "监听已暂停" }
+                    else if self.statusText.hasPrefix("监听中") || self.statusText.hasPrefix("正在检查订单") || self.statusText == "正在监听" { self.statusText = "已停止" }
                 }
             }
         }
     }
-
-    private func stopPollTimer() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-    }
-
-    private func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-    }
-
-    private func postGrabNotification(order: [String: Any]) {
-        let amount = amountYuan(fromCents: order["totalAmount"])
+    private func stopPollTimer() { pollTimer?.invalidate(); pollTimer = nil }
+    private func postGrabNotification() {
         let content = UNMutableNotificationContent()
-        content.title = "抢单成功"
-        content.body = "已抢到一单，金额 \(String(format: "%.2f", amount)) 元，请去查看订单。"
+        content.title = "订单确认成功"
+        content.body = "已保存接单历史，请打开平台核对订单。"
         content.sound = .default
-        let request = UNNotificationRequest(identifier: "dpgrabber-grab-\(Date().timeIntervalSince1970)",
-                                            content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 }

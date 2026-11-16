@@ -25,7 +25,9 @@
 		BD039786D1DAF7A970015BDF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 598A3303FEE0B21D30900F11 /* Assets.xcassets */; };
 		337D39D65D0AA221346F41AE /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = D6B48328D53EC06163F3F6FE /* LaunchScreen.storyboard */; };
 		8F56A7F2D00D6F57F29049DB /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C8AB93F32D06E5645DD299B /* AVFoundation.framework */; };
+		516E375A0FE56CDA8CE3BA43 /* Combine.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59F2263EBAAABBEEFBF013F2 /* Combine.framework */; };
 		A1CC59899A85E7E3695E16B8 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 427EAAC8A37E70E7B8500FAC /* Security.framework */; };
+		B910DCB03DF97982BB370BB9 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F4EA1CF9F7A963BA26386298 /* UIKit.framework */; };
 		9FB3DCCE412588265C872AB1 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3634540E40EC6B996840B9EC /* UserNotifications.framework */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
@@ -49,7 +51,9 @@
 		8DC783DDD80BF3CBC7895DC1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D6B48328D53EC06163F3F6FE /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		5C8AB93F32D06E5645DD299B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		59F2263EBAAABBEEFBF013F2 /* Combine.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Combine.framework; path = System/Library/Frameworks/Combine.framework; sourceTree = SDKROOT; };
 		427EAAC8A37E70E7B8500FAC /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		F4EA1CF9F7A963BA26386298 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		3634540E40EC6B996840B9EC /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
 		63644F5BAC1EE147F09CC97C /* DPGrabber.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DPGrabber.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -59,7 +63,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				8F56A7F2D00D6F57F29049DB /* AVFoundation.framework */,
+				516E375A0FE56CDA8CE3BA43 /* Combine.framework */,
 				A1CC59899A85E7E3695E16B8 /* Security.framework */,
+				B910DCB03DF97982BB370BB9 /* UIKit.framework */,
 				9FB3DCCE412588265C872AB1 /* UserNotifications.framework */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -280,15 +286,15 @@
 			buildSettings = {
 			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Manual;
-			CURRENT_PROJECT_VERSION = 1;
+			CURRENT_PROJECT_VERSION = 3;
 			DEVELOPMENT_TEAM = "";
 			GENERATE_INFOPLIST_FILE = NO;
 			INFOPLIST_FILE = App/Info.plist;
 			LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-			MARKETING_VERSION = 1.0.0;
+			MARKETING_VERSION = 1.0.2;
 			PRODUCT_BUNDLE_IDENTIFIER = com.doimty.dpgrabber;
 			PRODUCT_NAME = "$(TARGET_NAME)";
-			SUPPORTED_PLATFORMS = iphoneos;
+			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			SWIFT_VERSION = 5.0;
 			TARGETED_DEVICE_FAMILY = 1;
 			DEBUG_INFORMATION_FORMAT = dwarf;
@@ -305,15 +311,15 @@
 			buildSettings = {
 			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Manual;
-			CURRENT_PROJECT_VERSION = 1;
+			CURRENT_PROJECT_VERSION = 3;
 			DEVELOPMENT_TEAM = "";
 			GENERATE_INFOPLIST_FILE = NO;
 			INFOPLIST_FILE = App/Info.plist;
 			LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-			MARKETING_VERSION = 1.0.0;
+			MARKETING_VERSION = 1.0.2;
 			PRODUCT_BUNDLE_IDENTIFIER = com.doimty.dpgrabber;
 			PRODUCT_NAME = "$(TARGET_NAME)";
-			SUPPORTED_PLATFORMS = iphoneos;
+			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			SWIFT_VERSION = 5.0;
 			TARGETED_DEVICE_FAMILY = 1;
 			DEBUG_INFORMATION_FORMAT = dwarf-with-dsym;

@@ -1,10 +1,17 @@
 name: iOS unsigned IPA
 
-# Builds the standalone iOS app: runs the DPGrabberCore unit tests
-# (SwiftPM, same tests that run on Linux), validates the hand-written
-# Xcode project, then builds an UNSIGNED .ipa with xcodebuild.
+# Builds the standalone iOS app with the Xcode 26 SDK (minimum deployment
+# target stays iOS 15.0): runs the DPGrabberCore unit tests (SwiftPM, same
+# tests that run on Linux), validates the hand-written Xcode project, then
+# builds an UNSIGNED .ipa with xcodebuild.
 # The IPA is not signed here: install it by re-signing with your own
 # signing tool, the same flow as the other standalone builds.
+#
+# A second job builds the Debug simulator app and captures the four tabs
+# (工作台 / 规则 / 记录 / 我的) in light and dark appearance on the newest
+# installed iOS 26.x runtime, plus iOS 18.x when the runner image provides
+# that runtime. The screenshots come from a real simulator run, never from
+# mockups, and the flow is offline: it never logs in or calls the backend.
 
 on:
   push:
@@ -18,15 +25,50 @@ on:
       - '.github/workflows/ios.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  # Verified in actions/runner-images: images/macos/macos-15-Readme.md and
+  # macos-15-arm64-Readme.md both list Xcode 26.3 (17C529) at
+  # /Applications/Xcode_26.3.app together with iOS 26.0-26.2 and
+  # iOS 18.0-18.5 simulator runtimes. macos-26 only ships iOS 26.x
+  # runtimes, so macos-15 (arm64 per the GitHub-hosted runner table) is
+  # used for both jobs to keep the legacy iOS 18 round.
+  XCODE_APP: /Applications/Xcode_26.3.app
+  IOS_BUNDLE_ID: com.doimty.dpgrabber
+  IOS_MIN_DEPLOYMENT_TARGET: '15.0'
+
 jobs:
   build:
+    name: Build unsigned IPA (Xcode 26)
     runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app || xcodebuild -version
+      - name: Select Xcode 26 (fail fast)
+        run: |
+          set -uo pipefail
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown} ($(uname -m))"
+          ls -d "$XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcode-select -p
+          # Write tool output to a file and parse the file. Any `tool | awk ... exit`
+          # pipeline can abort the tool with SIGABRT (exit 134) once awk closes the pipe.
+          VERSION_FILE="$RUNNER_TEMP/xcode-version.txt"
+          xcodebuild -version > "$VERSION_FILE" 2>&1 || echo "xcodebuild -version exited $?" >> "$VERSION_FILE"
+          cat "$VERSION_FILE"
+          if ! grep -E '^Xcode 26\.' "$VERSION_FILE" > /dev/null; then
+            echo "::error::expected an Xcode 26.x toolchain; see $VERSION_FILE"
+            exit 1
+          fi
+
+      - name: Report toolchain and simulator runtimes
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          xcrun simctl list runtimes
 
       - name: Validate Xcode project structure
         run: |
@@ -38,6 +80,21 @@ jobs:
         run: |
           cd ios
           swift test
+
+      - name: Assert minimum deployment target is still iOS 15.0
+        run: |
+          set -Eeuo pipefail
+          cd ios
+          # Read the project file directly: xcodebuild -showBuildSettings output
+          # formatting varies across Xcode versions, so parsing it is brittle.
+          grep -c "IPHONEOS_DEPLOYMENT_TARGET = ${IOS_MIN_DEPLOYMENT_TARGET};" DPGrabber.xcodeproj/project.pbxproj
+          test "$(grep -c "IPHONEOS_DEPLOYMENT_TARGET = ${IOS_MIN_DEPLOYMENT_TARGET};" DPGrabber.xcodeproj/project.pbxproj)" -ge 2
+          if grep -E "IPHONEOS_DEPLOYMENT_TARGET = [0-9]" DPGrabber.xcodeproj/project.pbxproj \
+            | grep -vE "IPHONEOS_DEPLOYMENT_TARGET = ${IOS_MIN_DEPLOYMENT_TARGET};"; then
+            echo "::error::a build configuration raised IPHONEOS_DEPLOYMENT_TARGET above ${IOS_MIN_DEPLOYMENT_TARGET}"
+            exit 1
+          fi
+          echo "every configuration keeps IPHONEOS_DEPLOYMENT_TARGET=${IOS_MIN_DEPLOYMENT_TARGET}"
 
       - name: Build unsigned app
         run: |
@@ -57,6 +114,9 @@ jobs:
           test -d "$APP"
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
+          MIN_OS="$(/usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist")"
+          echo "MinimumOSVersion=$MIN_OS"
+          test "$MIN_OS" = "$IOS_MIN_DEPLOYMENT_TARGET"
           rm -rf Payload DPGrabber-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
@@ -69,5 +129,94 @@ jobs:
         with:
           name: DPGrabber-ios-unsigned
           path: ios/DPGrabber-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+  ui-screenshots:
+    name: Simulator UI screenshots (iOS 26 + legacy)
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 (fail fast)
+        run: |
+          set -uo pipefail
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown} ($(uname -m))"
+          ls -d "$XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcode-select -p
+          # Never pipe a tool into `awk ... exit`: awk closes the pipe and the tool
+          # aborts with SIGABRT (exit 134). Write to a file, then parse the file.
+          VERSION_FILE="$RUNNER_TEMP/xcode-version.txt"
+          xcodebuild -version > "$VERSION_FILE" 2>&1 || echo "xcodebuild -version exited $?" >> "$VERSION_FILE"
+          cat "$VERSION_FILE"
+          xcrun simctl list runtimes > "$RUNNER_TEMP/sim-runtimes.txt" 2>&1 || true
+          cat "$RUNNER_TEMP/sim-runtimes.txt"
+          if ! grep -E '^Xcode 26\.' "$VERSION_FILE" > /dev/null; then
+            echo "::error::expected an Xcode 26.x toolchain; see $VERSION_FILE"
+            exit 1
+          fi
+
+      - name: Assert Debug configuration defines DEBUG
+        run: |
+          set -Eeuo pipefail
+          cd ios
+          SETTINGS_OUTPUT="$(xcodebuild -project DPGrabber.xcodeproj -scheme DPGrabber \
+            -configuration Debug -showBuildSettings 2>/dev/null || true)"
+          FLAGS="$(printf '%s\n' "$SETTINGS_OUTPUT" \
+            | awk -F' = ' '/SWIFT_ACTIVE_COMPILATION_CONDITIONS/{print $2; exit}')"
+          echo "SWIFT_ACTIVE_COMPILATION_CONDITIONS=$FLAGS"
+          case "$FLAGS" in
+            *DEBUG*) ;;
+            *) echo "::error::Debug build lacks the DEBUG compilation condition, -uiReviewTab would be ignored"; exit 1 ;;
+          esac
+
+      - name: Build Debug app for the simulator
+        run: |
+          set -Eeuo pipefail
+          cd ios
+          # The hand-written project declares SUPPORTED_PLATFORMS=iphoneos only, so
+          # `-destination generic/platform=iOS Simulator` cannot be resolved.
+          # Building with `-sdk iphonesimulator` plus the platform override is the
+          # reliable way to produce a simulator .app without touching the project.
+          xcodebuild -project DPGrabber.xcodeproj \
+            -scheme DPGrabber \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            SUPPORTED_PLATFORMS='iphoneos iphonesimulator' \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=- \
+            CONFIGURATION_BUILD_DIR=build/Debug-iphonesimulator \
+            build
+          test -d build/Debug-iphonesimulator/DPGrabber.app
+          # Recent simulator runtimes refuse to launch an app without a code
+          # signature (SBMainWorkspace denies the open request), so the simulator
+          # build is ad-hoc signed instead of unsigned. Print the signature for
+          # the record without failing the job on codesign's exit status.
+          /usr/bin/codesign -dv --verbose=2 build/Debug-iphonesimulator/DPGrabber.app 2>&1 | head -6 || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" build/Debug-iphonesimulator/DPGrabber.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" build/Debug-iphonesimulator/DPGrabber.app/Info.plist
+
+      - name: Capture tab screenshots (light/dark, iOS 26 + legacy)
+        run: |
+          set -Eeuo pipefail
+          bash ios/scripts/run-ios-ui-review.sh ios/build/ui-review
+
+      - name: Show screenshot summary
+        if: always()
+        run: |
+          test -f ios/build/ui-review/summary.md && cat ios/build/ui-review/summary.md || echo "summary.md not produced"
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-ui-screenshots
+          path: ios/build/ui-review
           if-no-files-found: error
           retention-days: 14

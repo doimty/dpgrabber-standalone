@@ -34,7 +34,7 @@ APP_FILES = [
     "CredentialStore.swift", "DPGrabberApp.swift", "LogStore.swift",
     "SettingsView.swift", "VoiceAnnouncer.swift",
 ]
-FRAMEWORKS = ["AVFoundation.framework", "Security.framework", "UserNotifications.framework"]
+FRAMEWORKS = ["AVFoundation.framework", "Combine.framework", "Security.framework", "UIKit.framework", "UserNotifications.framework"]
 
 
 def obj_id(seed: str) -> str:
@@ -331,15 +331,15 @@ def main() -> int:
     target_common = [
         ("ASSETCATALOG_COMPILER_APPICON_NAME", "AppIcon"),
         ("CODE_SIGN_STYLE", "Manual"),
-        ("CURRENT_PROJECT_VERSION", "1"),
+        ("CURRENT_PROJECT_VERSION", "3"),
         ("DEVELOPMENT_TEAM", ""),
         ("GENERATE_INFOPLIST_FILE", "NO"),
         ("INFOPLIST_FILE", "App/Info.plist"),
         ("LD_RUNPATH_SEARCH_PATHS", "$(inherited) @executable_path/Frameworks"),
-        ("MARKETING_VERSION", "1.0.0"),
+        ("MARKETING_VERSION", "1.0.2"),
         ("PRODUCT_BUNDLE_IDENTIFIER", "com.doimty.dpgrabber"),
         ("PRODUCT_NAME", "$(TARGET_NAME)"),
-        ("SUPPORTED_PLATFORMS", "iphoneos"),
+        ("SUPPORTED_PLATFORMS", "iphoneos iphonesimulator"),
         ("SWIFT_VERSION", "5.0"),
         ("TARGETED_DEVICE_FAMILY", "1"),
     ]

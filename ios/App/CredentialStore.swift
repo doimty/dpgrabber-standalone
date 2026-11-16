@@ -2,8 +2,7 @@
 //
 // The phone number and password are stored in the iOS Keychain only.
 // They are NEVER written to config.json or to UserDefaults.
-// Accessibility is "after first unlock" so the listening engine can
-// still read them when the app runs in the background.
+// 仅设备解锁时可读且不随备份迁移；摘要与原始密码同等敏感。
 
 import Foundation
 import Security
@@ -31,24 +30,40 @@ enum CredentialStore {
     private static let service = "com.doimty.dpgrabber"
     private static let phoneAccount = "phone"
     private static let passwordAccount = "password"
+    private static let credentialAccount = "credentials-v2"
 
-    /// Save (or replace) both items.
+    /// Store one atomic credential pair so a partial update cannot combine two accounts.
     static func save(phone: String, password: String) throws {
-        try saveItem(account: phoneAccount, value: phone)
-        try saveItem(account: passwordAccount, value: password)
+        let value = ["phone": phone, "password": password]
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        try saveItem(account: credentialAccount, value: String(decoding: data, as: UTF8.self))
+        guard let check = try loadItem(account: credentialAccount), check == String(decoding: data, as: UTF8.self) else {
+            throw CredentialStoreError.saveFailed(errSecIO)
+        }
+        try deleteItem(account: phoneAccount)
+        try deleteItem(account: passwordAccount)
     }
 
     /// Load both items. Returns nil when nothing was saved yet.
     static func load() throws -> SavedCredentials? {
-        guard let phone = try loadItem(account: phoneAccount) else { return nil }
-        let password = try loadItem(account: passwordAccount) ?? ""
+        if let encoded = try loadItem(account: credentialAccount) {
+            guard let data = encoded.data(using: .utf8),
+                  let pair = try JSONSerialization.jsonObject(with: data) as? [String: String],
+                  let phone = pair["phone"], let password = pair["password"] else { throw CredentialStoreError.loadFailed(errSecDecode) }
+            return SavedCredentials(phone: phone, password: password)
+        }
+        guard let phone = try loadItem(account: phoneAccount), let password = try loadItem(account: passwordAccount),
+              !phone.isEmpty, !password.isEmpty else { return nil }
+        try save(phone: phone, password: password)
         return SavedCredentials(phone: phone, password: password)
     }
 
     /// Delete both items (ignoring "not found").
     static func delete() throws {
+        // Remove legacy pairs before v2; any failure leaves a coherent v2 pair and is reported.
         try deleteItem(account: phoneAccount)
         try deleteItem(account: passwordAccount)
+        try deleteItem(account: credentialAccount)
     }
 
     // MARK: - Private helpers
@@ -62,7 +77,7 @@ enum CredentialStore {
         ]
         var attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess { return }

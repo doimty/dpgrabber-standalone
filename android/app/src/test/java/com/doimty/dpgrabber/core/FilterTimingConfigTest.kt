@@ -100,6 +100,167 @@ class OrderFilterTest {
     }
 }
 
+class PcParityCoreTest {
+    private fun order() = JSONObject().put("id", "o").put("totalAmount", 2500)
+    private fun filter(vararg ids: Int) = OrderFilter(0.0, 0.0, 0, emptyList(), emptyList(), ids.toList())
+    private fun reject(block: () -> Unit) {
+        try { block(); org.junit.Assert.fail("应拒绝无效值") } catch (_: IllegalArgumentException) { }
+    }
+
+    @Test fun `忙碌优先于code0及成功文案`() {
+        for (code in listOf(0, 1, 2)) {
+            val result = classifyConfirm(JSONObject().put("code", code).put("msg", "确认成功，但同时接单数超过限制"))
+            assertEquals(ConfirmOutcome.BUSY, result.outcome)
+            assertEquals("同时接单名额已满，本次跳过", result.reason)
+        }
+    }
+
+    @Test fun `忙碌上限动态解析2和3和10`() {
+        for (cap in listOf(2, 3, 10)) {
+            val message = "同时接单数超过限制的 $cap 单"
+            assertEquals(cap, busyCapFrom(message) ?: -1)
+            assertTrue(classifyConfirm(JSONObject().put("code", 1).put("msg", message)).reason.contains("上限${cap}单"))
+        }
+    }
+
+    @Test fun `忙碌无数字和溢出均使用安全泛化原因`() {
+        for (message in listOf("接单数超过限制", "超过限制的999999999999999999999单", "超过限制的0单")) {
+            assertEquals(ConfirmOutcome.BUSY, classifyConfirm(JSONObject().put("code", 0).put("msg", message)).outcome)
+            assertEquals("同时接单名额已满，本次跳过", busyReason(message))
+        }
+    }
+
+    @Test fun `忙碌空msg回退message且不回显敏感负载`() {
+        val result = classifyConfirm(JSONObject().put("code", 0).put("msg", " ").put("message", "同时接单数超过限制的10单 private-payload"))
+        assertEquals(ConfirmOutcome.BUSY, result.outcome)
+        assertFalse(result.reason.contains("private-payload"))
+        assertTrue(result.reason.contains("10单"))
+    }
+
+    @Test fun `新配置旧JSON缺字段兼容`() {
+        val cfg = AppConfig.fromJson(JSONObject()).validate()
+        assertEquals(60, cfg.busyCooldownSec)
+        assertEquals(0.0, cfg.autoWaitOffset, 0.0)
+        assertTrue(cfg.itemSwitchIds.isEmpty())
+        assertEquals("", cfg.itemSwitchAccountKey)
+        assertEquals("", cfg.itemSwitchShopId)
+    }
+
+    @Test fun `新配置持久化去重且不存手机号和凭据`() {
+        val cfg = AppConfig(busyCooldownSec = 123, autoWaitOffset = -0.125,
+            itemSwitchIds = listOf(465, 2666, 465), itemSwitchAccountKey = accountKeyForPhone("10000000000"), itemSwitchShopId = "92").validate()
+        assertEquals(listOf(465, 2666), cfg.itemSwitchIds)
+        assertEquals(cfg, AppConfig.fromJson(cfg.toJson()).validate())
+        assertFalse(cfg.toJson().toString().contains("10000000000"))
+    }
+
+    @Test fun `忙碌冷却仅接受1至600整数`() {
+        for (bad in listOf(0, -1, 601)) reject { AppConfig(busyCooldownSec = bad).validate() }
+        for (bad in listOf(true, 2.5, "2.5", Long.MAX_VALUE)) reject { AppConfig.fromJson(JSONObject().put("busy_cooldown_sec", bad)).validate() }
+        assertEquals(1, AppConfig(busyCooldownSec = 1).validate().busyCooldownSec)
+        assertEquals(600, AppConfig(busyCooldownSec = 600).validate().busyCooldownSec)
+    }
+
+    @Test fun `偏移有限范围最多三小数`() {
+        for (bad in listOf(Double.NaN, Double.POSITIVE_INFINITY, -0.501, 0.501, 0.0001)) reject { AppConfig(autoWaitOffset = bad).validate() }
+        for (good in listOf(-0.5, 0.5, -0.001, 0.125, 0.0)) assertEquals(good, AppConfig(autoWaitOffset = good).validate().autoWaitOffset, 0.0)
+    }
+
+    @Test fun `配置类型列表必须正整数且作用域不能是手机号`() {
+        reject { AppConfig(itemSwitchIds = listOf(0)).validate() }
+        reject { AppConfig(itemSwitchAccountKey = "10000000000").validate() }
+        for (bad in listOf(true, 465.1, 465.0, "NaN", -1, Long.MAX_VALUE)) {
+            reject { AppConfig.fromJson(JSONObject().put("item_switch_ids", org.json.JSONArray().put(bad))).validate() }
+        }
+    }
+
+    @Test fun `已知店铺表等待叠加偏移并减年龄`() {
+        val now = 1700000000000L
+        for (sid in listOf("50", "105", "1391")) {
+            val cfg = AppConfig(autoWaitOffset = 0.125)
+            assertEquals(1.125, confirmWaitSeconds(order().put("createTime", now - 2000), sid, cfg, now), 0.000001)
+        }
+    }
+
+    @Test fun `92和其他店铺不受偏移影响`() {
+        val cfg = AppConfig(autoWaitOffset = -0.5, globalWaitSec = 1.0)
+        assertEquals(5.0, confirmWaitSeconds(order(), "92", cfg, 1700000000000L), 0.0)
+        assertEquals(1.0, confirmWaitSeconds(order(), "999", cfg, 1700000000000L), 0.0)
+    }
+
+    @Test fun `偏移全局fallback负目标夹零且年龄超出夹零`() {
+        val now = 1700000000000L
+        val cfg = AppConfig(confirmWaitByShop = emptyMap(), globalWaitSec = 0.2, autoWaitOffset = -0.5)
+        assertEquals(0.0, confirmWaitSeconds(order(), "105", cfg, now), 0.0)
+        assertEquals(0.7, confirmWaitSeconds(order(), "50", cfg.copy(autoWaitOffset = 0.5), now), 0.000001)
+        assertEquals(0.0, confirmWaitSeconds(order().put("createTime", now - 2000), "1391", cfg.copy(autoWaitOffset = 0.5), now), 0.0)
+    }
+
+    @Test fun `类型ID全部候选支持且ID优先于名称`() {
+        for (key in listOf("itemId", "itemSwitchId", "itemCategoryId", "typeId", "itemType", "serviceItemId", "categoryId")) {
+            val value = order().put(key, "2666").put("itemName", "语音")
+            assertFalse(filter(465).check(value).first)
+            assertTrue(filter(2666).check(value).first)
+        }
+    }
+
+    @Test fun `无效ID继续候选且不接受布尔小数和NaN`() {
+        for (bad in listOf(true, 465.0, 465.5, "465.0", "NaN", Long.MAX_VALUE)) {
+            val value = order().put("itemId", bad).put("typeId", 2666)
+            assertEquals(setOf(2666), orderItemIds(value))
+            assertFalse(filter(465).check(value).first)
+        }
+    }
+
+    @Test fun `类型名称各候选支持字符串数组和字典`() {
+        for (key in listOf("itemNames", "item_names", "itemName", "item_name", "items", "serviceNames", "serviceName", "itemCategoryName")) {
+            for (value in listOf("视频", org.json.JSONArray().put("视频"), JSONObject().put("name", "视频"), JSONObject().put("itemName", "视频"))) {
+                assertEquals(setOf(2666), orderItemIds(order().put(key, value)))
+                assertFalse(filter(465).check(order().put(key, value)).first)
+            }
+        }
+    }
+
+    @Test fun `默认映射收紧为连麦且语音词不再误判为465`() {
+        assertEquals(setOf(465), orderItemIds(order().put("itemName", "连麦")))
+        for (name in listOf("语音通话", "语音", "文字语音条")) {
+            assertTrue(orderItemIds(order().put("itemName", name)).isEmpty())
+        }
+        assertEquals(setOf(2666), orderItemIds(order().put("itemName", "视频")))
+        assertEquals(setOf(2667), orderItemIds(order().put("itemName", "游戏")))
+    }
+
+    @Test fun `多项类型任一交集可抢无交集拒绝`() {
+        val ids = order().put("itemId", org.json.JSONArray().put(465).put(2667))
+        assertTrue(filter(2667).check(ids).first)
+        assertFalse(filter(2666).check(ids).first)
+        val names = order().put("items", org.json.JSONArray().put(JSONObject().put("name", "语音")).put("视频"))
+        assertTrue(filter(2666).check(names).first)
+        assertFalse(filter(2667).check(names).first)
+    }
+
+    @Test fun `未知缺类型体验时长不猜且空启用列表兼容不限`() {
+        for (value in listOf(order(), order().put("itemName", "30分钟体验"), order().put("itemId", true))) assertTrue(filter(2666).check(value).first)
+        assertTrue(filter().check(order().put("itemId", 465)).first)
+    }
+
+    @Test fun `类型缓存必须同时匹配账号摘要与店铺`() {
+        val key = accountKeyForPhone("10000000000")
+        val cfg = AppConfig(itemSwitchIds = listOf(2666), itemSwitchAccountKey = key, itemSwitchShopId = "92")
+        val value = order().put("itemId", 465)
+        assertFalse(orderFilterFromConfig(cfg, ItemSwitchScope(key, "92")).check(value).first)
+        assertTrue(orderFilterFromConfig(cfg, ItemSwitchScope(accountKeyForPhone("10000000001"), "92")).check(value).first)
+        assertTrue(orderFilterFromConfig(cfg, ItemSwitchScope(key, "105")).check(value).first)
+        assertTrue(orderFilterFromConfig(cfg).check(value).first)
+        assertTrue(orderFilterFromConfig(cfg.copy(itemSwitchAccountKey = ""), ItemSwitchScope(key, "92")).check(value).first)
+    }
+
+    @Test fun `账号摘要使用trim与HistoryStore同算法`() {
+        val expected = java.security.MessageDigest.getInstance("SHA-256").digest("10000000000".toByteArray()).joinToString("") { "%02x".format(it.toInt() and 255) }
+        assertEquals(expected, accountKeyForPhone(" 10000000000 "))
+    }
+}
+
 class ConfirmLogicTest {
     private fun order(createTime: Any?): JSONObject {
         val o = JSONObject()
@@ -127,18 +288,18 @@ class ConfirmLogicTest {
     }
 
     @Test
-    fun `classify code zero wins`() {
-        assertEquals(
-            ConfirmOutcome.OK,
-            classifyConfirm(TestKit.plain("code" to 0, "msg" to "已被抢")).outcome
-        )
+    fun `classify code zero requires no contradicting terminal message`() {
+        assertEquals(ConfirmOutcome.OK, classifyConfirm(TestKit.plain("code" to 0)).outcome)
+        assertEquals(ConfirmOutcome.FAIL, classifyConfirm(TestKit.plain("code" to 0, "msg" to "已被抢")).outcome)
+        assertEquals(ConfirmOutcome.FAIL, classifyConfirm(TestKit.plain("code" to 1, "msg" to "订单已被其他人确认成功")).outcome)
+        assertEquals(ConfirmOutcome.RETRY, classifyConfirm(TestKit.plain("code" to 1, "msg" to "未确认成功")).outcome)
     }
 
     @Test
     fun `classify confirmed words`() {
         for (msg in listOf("已接单", "已确认", "接单成功", "确认成功")) {
             assertEquals(
-                ConfirmOutcome.OK,
+                ConfirmOutcome.VERIFY,
                 classifyConfirm(TestKit.plain("code" to 2, "msg" to msg)).outcome
             )
         }
@@ -180,13 +341,13 @@ class ConfirmLogicTest {
     }
 
     @Test
-    fun `reconcile status 2 and 3 are ok`() {
+    fun `reconcile status 2 and 3 without ownership remain unknown`() {
         assertEquals(
-            ReconcileVerdict.OK,
+            ReconcileVerdict.UNKNOWN,
             reconcileOrder(TestKit.plain("status" to 2), 5).verdict
         )
         assertEquals(
-            ReconcileVerdict.OK,
+            ReconcileVerdict.UNKNOWN,
             reconcileOrder(TestKit.plain("status" to 3), 5).verdict
         )
     }
@@ -207,9 +368,9 @@ class ConfirmLogicTest {
     }
 
     @Test
-    fun `reconcile no clerk check when own id unknown`() {
+    fun `reconcile cannot prove success when own id unknown`() {
         assertEquals(
-            ReconcileVerdict.OK,
+            ReconcileVerdict.UNKNOWN,
             reconcileOrder(TestKit.plain("status" to 2, "clerkId" to 99), 0).verdict
         )
     }
@@ -234,7 +395,7 @@ class ConfirmLogicTest {
         )
         assertEquals(
             ReconcileVerdict.PENDING,
-            reconcileOrder(JSONObject(), 5).verdict
+            reconcileOrder(TestKit.plain("status" to "0"), 5).verdict
         )
     }
 
@@ -264,7 +425,7 @@ class ConfirmLogicTest {
             "status" to 0,
             "data" to JSONObject().apply { put("status", 3) }
         )
-        assertEquals(ReconcileVerdict.OK, reconcileOrder(fromData, 5).verdict)
+        assertEquals(ReconcileVerdict.UNKNOWN, reconcileOrder(fromData, 5).verdict)
     }
 }
 
@@ -278,7 +439,7 @@ class ConfigTest {
         assertEquals(20.0, cfg.randomConfirmWindowSec, 0.001)
         assertEquals(20.0, cfg.randomConfirmFallbackSec, 0.001)
         assertEquals(0.5, cfg.confirmRetryDelaySec, 0.001)
-        assertEquals(0.5, cfg.pollIntervalSec, 0.001)
+        assertEquals(0.6, cfg.pollIntervalSec, 0.001)
         assertEquals(0, cfg.memoMode)
         assertEquals(15.0, cfg.requestTimeoutSec, 0.001)
         assertEquals(60.0, cfg.seenTtlSec, 0.001)
@@ -360,7 +521,7 @@ class ConfigTest {
     @Test
     fun `json round trip`() {
         val cfg = AppConfig(
-            phone = "13800138000", shopId = 55, minAmount = 5.0,
+            shopId = 55, minAmount = 5.0,
             memoKeywords = listOf("vip"), blacklist = listOf("wx9")
         )
         val restored = AppConfig.fromJson(cfg.toJson()).validate()

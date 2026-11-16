@@ -160,6 +160,20 @@ final class CryptoTests: XCTestCase {
         XCTAssertEqual(amountYuan(fromCents: nil), 0.0)
     }
 
+    func testCodeDecodingRejectsCFBooleanRatherThanSmallIntegerEncoding() throws {
+        for text in ["0", "1", "2", "401", "403", "1.0", "\"1\""] {
+            let raw = Data(("{\"code\":" + text + "}").utf8)
+            let decoded = try JSONSerialization.jsonObject(with: raw)
+            XCTAssertNotNil(parseCode(decoded), "Numeric code was rejected: \(text)")
+        }
+        for text in ["true", "false", "null", "1.5", "\"Infinity\""] {
+            let raw = Data(("{\"code\":" + text + "}").utf8)
+            XCTAssertNil(parseCode(try JSONSerialization.jsonObject(with: raw)))
+        }
+        XCTAssertEqual(parseCode(["code": NSNumber(value: Int8(1))]), 1)
+        XCTAssertNil(parseCode(["code": NSNumber(value: true)]))
+    }
+
     func testParseCode() {
         XCTAssertEqual(parseCode(["code": 0]), 0)
         XCTAssertEqual(parseCode(["code": "0"]), 0)

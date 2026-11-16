@@ -6,7 +6,11 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
+import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Fake transport: scripted responses keyed by method + path prefix.
@@ -395,7 +399,7 @@ class LoginFlowTest {
         val transport = FakeTransport()
         transport.scriptJson(
             "/s/duopei-account/login",
-            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "login-token") })
+            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "login-token"); put("shopId", 50) })
         )
         val shops = org.json.JSONArray().apply {
             put(JSONObject().apply { put("shopId", 55); put("accountId", "a55") })
@@ -409,7 +413,7 @@ class LoginFlowTest {
             "/s/duopei-account/switch-account",
             TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "shop-token") })
         )
-        transport.scriptJson("/s/balance/getBalance", TestKit.plain("code" to 0))
+        transport.script("/s/c/clerk/get", 200, """{"code":0,"clerk":{"id":7}}""")
         return transport
     }
 
@@ -446,7 +450,7 @@ class LoginFlowTest {
         val transport = FakeTransport()
         transport.scriptJson(
             "/s/duopei-account/login",
-            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "t") })
+            TestKit.plain("code" to 0, "data" to JSONObject().apply { put("token", "t"); put("shopId", 50) })
         )
         val shops = org.json.JSONArray().apply {
             put(JSONObject().apply { put("shopId", 92); put("accountId", "bad") })
@@ -465,7 +469,7 @@ class LoginFlowTest {
             200,
             """{"code":0,"data":{"token":"good-token"}}"""
         )
-        transport.scriptJson("/s/balance/getBalance", TestKit.plain("code" to 0))
+        transport.script("/s/c/clerk/get", 200, """{"code":0,"clerk":{"id":7}}""")
         val client = TestKit.client(transport)
         val session = client.sessionForAccount("13800138000", "secret", 92)
         assertEquals("good-token", session.token)
@@ -543,10 +547,90 @@ class RandomListTest {
     }
 
     @Test
-    fun `missing list is empty not fatal`() {
+    fun `missing list is rejected not fabricated empty`() {
         val transport = FakeTransport()
         transport.scriptJson("/s/c/order/randomList", TestKit.plain("code" to 0))
         val client = TestKit.client(transport)
-        assertEquals(0, client.randomList().length())
+        try { client.randomList(); org.junit.Assert.fail("应拒绝缺失列表") }
+        catch (error: ApiError) { assertEquals(ApiError.Kind.API, error.kind) }
+    }
+}
+
+class SessionExpiryTest {
+    @Test
+    fun `real http and business auth rejection clears only expired authentication`() {
+        for ((status, body) in listOf(401 to """{"code":401}""", 200 to """{"code":403}""")) {
+            val transport = FakeTransport()
+            transport.script("/s/c/clerk/get", status, body)
+            val client = TestKit.client(transport)
+            client.session = Session("expired", "92")
+            try {
+                client.clerkGet()
+                fail("认证拒绝必须向上报告")
+            } catch (error: ApiError) {
+                assertEquals(ApiError.Kind.AUTH, error.kind)
+            }
+            assertNull("真正的 HTTP / 业务认证拒绝不能当普通停止", client.session)
+        }
+    }
+
+    @Test
+    fun `transport failure and intentional cancellation preserve authentication`() {
+        val transport = object : HttpTransport {
+            override fun cancelAll() { }
+            override fun request(method: String, url: String, headers: Map<String, String>,
+                body: ByteArray?, contentType: String?, timeoutMs: Long): HttpResponse {
+                throw SocketTimeoutException("synthetic timeout")
+            }
+        }
+        val client = TestKit.client(transport)
+        val original = Session("valid", "92")
+        client.session = original
+        try {
+            client.clerkGet()
+            fail("网络错误必须向上报告")
+        } catch (error: ApiError) {
+            assertEquals(ApiError.Kind.NETWORK, error.kind)
+        }
+        assertTrue("网络错误不等于退出登录", client.session === original)
+        client.cancel()
+        try {
+            client.clerkGet()
+            fail("已取消客户端不能继续请求")
+        } catch (error: ApiError) {
+            assertEquals(ApiError.Kind.CANCELLED, error.kind)
+        }
+        assertTrue("停止传输不等于退出登录", client.session === original)
+    }
+
+    @Test
+    fun `late auth failure cannot erase replacement session`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val transport = object : HttpTransport {
+            override fun cancelAll() { }
+            override fun request(method: String, url: String, headers: Map<String, String>,
+                body: ByteArray?, contentType: String?, timeoutMs: Long): HttpResponse {
+                entered.countDown()
+                release.await()
+                return HttpResponse(401, """{"code":401}""".toByteArray(Charsets.UTF_8))
+            }
+        }
+        val client = TestKit.client(transport)
+        val original = Session("old", "92")
+        client.session = original
+        val worker = Thread {
+            try { client.clerkGet() } catch (error: ApiError) {
+                assertEquals(ApiError.Kind.AUTH, error.kind)
+            }
+        }
+        worker.start()
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        val replacement = Session("new", "92")
+        client.session = replacement
+        release.countDown()
+        worker.join(5_000)
+        assertFalse("迟到请求应已经结束", worker.isAlive)
+        assertTrue("旧请求迟到失败不得清掉新认证", client.session === replacement)
     }
 }

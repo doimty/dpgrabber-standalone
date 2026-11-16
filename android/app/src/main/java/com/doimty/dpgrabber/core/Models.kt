@@ -10,6 +10,8 @@ class ApiError(val kind: Kind, message: String) : Exception(message) {
     enum class Kind {
         /** 401/403 — login state invalid. */
         AUTH,
+        /** 明确的候选店铺店员权限拒绝，不代表账号会话失效。 */
+        PERMISSION,
         /** Business code 1 with "IP" in msg — IP control. */
         IP,
         /** Other business error or malformed response. */

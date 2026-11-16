@@ -1,578 +1,477 @@
-// DPGrabber iOS - Listening engine unit tests (offline, stub transport).
-//
-// The engine's clocks and sleeper are injected: `now` is fixed, the
-// sleeper returns immediately (and stops the engine after a bounded
-// number of sleeps, so looping tests terminate deterministically),
-// and `monotonic` can be a fake clock advanced by the sleeper, so
-// deadline tests run deterministically without real time.
-
 import XCTest
 @testable import DPGrabberCore
 
 final class EngineTests: XCTestCase {
-
-    private final class LogCapture {
-        private let lock = NSLock()
-        private var _entries: [(LogLevel, String)] = []
-        var entries: [(LogLevel, String)] { lock.withLock { _entries } }
-        func append(_ level: LogLevel, _ message: String) {
-            lock.withLock { _entries.append((level, message)) }
-        }
-        func contains(_ substring: String) -> Bool {
-            entries.contains { $0.1.contains(substring) }
-        }
+    private func client(_ stub: StubTransport) -> ApiClient {
+        let client = ApiClient(aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex, transport: stub)
+        client.session = DPGSession(token: "offline-token", sid: "92")
+        return client
     }
-
-    /// Fixed wall clock: 2026-11-12 12:00:00 UTC.
-    private let fixedNow: TimeInterval = 1_762_944_000.0
-
-    private func makeConfig() -> DPGConfig {
-        var cfg = DPGConfig()
-        cfg.minAmount = 10
-        cfg.maxAmount = 0
-        cfg.memoMode = 0
-        cfg.pollIntervalSec = 0.5
-        return cfg
-    }
-
-    /// A fake monotonic clock, advanced by the injected sleeper, so
-    /// confirm-deadline tests are deterministic (no real time).
-    private final class FakeClock: @unchecked Sendable {
-        private let lock = NSLock()
-        private var _now: TimeInterval
-        init(_ start: TimeInterval) { _now = start }
-        var now: TimeInterval { lock.withLock { _now } }
-        func advance(by seconds: TimeInterval) { lock.withLock { _now += seconds } }
-    }
-
-    /// A stub handler answering the whole login flow plus scripted
-    /// business calls. `orderScript` decides what randomList returns on
-    /// each call; `confirmScript` decides the confirm response body and
-    /// `confirmStatusScript` its HTTP status (default 200);
-    /// `orderGetScript` decides the order/get payload for readbacks
-    /// (default: the legacy precise-time detail, kept for tests that
-    /// never read back).
-    private func fullFlowStub(
-        orderScript: @escaping (Int) -> [[String: Any]],
-        confirmScript: @escaping (Int) -> [String: Any],
-        orderDetail: [String: Any]? = nil,
-        orderGetScript: ((Int) -> [String: Any])? = nil,
-        confirmStatusScript: ((Int) -> Int)? = nil
-    ) -> StubTransport {
+    private func stub(order: [String: Any] = ["id": "o1", "totalAmount": 2500], confirm: [String: Any] = ["code": 0]) -> StubTransport {
         let stub = StubTransport()
-        var pollCount = 0
-        var confirmCount = 0
-        var getCount = 0
-        var loginCount = 0
-        stub.handler = { _, url, _, body in
-            let path = url.path
-            switch path {
-            case "/s/duopei-account/login":
-                loginCount += 1
-                return (200, plainEnvelope(["code": 0, "data": ["token": "tok-login-\(loginCount)"]]))
-            case "/s/duopei-account/list-shop-account":
-                return (200, plainEnvelope(["code": 0, "data": [["shopId": 92, "accountId": "A92"]]]))
-            case "/s/duopei-account/switch-account":
-                return (200, plainEnvelope(["code": 0, "data": ["token": "tok-92"]]))
-            case "/s/balance/getBalance":
-                return (200, plainEnvelope(["code": 0]))
-            case "/s/c/clerk/get":
-                return (200, plainEnvelope(["code": 0, "clerk": ["id": 5, "shopId": 92, "name": "店员"]]))
-            case "/s/c/order/randomList":
-                pollCount += 1
-                return (200, plainEnvelope(["code": 0, "list": orderScript(pollCount)]))
-            case "/s/c/order/get":
-                getCount += 1
-                if let orderGetScript {
-                    return (200, plainEnvelope(["code": 0, "order": orderGetScript(getCount)]))
-                }
-                let detail = orderDetail ?? [
-                    "reTime": Int((self.fixedNow + 10) * 1000),
-                    "confirmCountDown": 5,
-                    "createTime": Int(self.fixedNow * 1000),
-                ]
-                return (200, plainEnvelope(["code": 0, "order": detail]))
-            case "/s/c/order/confirm":
-                confirmCount += 1
-                let status = confirmStatusScript?(confirmCount) ?? 200
-                return (status, plainEnvelope(confirmScript(confirmCount)))
-            default:
-                return (404, Data())
+        stub.handler = { _, url, _, _ in
+            switch url.path {
+            case "/s/c/clerk/get": return (200, plainEnvelope(["code": 0, "clerk": ["id": 5]]))
+            case "/s/c/order/randomList": return (200, plainEnvelope(["code": 0, "list": [order]]))
+            case "/s/c/order/confirm": return (200, plainEnvelope(confirm))
+            case "/s/c/order/get": return (200, plainEnvelope(["code": 0, "order": [:]]))
+            default: return (404, Data())
             }
         }
         return stub
     }
-
-    private func waitUntilStopped(_ engine: ListenEngine, timeout: TimeInterval = 5) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if !engine.isRunning { return true }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+    private func finish(_ engine: ListenEngine) async {
+        for _ in 0..<1000 {
+            if !engine.isRunning { break }
+            try? await Task.sleep(nanoseconds: 1_000_000)
         }
-        return !engine.isRunning
+        await engine.stopAndWait()
     }
 
-    /// Wait until `condition` holds (or the timeout passes).
-    private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 5) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+    func testSharedSessionAndSuccessHistoryAreIdempotent() async throws {
+        let transport = stub()
+        let history = try OrderHistoryStore()
+        let engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in true }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("login") }.count, 0)
+        XCTAssertEqual(history.all.count, 1)
+        XCTAssertEqual(history.all.first?.outcome, .success)
+        XCTAssertEqual(history.all.first?.shopID, "92")
+        XCTAssertFalse(history.all.first?.runID.isEmpty ?? true)
+        XCTAssertFalse(history.all.first?.attemptID.isEmpty ?? true)
+    }
+
+    func testSuccessIsPersistedBeforeNotification() async throws {
+        let transport = stub()
+        let history = OrderHistoryStore.inMemory()
+        var persistedAtCallback = false
+        let engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in true }, history: history)
+        engine.onGrabSuccess = { _ in persistedAtCallback = history.all.first?.outcome == .success }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertTrue(persistedAtCallback)
+    }
+
+    func testMissingOwnershipReadbackRemainsUnknown() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("order/confirm") { throw URLError(.timedOut) }
+            if url.path.contains("order/get") { return (200, plainEnvelope(["code": 0, "status": 2])) }
+            return try original(method, url, headers, body)
         }
-        return condition()
-    }
-
-    // MARK: - End to end
-
-    func testEngineGrabsSuccessfullyAndStops() async throws {
-        let order: [String: Any] = ["id": "ord-1", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { $0 == 1 ? [order] : [] },
-            confirmScript: { _ in ["code": 0] }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        var grabbed: [[String: Any]] = []
-        let engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in true }
-        )
-        engine.onGrabSuccess = { grabbed.append($0) }
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped, "engine did not stop after a successful grab")
-        XCTAssertEqual(grabbed.count, 1)
-        XCTAssertEqual(orderID(of: grabbed.first), "ord-1")
-        XCTAssertTrue(logs.contains("登录成功"))
-        XCTAssertTrue(logs.contains("尝试接单"))
-        XCTAssertTrue(logs.contains("抢单成功"))
-        // No order/get detail fetch: the confirm task starts immediately.
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/get") }.count, 0)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
-    }
-
-    func testEngineSkipsFilteredOrderWithoutConfirming() async throws {
-        let cheap: [String: Any] = ["id": "ord-cheap", "totalAmount": 500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { _ in [cheap] },
-            confirmScript: { _ in ["code": 0] }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        var engine: ListenEngine!
+        let history = OrderHistoryStore.inMemory()
         var sleeps = 0
-        engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in
-                sleeps += 1
-                if sleeps >= 3 { engine.stop(); return false }
-                return true
-            }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 0)
-        XCTAssertTrue(logs.contains("低于最低金额"))
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps > 4 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
     }
 
-    func testEngineRefreshesSessionOnAuthFailure() async throws {
-        let order: [String: Any] = ["id": "ord-2", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = StubTransport()
-        var pollCount = 0
-        var loginCount = 0
-        stub.handler = { _, url, _, _ in
-            switch url.path {
-            case "/s/duopei-account/login":
-                loginCount += 1
-                return (200, plainEnvelope(["code": 0, "data": ["token": "tok-\(loginCount)"]]))
-            case "/s/duopei-account/list-shop-account":
-                return (200, plainEnvelope(["code": 0, "data": [["shopId": 92, "accountId": "A92"]]]))
-            case "/s/duopei-account/switch-account":
-                return (200, plainEnvelope(["code": 0, "data": ["token": "tok-92"]]))
-            case "/s/balance/getBalance":
-                return (200, plainEnvelope(["code": 0]))
-            case "/s/c/clerk/get":
-                return (200, plainEnvelope(["code": 0, "clerk": ["id": 5, "shopId": 92, "name": "店员"]]))
-            case "/s/c/order/randomList":
-                pollCount += 1
-                if pollCount == 1 {
-                    // First poll fails with 401: the engine must re-login.
-                    return (200, plainEnvelope(["code": 401]))
+    func testStopDuringShopWaitDoesNotConfirmOrReadback() async throws {
+        let transport = stub()
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in engine.stop(); return true })
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") || $0.url.path.contains("order/get") })
+    }
+
+    func testStopInConfirmCannotPublishSuccessOrFinalReadback() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        var engine: ListenEngine!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("order/confirm") { engine.stop() }
+            return try original(method, url, headers, body)
+        }
+        let history = try OrderHistoryStore()
+        var successes = 0
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in true }, history: history)
+        engine.onGrabSuccess = { _ in successes += 1 }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(successes, 0)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/get") })
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+    }
+
+    func testUnknownDoesNotResubmitAfterAnotherRun() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("order/confirm") { throw URLError(.timedOut) }
+            return try original(method, url, headers, body)
+        }
+        let history = try OrderHistoryStore()
+        var sleeps = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps > 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        sleeps = 0
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+    }
+
+    func testLatestConfigAffectsNextRound() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        var polls = 0
+        var engine: ListenEngine!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") {
+                polls += 1
+                if polls == 1 {
+                    var cfg = DPGConfig(); cfg.blacklist = ["blocked"]
+                    engine.updateConfig(cfg)
+                    return (200, plainEnvelope(["code": 0, "list": []]))
                 }
-                return (200, plainEnvelope(["code": 0, "list": [order]]))
-            case "/s/c/order/get":
-                return (200, plainEnvelope(["code": 0, "order": [
-                    "reTime": Int((self.fixedNow + 10) * 1000),
-                    "confirmCountDown": 5,
-                ]]))
-            case "/s/c/order/confirm":
-                return (200, plainEnvelope(["code": 0]))
-            default:
-                return (404, Data())
+                return (200, plainEnvelope(["code": 0, "list": [["id": "o2", "totalAmount": 5000, "userWechatId": "blocked"]]]))
             }
+            return try original(method, url, headers, body)
         }
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        let engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in true }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped)
-        XCTAssertEqual(loginCount, 2, "expected one login plus one refresh login")
-        XCTAssertTrue(logs.contains("重新建立"))
-        XCTAssertTrue(logs.contains("抢单成功"))
-        // The confirm task starts immediately, without an order/get fetch.
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/get") }.count, 0)
+        var sleeps = 0
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
+            sleeps += 1; if sleeps > 3 { engine.stop(); return false }; return true
+        })
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") })
     }
 
-    func testEngineDedupsRepeatedOrder() async throws {
-        let order: [String: Any] = ["id": "ord-3", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        var getCalls = 0
-        let stub = fullFlowStub(
-            orderScript: { _ in [order] },
-            confirmScript: { _ in ["code": 2, "msg": "已被抢"] }
-        )
-        // Count order/get calls by wrapping the stub handler.
-        let original = stub.handler
-        stub.handler = { method, url, headers, body in
-            if url.path.contains("order/get") { getCalls += 1 }
-            return try original!(method, url, headers, body)
+    func testFilteredFirstOrderDoesNotStarveSecondOrder() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") {
+                return (200, plainEnvelope(["code": 0, "list": [["id": "filtered", "totalAmount": 500], ["id": "second", "totalAmount": 2500]]]))
+            }
+            return try original(method, url, headers, body)
         }
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        var engine: ListenEngine!
+        let history = OrderHistoryStore.inMemory()
+        let engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in true }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(history.all.first?.orderID, "second")
+        XCTAssertEqual(history.all.first?.outcome, .success)
+    }
+
+    func testSuccessLikeNonzeroCodeOnlyReadsBackOnce() async throws {
+        let transport = stub(confirm: ["code": 2, "msg": "确认成功"])
+        let history = OrderHistoryStore.inMemory()
         var sleeps = 0
-        engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps > 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
+    }
+
+    func testTimeoutWithPendingReadbackNeverResubmitsAcrossRestarts() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("order/confirm") { throw URLError(.timedOut) }
+            if url.path.contains("order/get") {
+                return (200, plainEnvelope(["code": 0, "order": ["status": 0]]))
+            }
+            return try original(method, url, headers, body)
+        }
+        let history = OrderHistoryStore.inMemory()
+        for _ in 0..<2 {
+            var sleeps = 0
+            var engine: ListenEngine!
+            engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
                 sleeps += 1
                 if sleeps >= 4 { engine.stop(); return false }
                 return true
-            }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped)
-        // The same order was polled repeatedly but handled only once:
-        // confirm failed terminally (not success), the order was
-        // de-duped afterwards, and no readback ran for a terminal fail.
-        XCTAssertEqual(getCalls, 0)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
-        XCTAssertTrue(logs.contains("确认终态失败"))
+            }, history: history)
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+        }
+        XCTAssertEqual(history.all.count, 1)
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+        XCTAssertEqual(history.all.first?.accountID, loginPasswordDigest("offline"))
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
     }
 
-    func testEngineRetriesConfirmThenSucceeds() async throws {
-        let order: [String: Any] = ["id": "ord-4", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { $0 == 1 ? [order] : [] },
-            confirmScript: { $0 == 1 ? ["code": 2, "msg": "稍后再试"] : ["code": 0] }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        var grabbed: [[String: Any]] = []
-        let engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in true }
-        )
-        engine.onGrabSuccess = { grabbed.append($0) }
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped, "engine did not stop after a successful grab")
-        XCTAssertEqual(grabbed.count, 1)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 2)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/get") }.count, 0)
-        XCTAssertTrue(logs.contains("抢单成功"))
-    }
-
-    func testEngineAuthInConfirmRefreshesAndRetries() async throws {
-        let order: [String: Any] = ["id": "ord-5", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { _ in [order] },
-            confirmScript: { $0 == 1 ? ["code": 401] : ["code": 0] }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        let engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in true }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped, "engine did not stop after a successful grab")
-        XCTAssertEqual(
-            stub.recorded.filter { $0.url.path.contains("/s/duopei-account/login") }.count,
-            2, "expected one login plus one refresh login"
-        )
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 2)
-        XCTAssertTrue(logs.contains("确认认证失败"))
-        XCTAssertTrue(logs.contains("抢单成功"))
-    }
-
-    func testEngineNetworkErrorOnConfirmReadsBackAndSucceeds() async throws {
-        let order: [String: Any] = ["id": "ord-6", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { $0 == 1 ? [order] : [] },
-            confirmScript: { _ in ["code": 0] },
-            orderGetScript: { _ in ["status": 2, "clerkId": 5] },
-            confirmStatusScript: { $0 == 1 ? 500 : 200 }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        var grabbed: [[String: Any]] = []
-        let engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in true }
-        )
-        engine.onGrabSuccess = { grabbed.append($0) }
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped, "engine did not stop after readback success")
-        XCTAssertEqual(grabbed.count, 1)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
-        XCTAssertTrue(logs.contains("抢单成功"))
-    }
-
-    func testEngineReadbackPendingRetriesAndSucceeds() async throws {
-        let order: [String: Any] = ["id": "ord-7", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { $0 == 1 ? [order] : [] },
-            confirmScript: { _ in ["code": 0] },
-            orderGetScript: { _ in ["status": 0] },
-            confirmStatusScript: { $0 == 1 ? 500 : 200 }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
-        var grabbed: [[String: Any]] = []
-        let engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in true }
-        )
-        engine.onGrabSuccess = { grabbed.append($0) }
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped, "engine did not stop after a successful grab")
-        XCTAssertEqual(grabbed.count, 1)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 2)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
-        XCTAssertTrue(logs.contains("抢单成功"))
-    }
-
-    func testEngineReadbackUnknownStopsBlindRetry() async throws {
-        let order: [String: Any] = ["id": "ord-8", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { _ in [order] },
-            confirmScript: { _ in ["code": 0] },
-            orderGetScript: { _ in ["status": 9, "msg": "奇怪"] },
-            confirmStatusScript: { _ in 500 }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
+    func testBusyStopsConfirmationAndPersistsBeforeCancelableCooldown() async throws {
+        let transport = stub(confirm: ["code": 0, "msg": "同时接单数超过限制的3单，已达上限"])
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig()
+        cfg.busyCooldownSec = 75
+        var sleeps: [TimeInterval] = []
+        var persistedAtCooldown = false
         var engine: ListenEngine!
-        var sleeps = 0
-        engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { seconds in
+            sleeps.append(seconds)
+            if seconds == 75 {
+                persistedAtCooldown = history.all.first?.outcome == .skipped
+                engine.stop()
+                return false
+            }
+            if sleeps.count > 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertTrue(persistedAtCooldown)
+        XCTAssertEqual(sleeps, [5, 75])
+        XCTAssertEqual(history.all.first?.outcome, .skipped)
+        XCTAssertEqual(history.all.first?.reason, "同时接单名额已满（上限3单），本次跳过")
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/get") })
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("randomList") }.count, 1)
+    }
+
+    func testBusyCooldownResumesAtNextPollWithoutAnotherConfirm() async throws {
+        let transport = stub(confirm: ["code": 2, "msg": "接单数超过限制"])
+        let original = transport.handler!
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig(); cfg.busyCooldownSec = 90
+        var polls = 0
+        var sleeps: [TimeInterval] = []
+        var engine: ListenEngine!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") {
+                polls += 1
+                if polls == 2 { engine.stop() }
+            }
+            return try original(method, url, headers, body)
+        }
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { seconds in
+            sleeps.append(seconds)
+            if sleeps.count > 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(polls, 2)
+        XCTAssertEqual(sleeps, [5, 90])
+        XCTAssertEqual(history.all.first?.outcome, .skipped)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/get") })
+    }
+
+    func testItemScopeRejectsDisabledTypeAndAllowsEnabledType() async throws {
+        for enabled in [false, true] {
+            let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465])
+            let history = OrderHistoryStore.inMemory()
+            var cfg = DPGConfig()
+            cfg.itemSwitchIds = enabled ? [465] : [2666]
+            cfg.itemSwitchAccountKey = accountKeyForItemSwitch("offline")
+            cfg.itemSwitchShopId = "92"
+            var sleeps = 0
+            var engine: ListenEngine!
+            engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in
                 sleeps += 1
-                if sleeps >= 3 { engine.stop(); return false }
+                if sleeps > 2 { engine.stop(); return false }
+                return true
+            }, history: history)
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+            XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, enabled ? 1 : 0)
+            if enabled { XCTAssertEqual(history.all.first?.outcome, .success) }
+            else { XCTAssertTrue(history.all.isEmpty) }
+        }
+    }
+
+    func testItemFilterIgnoresOtherAccountOrShopScope() async throws {
+        for otherAccount in [false, true] {
+            let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465])
+            let history = OrderHistoryStore.inMemory()
+            var cfg = DPGConfig()
+            cfg.itemSwitchIds = [2666]
+            cfg.itemSwitchAccountKey = accountKeyForItemSwitch(otherAccount ? "another" : "offline")
+            cfg.itemSwitchShopId = otherAccount ? "92" : "50"
+            let engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in true }, history: history)
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+            XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+            XCTAssertEqual(history.all.first?.outcome, .success)
+        }
+    }
+
+    func testRuleChangeDuringRetryPreventsAnotherConfirmation() async throws {
+        let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465],
+                             confirm: ["code": 2, "msg": "稍后再试"])
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig()
+        cfg.itemSwitchIds = [465]
+        cfg.itemSwitchAccountKey = accountKeyForItemSwitch("offline")
+        cfg.itemSwitchShopId = "92"
+        var sleeps = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps == 2 {
+                var changed = cfg
+                changed.itemSwitchIds = [2666]
+                engine.updateConfig(changed)
+            }
+            if sleeps >= 3 { engine.stop(); return false }
+            return true
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
+        XCTAssertEqual(history.all.first?.outcome, .unknown)
+        XCTAssertTrue(history.all.first?.reason.contains("规则已变更") ?? false)
+    }
+
+    func testItemFilterRechecksLatestConfigAfterShopWait() async throws {
+        let transport = stub(order: ["id": "typed", "totalAmount": 2500, "itemId": 465])
+        let history = OrderHistoryStore.inMemory()
+        var cfg = DPGConfig()
+        cfg.itemSwitchIds = [465]
+        cfg.itemSwitchAccountKey = accountKeyForItemSwitch("offline")
+        cfg.itemSwitchShopId = "92"
+        var sleeps = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps == 1 {
+                var changed = cfg
+                changed.itemSwitchIds = [2666]
+                engine.updateConfig(changed)
                 return true
             }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
-        XCTAssertTrue(logs.contains("停止盲重试"))
+            engine.stop()
+            return false
+        }, history: history)
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertTrue(history.all.isEmpty)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") })
     }
 
-    func testEngineReadbackClerkMismatchFails() async throws {
-        let order: [String: Any] = ["id": "ord-9", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": ""]
-        let stub = fullFlowStub(
-            orderScript: { _ in [order] },
-            confirmScript: { _ in ["code": 0] },
-            orderGetScript: { _ in ["status": 2, "clerkId": 99] },
-            confirmStatusScript: { _ in 500 }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let logs = LogCapture()
+    func testSuccessfulEmptyHallPublishesHealthyStatusWithoutConfirmation() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") { return (200, plainEnvelope(["code": 0, "list": NSNull()])) }
+            return try original(method, url, headers, body)
+        }
+        var statuses: [PollStatus] = []
         var engine: ListenEngine!
-        var sleeps = 0
-        engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            sleeper: { _ in
-                sleeps += 1
-                if sleeps >= 3 { engine.stop(); return false }
-                return true
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in engine.stop(); return false })
+        engine.onPollStatus = { statuses.append($0) }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(statuses.count, 1)
+        XCTAssertNil(statuses.first?.issue)
+        XCTAssertNotNil(statuses.first?.lastSuccessAt)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") })
+    }
+
+    func testBusinessRefusalPausesWithReasonInsteadOfEndlessRetry() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") { return (200, plainEnvelope(["code": 31, "msg": "没有店员权限 sensitive-account"])) }
+            return try original(method, url, headers, body)
+        }
+        var statuses: [PollStatus] = []
+        var logs: [String] = []
+        let engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, text in logs.append(text) }, sleeper: { _ in true })
+        engine.onPollStatus = { statuses.append($0) }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("randomList") }.count, 1)
+        XCTAssertTrue(statuses.last?.issue?.contains("code 31") ?? false)
+        XCTAssertTrue(statuses.last?.issue?.contains("randomList") ?? false)
+        XCTAssertNil(statuses.last?.retryAt)
+        XCTAssertTrue(logs.contains { $0.contains("监听已暂停") })
+        XCTAssertFalse(logs.contains { $0.contains("sensitive-account") })
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("order/confirm") })
+    }
+
+    func testNetworkBackoffIsVisibleAndSuccessfulPollClearsIssue() async throws {
+        let transport = stub()
+        let original = transport.handler!
+        var polls = 0
+        transport.handler = { method, url, headers, body in
+            if url.path.contains("randomList") {
+                polls += 1
+                if polls == 1 { throw URLError(.timedOut) }
+                return (200, plainEnvelope(["code": 0, "list": []]))
             }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count, 1)
-        XCTAssertEqual(stub.recorded.filter { $0.url.path.contains("order/get") }.count, 1)
-        XCTAssertTrue(logs.contains("被他人接走"))
+            return try original(method, url, headers, body)
+        }
+        var statuses: [PollStatus] = []
+        var sleeps = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in
+            sleeps += 1
+            if sleeps >= 2 { engine.stop(); return false }
+            return true
+        })
+        engine.onPollStatus = { statuses.append($0) }
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertEqual(polls, 2)
+        XCTAssertTrue(statuses.first?.issue?.contains("NSURLError -1001") ?? false)
+        XCTAssertNotNil(statuses.first?.retryAt)
+        XCTAssertNil(statuses.last?.issue)
+        XCTAssertNil(statuses.last?.retryAt)
+        XCTAssertNotNil(statuses.last?.lastSuccessAt)
     }
 
-    func testEngineDeadlinePendingReleasesOrder() async throws {
-        // createTime present, so the 0.3 s window (not the fallback) applies.
-        let order: [String: Any] = [
-            "id": "ord-10", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": "",
-            "createTime": Int(fixedNow * 1000),
-        ]
-        let stub = fullFlowStub(
-            orderScript: { _ in [order] },
-            confirmScript: { _ in ["code": 2, "msg": "稍后再试"] },
-            orderGetScript: { _ in ["status": 0] }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        var cfg = makeConfig()
-        cfg.randomConfirmWindowSec = 0.3
-        cfg.confirmRetryDelaySec = 0.05
-        let logs = LogCapture()
-        let clock = FakeClock(1000)
-        let engine = ListenEngine(
-            client: client, config: cfg,
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            monotonic: { clock.now },
-            sleeper: { seconds in clock.advance(by: seconds); return true }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let released = await waitUntil({ logs.contains("本轮确认预算耗尽") })
-        XCTAssertTrue(released, "expected the deadline release log")
-        XCTAssertTrue(engine.isRunning, "engine should still be running after a pending release")
-        // The released order was picked up again, starting a new task.
-        let retried = await waitUntil({ logs.entries.filter { $0.1.contains("尝试接单") }.count >= 2 })
-        XCTAssertTrue(retried, "expected at least two confirm tasks after release")
-        XCTAssertTrue(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count > 1)
-        engine.stop()
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped)
+    func testMalformedListAndTLSFailurePauseWithoutRepeatedRequests() async throws {
+        for tls in [false, true] {
+            let transport = stub()
+            let original = transport.handler!
+            transport.handler = { method, url, headers, body in
+                if url.path.contains("randomList") {
+                    if tls { throw URLError(.serverCertificateUntrusted) }
+                    return (200, plainEnvelope(["code": 0, "list": "not-an-array"]))
+                }
+                return try original(method, url, headers, body)
+            }
+            var statuses: [PollStatus] = []
+            let engine = ListenEngine(client: client(transport), config: DPGConfig(), log: { _, _ in }, sleeper: { _ in true })
+            engine.onPollStatus = { statuses.append($0) }
+            XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+            await finish(engine)
+            XCTAssertEqual(transport.recorded.filter { $0.url.path.contains("randomList") }.count, 1)
+            XCTAssertTrue(statuses.last?.issue?.contains(tls ? "tls" : "responseShape") ?? false)
+            XCTAssertNil(statuses.last?.retryAt)
+        }
     }
 
-    func testEngineDeadlineFinalReadbackOkSucceeds() async throws {
-        // createTime present, so the 0.3 s window (not the fallback) applies.
-        let order: [String: Any] = [
-            "id": "ord-11", "totalAmount": 2500, "userWechatId": "wx1", "userMemo": "",
-            "createTime": Int(fixedNow * 1000),
-        ]
-        let stub = fullFlowStub(
-            orderScript: { $0 == 1 ? [order] : [] },
-            confirmScript: { _ in ["code": 2, "msg": "稍后再试"] },
-            orderGetScript: { _ in ["status": 2, "clerkId": 5] }
-        )
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        var cfg = makeConfig()
-        cfg.randomConfirmWindowSec = 0.3
-        cfg.confirmRetryDelaySec = 0.05
-        let logs = LogCapture()
-        let clock = FakeClock(1000)
-        var grabbed: [[String: Any]] = []
-        let engine = ListenEngine(
-            client: client, config: cfg,
-            log: { logs.append($0, $1) },
-            now: { self.fixedNow },
-            monotonic: { clock.now },
-            sleeper: { seconds in clock.advance(by: seconds); return true }
-        )
-        engine.onGrabSuccess = { grabbed.append($0) }
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped, "engine did not stop after final readback success")
-        XCTAssertEqual(grabbed.count, 1)
-        XCTAssertTrue(stub.recorded.filter { $0.url.path.contains("order/confirm") }.count > 1)
-        XCTAssertTrue(logs.contains("抢单成功"))
-    }
-
-    func testEngineStartWhileRunningReturnsFalse() async throws {
-        let stub = fullFlowStub(orderScript: { _ in [] }, confirmScript: { _ in ["code": 0] })
-        let client = ApiClient(
-            aesKeyHex: defaultAESKeyHex, aesIVHex: defaultAESIVHex,
-            aesKeyHexAlt: altAESKeyHex, aesIVHexAlt: altAESIVHex,
-            transport: stub
-        )
-        let engine = ListenEngine(
-            client: client, config: makeConfig(),
-            log: { _, _ in },
-            now: { self.fixedNow },
-            sleeper: { _ in true }
-        )
-        XCTAssertTrue(engine.start(phone: "13800000000", password: "secret"))
-        XCTAssertFalse(engine.start(phone: "13800000000", password: "secret"))
-        engine.stop()
-        let stopped = await waitUntilStopped(engine)
-        XCTAssertTrue(stopped)
+    func testRunRestSleepIsCancelledWithoutNewPoll() async throws {
+        let transport = stub()
+        var cfg = DPGConfig(); cfg.runRestEnabled = true; cfg.runDurationSec = 1
+        var ticks: Double = 0
+        var engine: ListenEngine!
+        engine = ListenEngine(client: client(transport), config: cfg, log: { _, _ in }, monotonic: { ticks += 2; return ticks }, sleeper: { seconds in
+            XCTAssertEqual(seconds, cfg.restDurationSec)
+            engine.stop(); return false
+        })
+        XCTAssertTrue(engine.start(phone: "offline", password: "offline"))
+        await finish(engine)
+        XCTAssertFalse(transport.recorded.contains { $0.url.path.contains("randomList") })
     }
 }
