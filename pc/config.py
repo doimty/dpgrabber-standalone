@@ -111,7 +111,14 @@ DEFAULT_CONFIG = {
     "seen_ttl_sec": 60,        # de-dup window for already-seen order ids (seconds)
     "theme": "day",
     # 界面缩放："auto" 按屏幕分辨率自动推算，或 0.8–1.6 的固定倍数（重启生效）
-    "ui_scale": "auto",            # UI theme id (see themes.py); unknown values fall back to "day"
+    "ui_scale": "auto",
+    # 接单类型 ↔ 订单条目名称的匹配词（switchId -> 关键词列表）
+    # 实测订单名形如「默认-语音连麦-60分钟」「新客首单体验-30分钟文语体验单」
+    "item_name_map": {
+        "465": ["连麦", "语音", "文语", "语音条"],
+        "2666": ["视频"],
+        "2667": ["游戏", "陪玩"],
+    },            # UI theme id (see themes.py); unknown values fall back to "day"
 }
 
 
@@ -300,6 +307,17 @@ def validate(cfg: dict) -> dict:
     merged["blacklist"] = [str(x).strip() for x in merged["blacklist"] if str(x).strip()]
     merged["phone"] = str(merged.get("phone") or "").strip()
     merged["password"] = str(merged.get("password") or "")
+    name_map = merged.get("item_name_map")
+    if not isinstance(name_map, dict):
+        raise ConfigError("item_name_map must be an object")
+    cleaned = {}
+    for key, words in name_map.items():
+        if isinstance(words, str):
+            words = [w for w in words.replace("，", ",").split(",")]
+        if not isinstance(words, list):
+            raise ConfigError("item_name_map values must be lists")
+        cleaned[str(key).strip()] = [str(w).strip() for w in words if str(w).strip()]
+    merged["item_name_map"] = cleaned
     scale = merged.get("ui_scale", "auto")
     if isinstance(scale, str) and scale.strip().lower() == "auto":
         merged["ui_scale"] = "auto"
