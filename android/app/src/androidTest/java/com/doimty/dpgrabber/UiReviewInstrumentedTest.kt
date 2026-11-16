@@ -293,6 +293,10 @@ class UiReviewInstrumentedTest {
         timeout.click()
         timeout.text = "9"
         device.pressBack()
+        // 默认等待表覆盖 92，全局输入框起始为禁用；先改成不覆盖当前店铺的表使其可编辑。
+        scrollTo("shopWaitInput")
+        device.findObject(By.res(PACKAGE, "shopWaitInput")).apply { click(); text = "50=3" }
+        device.pressBack()
         scrollTo("globalWaitInput")
         device.findObject(By.res(PACKAGE, "globalWaitInput")).apply { click(); text = "2" }
         device.pressBack()

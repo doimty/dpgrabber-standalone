@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import android.view.View
 import android.widget.Button
 import androidx.test.core.app.ActivityScenario
@@ -443,9 +444,17 @@ class SessionLifecycleInstrumentedTest {
             refresh.invoke(activity)
             assertEquals("停止后身份卡仍在", View.VISIBLE,
                 activity.findViewById<View>(R.id.profileCard).visibility)
-            busyField.setBoolean(activity, false)
-            refreshStatus(activity)
-            assertTrue("停止不是注销，开始按钮必须能恢复", activity.findViewById<Button>(R.id.startButton).isEnabled)
+            // 自动账号刷新可能仍在收尾（networkExecutor 回主线程 setNetworkBusy），
+            // 按钮状态是收敛值：强制空闲并刷新后短暂轮询，而不是对瞬态做一次性断言。
+            var enabled = false
+            for (attempt in 0 until 30) {
+                busyField.setBoolean(activity, false)
+                refreshStatus(activity)
+                enabled = activity.findViewById<Button>(R.id.startButton).isEnabled
+                if (enabled) break
+                SystemClock.sleep(100)
+            }
+            assertTrue("停止不是注销，开始按钮必须能恢复", enabled)
             busyField.setBoolean(activity, true)
             activity.findViewById<View>(R.id.tab_workbench).performClick()
         }

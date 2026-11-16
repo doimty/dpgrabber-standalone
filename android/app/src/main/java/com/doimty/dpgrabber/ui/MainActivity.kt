@@ -943,7 +943,7 @@ class MainActivity : AppCompatActivity() {
         val text = when {
             !matches -> "接单类型尚未读取\n关闭的类型不抢该类随机单；无可识别类型信息时不限制。"
             config.itemSwitchIds.isEmpty() -> "当前未启用本地类型限制\n关闭的类型不抢该类随机单；无可识别类型信息时不限制。"
-            else -> "关闭的类型不抢该类随机单；无可识别类型信息时不限制。"
+            else -> "已启用 ${config.itemSwitchIds.size} 类\n关闭的类型不抢该类随机单；无可识别类型信息时不限制。"
         }
         if (binding.itemTypesHint.text.toString() != text) binding.itemTypesHint.text = text
     }
