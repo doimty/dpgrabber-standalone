@@ -61,7 +61,12 @@ DEFAULT_CONFIG = {
         # 店铺接单名额占满（如 92 店上限 2 单）后的冷却秒数
         "busy_cooldown_sec": 60.0,  # delay between empty polls (reference tool ListenDelay default)
     "memo_mode": 0,            # 0 = ignore memos, 1 = drop orders that have any memo
-    "memo_keywords": [],       # drop an order if its memo contains any of these (case-insensitive)
+    # 备注关键词拆成两份：排除词与白名单互不影响
+    "memo_keywords": [],           # 旧字段，仅用于兼容迁移
+    # 排除词（memo_mode=2）：备注命中任一就不抢
+    "memo_exclude_keywords": [],
+    # 白名单（memo_mode=3）：备注必须命中其一才抢
+    "memo_include_keywords": [],
     "blacklist": [],           # WeChat ids; drop orders from these customers
     # --- confirm wait (autoduopei shop-92 rule; /grab/start) ---
     # Random wait before the FIRST confirm attempt of a grab (seconds).
@@ -279,11 +284,17 @@ def validate(cfg: dict) -> dict:
         raise ConfigError("risk_rest_max must be >= risk_rest_min")
     if float(merged["request_timeout_sec"]) <= 0:
         raise ConfigError("request_timeout_sec must be positive")
-    if not isinstance(merged["memo_keywords"], list) or not isinstance(
-        merged["blacklist"], list
-    ):
-        raise ConfigError("memo_keywords and blacklist must be lists")
-    merged["memo_keywords"] = [str(x).strip() for x in merged["memo_keywords"] if str(x).strip()]
+    for name in ("memo_keywords", "memo_exclude_keywords",
+                 "memo_include_keywords", "blacklist"):
+        if not isinstance(merged.get(name), list):
+            raise ConfigError("%s must be a list" % name)
+        merged[name] = [str(x).strip() for x in merged[name] if str(x).strip()]
+    # 旧配置只有一个 memo_keywords：按模式迁到对应列表
+    if merged["memo_keywords"]:
+        target = ("memo_include_keywords" if int(merged["memo_mode"]) == 3
+                  else "memo_exclude_keywords")
+        if not merged[target]:
+            merged[target] = list(merged["memo_keywords"])
     merged["blacklist"] = [str(x).strip() for x in merged["blacklist"] if str(x).strip()]
     merged["phone"] = str(merged.get("phone") or "").strip()
     merged["password"] = str(merged.get("password") or "")
