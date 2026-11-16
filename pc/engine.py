@@ -452,7 +452,7 @@ class OrderFilter:
     def __init__(self, min_amount: float, max_amount: float, memo_mode: int,
                  memo_keywords, blacklist, enabled_items=None,
                  memo_include_keywords=None, item_name_map=None,
-                 item_always_types=None):
+                 item_always_types=None, switch_list_known=False):
         self.min_amount = float(min_amount)
         self.max_amount = float(max_amount)
         self.memo_mode = int(memo_mode)
@@ -471,6 +471,8 @@ class OrderFilter:
         # 这里是参数，不是上面那个同名函数——名字被参数遮住了，所以用 base_item_types()
         self.item_always_types = (list(item_always_types)
                                   if item_always_types else list(base_item_types()))
+        # 拿到过平台的开关列表 = 空列表意味着"用户全关"，而不是"没有数据"
+        self.switch_list_known = bool(switch_list_known)
 
     def check(self, order: dict):
         if not isinstance(order, dict):
@@ -487,6 +489,21 @@ class OrderFilter:
             return False, "金额 %.2f 元低于最低金额" % amount
         if self.max_amount > 0 and amount > self.max_amount:
             return False, "金额 %.2f 元高于最高金额" % amount
+        # 全关（拿到过列表且列表为空）：连麦/视频/游戏这些类型一律不抢，
+        # 基础类型照旧放行。没有列表时不做限制，避免一启动就丢单。
+        if self.switch_list_known and not self.enabled_items:
+            names_all = " ".join(order_item_names(order))
+            if names_all and not match_always_type(names_all, self.item_always_types):
+                candidates = set(ITEM_NAME_SYNONYMS)
+                for key in self.item_name_map:
+                    try:
+                        candidates.add(int(key))
+                    except (TypeError, ValueError):
+                        pass
+                for switch_id in sorted(candidates):
+                    for word in item_keywords(int(switch_id), self.item_name_map):
+                        if word in names_all:
+                            return False, "接单类型已全部关闭（%s）" % names_all
         if self.enabled_items:
             matched = order_matches_items(order, self.enabled_items,
                                           self.item_name_map,
@@ -747,6 +764,7 @@ class Engine:
                 self.cfg.get("memo_include_keywords") or [],
                 self.cfg.get("item_name_map") or {},
                 self.cfg.get("item_always_types") or [],
+                bool(self.cfg.get("item_switch_known")),
             )
         # Risk run/rest rhythm (autoduopei risk_run/rest): when enabled,
         # poll for one random run period, rest, then resume. The rest
