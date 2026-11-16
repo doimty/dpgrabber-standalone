@@ -1100,15 +1100,19 @@ class RealOrderSchemaTests(unittest.TestCase):
         self.assertIn("文字语音条", names)
         self.assertIn("糖恋", names)
 
-    def test_matching_is_decidable(self):
+    def test_base_type_is_always_allowed(self):
+        """文字语音条 是基础类型：平台不允许关闭，任何开关组合都放行。"""
         from engine import order_matches_items
-        # 「文字语音条」没有证据属于任何接单类型 → 认不出 = None = 放行
-        self.assertIsNone(order_matches_items(self.REAL, [465]))
-        self.assertIsNone(order_matches_items(self.REAL, [2666]))
+        self.assertIs(order_matches_items(self.REAL, [465]), True)
+        self.assertIs(order_matches_items(self.REAL, [2666]), True)
+        self.assertIs(order_matches_items(self.REAL, [2667]), True)
 
     def test_unknown_type_is_not_dropped(self):
         from engine import OrderFilter
-        ok, why = OrderFilter(10, 0, 0, [], [], enabled_items=[2666]).check(self.REAL)
+        # 新客首单体验 没有任何证据归到某个类型 → 放行，不丢单
+        order = {"id": 1, "no": "X", "totalAmount": 1000,
+                 "item": {"names": ["新客首单体验-30分钟文语体验单"]}}
+        ok, why = OrderFilter(10, 0, 0, [], [], enabled_items=[2666]).check(order)
         self.assertTrue(ok, why)
 
 
@@ -1128,9 +1132,10 @@ class ObservedItemNameTests(unittest.TestCase):
     def test_lianmai_matches_observed_names(self):
         self.assertTrue(self._filter([465]).check(self.ORDER)[0])
 
-    def test_video_and_game_do_not_match_voice_order(self):
-        self.assertFalse(self._filter([2666]).check(self.ORDER)[0])
-        self.assertFalse(self._filter([2667]).check(self.ORDER)[0])
+    def test_new_customer_order_is_a_base_type(self):
+        # 新客首单体验-30分钟文语体验单 也是文字语音条那一类，走基础类型放行
+        self.assertTrue(self._filter([2666]).check(self.ORDER)[0])
+        self.assertTrue(self._filter([2667]).check(self.ORDER)[0])
 
     def test_video_order_is_not_let_through_by_voice_keywords(self):
         order = dict(self.ORDER, item={"names": ["默认-视频-30分钟"]})
@@ -1142,6 +1147,13 @@ class ObservedItemNameTests(unittest.TestCase):
         filt = OrderFilter(10, 0, 0, [], [], enabled_items=[2666],
                            item_name_map={"2666": ["文语"]})
         self.assertTrue(filt.check(self.ORDER)[0])
+
+
+    def test_real_switch_types_still_block_when_disabled(self):
+        video = {"id": 1, "no": "X", "totalAmount": 1000,
+                 "item": {"names": ["默认-视频-30分钟"]}}
+        self.assertFalse(self._filter([465]).check(video)[0])
+        self.assertTrue(self._filter([2666]).check(video)[0])
 
 
 if __name__ == "__main__":
