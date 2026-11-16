@@ -440,6 +440,16 @@ QFrame#switchRow:hover { background: %(ENTRY_BG)s; }
 QFrame#switchRow[selected="true"] {
     border: 1px solid %(BLUE)s; background: %(ENTRY_BG)s;
 }
+QPushButton#titleAction {
+    background: transparent; border: none;
+    color: %(BLUE)s; font-size: 12px; font-weight: 600;
+    padding: 3px 8px; border-radius: 8px;
+}
+QPushButton#titleAction:hover {
+    color: %(BLUE_DARK)s; background: %(ENTRY_BG)s;
+    text-decoration: underline;
+}
+QPushButton#titleAction:disabled { color: %(HINT)s; }
 QLabel#switchName { color: %(TEXT_DARK)s; font-size: 13px; }
 QLabel#switchDetail { color: %(HINT)s; font-size: 12px; }
 QLabel#switchBadge {
@@ -1712,6 +1722,18 @@ class App(QMainWindow):
         grid.addWidget(lab, row, 0)
         grid.addWidget(widget, row, 1)
 
+    @staticmethod
+    def _keyword_key_for(mode: int) -> str:
+        return "memo_include_keywords" if int(mode) == 3 else "memo_exclude_keywords"
+
+    def _on_memo_mode_changed(self, index: int):
+        """切模式：把当前框里的词存回原来的列表，再载入新列表。"""
+        previous = getattr(self, "_keyword_mode_shown", None)
+        if previous is not None and previous != index:
+            old_key = self._keyword_key_for(previous)
+            self.cfg[old_key] = _lines(self.keyword_text)
+        self._sync_keyword_editor(index)
+
     def _sync_keyword_editor(self, index: int | None = None):
         """备注检测选了关键词模式才显示关键词框，提示文字跟着变。"""
         box = getattr(self, "keyword_box", None)
@@ -1723,6 +1745,10 @@ class App(QMainWindow):
         if hint is not None:
             hint.setText("备注必须包含其中一个，否则不抢" if index == 3
                          else "命中任意一个就不抢")
+        key = self._keyword_key_for(index)
+        if getattr(self, "_keyword_mode_shown", None) != index:
+            _set_lines(self.keyword_text, self.cfg.get(key) or [])
+        self._keyword_mode_shown = index
 
     def _sync_wait_fields(self):
         """当前店铺在店铺表里时，把等待两个框灰掉并显示实际生效值。"""
@@ -1905,7 +1931,7 @@ class App(QMainWindow):
         self.memo_mode_box.addItems(["不检测备注", "有备注不抢",
                                      "排除关键词", "只抢关键词"])
         self.memo_mode_box.setToolTip("后两项使用下面的备注关键词")
-        self.memo_mode_box.currentIndexChanged.connect(self._sync_keyword_editor)
+        self.memo_mode_box.currentIndexChanged.connect(self._on_memo_mode_changed)
         self._form_row(grid, 3, "备注检测", self.memo_mode_box,
                        "有备注即跳过 / 按关键词筛选")
         self.confirm_wait_min_spin = QDoubleSpinBox()
@@ -2281,7 +2307,9 @@ class App(QMainWindow):
         if chosen is black_action:
             self._append_to_config_list("blacklist", wechat, "已拉黑微信号")
         elif chosen is keyword_action:
-            self._append_to_config_list("memo_keywords", memo, "已加入备注关键词")
+            mode = int(self.memo_mode_box.currentIndex()) if hasattr(self, "memo_mode_box") else 0
+            self._append_to_config_list(self._keyword_key_for(mode), memo,
+                                        "已加入备注关键词")
         elif chosen is copy_action:
             from PySide6.QtGui import QGuiApplication
             QGuiApplication.clipboard().setText(str(entry.get("no") or ""))
@@ -2290,7 +2318,8 @@ class App(QMainWindow):
     def _refresh_keyword_editor(self):
         box = getattr(self, "keyword_text", None)
         if box is not None:
-            _set_lines(box, self.cfg.get("memo_keywords") or [])
+            mode = int(self.memo_mode_box.currentIndex()) if hasattr(self, "memo_mode_box") else 0
+            _set_lines(box, self.cfg.get(self._keyword_key_for(mode)) or [])
             self._sync_keyword_editor()
 
     def _append_to_config_list(self, key: str, value: str, message: str):
@@ -2308,7 +2337,7 @@ class App(QMainWindow):
                 self.log("warning", "保存配置失败：%s" % exc)
                 return
         self.log("success", "%s：%s" % (message, value))
-        if key == "memo_keywords":
+        if key in ("memo_keywords", "memo_exclude_keywords", "memo_include_keywords"):
             self._refresh_keyword_editor()
 
     def _on_clear_history(self):
@@ -2368,7 +2397,15 @@ class App(QMainWindow):
         self.max_amount_edit.setText(str(self.cfg.get("max_amount", 0.0)))
         self.poll_interval_edit.setText(str(self.cfg.get("poll_interval_sec", 0.5)))
         mode = int(self.cfg.get("memo_mode", 0) or 0)
-        keywords = [str(k) for k in (self.cfg.get("memo_keywords") or []) if str(k).strip()]
+        # 老配置的 memo_keywords 已经由 config.validate 迁到具体列表；
+        # 这里只处理"界面上还没迁移过的内存 cfg"
+        legacy = [str(k) for k in (self.cfg.get("memo_keywords") or []) if str(k).strip()]
+        if legacy:
+            target = self._keyword_key_for(mode)
+            if not self.cfg.get(target):
+                self.cfg[target] = list(legacy)
+        keywords = [str(k) for k in (self.cfg.get(self._keyword_key_for(mode)) or [])
+                    if str(k).strip()]
         # 老配置：关键词非空但模式是"不检测"，自动升级成"排除关键词"并说明
         if mode == 0 and keywords:
             mode = 2
@@ -2423,7 +2460,9 @@ class App(QMainWindow):
             "max_amount": max_amount,
             "poll_interval_sec": poll_interval,
             "memo_mode": int(self.memo_mode_box.currentIndex()),
-            "memo_keywords": _lines(self.keyword_text),
+            # 关键词写进当前模式对应的列表；旧字段清空，避免二次迁移
+            self._keyword_key_for(int(self.memo_mode_box.currentIndex())): _lines(self.keyword_text),
+            "memo_keywords": [],
             "confirm_wait_min": confirm_min,
             "confirm_wait_max": confirm_max,
             "run_rest_enabled": run_enabled,
