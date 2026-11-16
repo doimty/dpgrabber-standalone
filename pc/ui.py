@@ -1412,6 +1412,7 @@ class App(QMainWindow):
                      for i in (state.get("items") or []) if i.get("id") is not None}
             if names and names != (self.cfg.get("item_switch_names") or {}):
                 self.cfg["item_switch_names"] = names
+                self.cfg["item_switch_known"] = True
                 self._save_cfg()
         except Exception:
             pass
